@@ -1,18 +1,21 @@
-"""SQLite database wrapper and schema for NEXUS SEED Phase 1.
+"""SQLite database wrapper and schema for NEXUS SEED.
 
-Persistence deliberately uses the standard-library :mod:`sqlite3` — no ORM, no
-external dependency.  JSON-shaped values are stored as ``TEXT`` columns.  The
-schema is the only thing that must survive a runtime restart; rebuilding a
-:class:`~nexus_seed.runtime.runtime.Runtime` from the same database file must
-fully restore process state.
+Persistence uses the standard-library :mod:`sqlite3` — no ORM, no external
+dependency.  JSON-shaped values are stored as ``TEXT`` columns.
+
+Phase 2A adds :meth:`Database.atomic`: writes made through :meth:`execute`
+inside an ``atomic()`` block are deferred and committed together (or rolled
+back on error).  Stores need no changes for this — they call :meth:`execute`
+as before, and ``atomic()`` decides when the commit happens.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -33,6 +36,8 @@ CREATE TABLE IF NOT EXISTS process_definitions (
     version             TEXT NOT NULL,
     handler             TEXT NOT NULL,
     trigger_event_types TEXT NOT NULL DEFAULT '[]',
+    max_retries         INTEGER NOT NULL DEFAULT 0,
+    metadata            TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (name, version)
 );
 
@@ -46,6 +51,10 @@ CREATE TABLE IF NOT EXISTS process_instances (
     parent_process_id  TEXT,
     priority           INTEGER NOT NULL DEFAULT 0,
     pending_event_id   TEXT,
+    retry_count        INTEGER NOT NULL DEFAULT 0,
+    max_retries        INTEGER NOT NULL DEFAULT 0,
+    next_retry_at      TEXT,
+    last_error         TEXT,
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL
 );
@@ -71,6 +80,35 @@ CREATE TABLE IF NOT EXISTS world_state (
     updated_at   TEXT NOT NULL,
     PRIMARY KEY (entity, attribute)
 );
+
+CREATE TABLE IF NOT EXISTS timers (
+    id            TEXT PRIMARY KEY,
+    fire_at       TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    payload       TEXT NOT NULL,
+    fired         INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timers_due ON timers(fired, fire_at);
+
+CREATE TABLE IF NOT EXISTS joins (
+    id                  TEXT PRIMARY KEY,
+    parent_instance_id  TEXT NOT NULL,
+    child_ids           TEXT NOT NULL,
+    mode                TEXT NOT NULL,
+    resume_point        TEXT NOT NULL,
+    saved_process_state TEXT NOT NULL,
+    completed           TEXT NOT NULL DEFAULT '[]',
+    satisfied           INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS process_activations (
+    activation_key TEXT PRIMARY KEY,
+    instance_id    TEXT NOT NULL,
+    event_id       TEXT,
+    created_at     TEXT NOT NULL
+);
 """
 
 
@@ -87,10 +125,12 @@ def loads(text: str | None) -> Any:
 
 
 class Database:
-    """A thin owner of a single SQLite connection plus the schema.
+    """Owns a single SQLite connection plus the schema.
 
     The connection is used single-threaded from the asyncio event loop, so the
-    default sqlite3 threading rules are fine.  Writes commit immediately.
+    default sqlite3 threading rules are fine.  A standalone :meth:`execute`
+    commits immediately; inside an :meth:`atomic` block commits are deferred so
+    a whole process activation lands (or rolls back) as one transaction.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -99,6 +139,7 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self._depth = 0
         self.init_schema()
 
     def init_schema(self) -> None:
@@ -107,10 +148,32 @@ class Database:
         self.conn.commit()
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Execute a statement and commit it."""
+        """Execute a statement, committing immediately unless inside ``atomic``."""
         cur = self.conn.execute(sql, params)
-        self.conn.commit()
+        if self._depth == 0:
+            self.conn.commit()
         return cur
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Group all :meth:`execute` writes in the block into one transaction.
+
+        Commits on clean exit, rolls back on exception.  Not reentrant across
+        independent activations, but nesting is tolerated (only the outermost
+        block commits).
+        """
+        self._depth += 1
+        try:
+            yield
+        except Exception:
+            self._depth -= 1
+            if self._depth == 0:
+                self.conn.rollback()
+            raise
+        else:
+            self._depth -= 1
+            if self._depth == 0:
+                self.conn.commit()
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         """Execute a query and return all rows."""

@@ -80,16 +80,46 @@ flowchart LR
     EXEC -->|emitted events| ES
 ```
 
+## Durability (Phase 2A)
+
+The runtime is built to run continuously without corrupting state:
+
+- **Atomic process transitions.** A handler stages its writes (`ctx.state.set`)
+  and returns *all* effects — state changes, emitted events, continuation
+  create/delete, spawned children, timers — in one `ProcessResult`. The runtime
+  commits them in a single SQLite transaction, or rolls the whole batch back.
+- **Idempotency.** Re-delivering an event (same id) is a no-op; committed
+  activations are recorded so effects never apply twice.
+- **Crash recovery.** On startup, processes left `RUNNING` by an interrupted
+  run are returned to `RUNNABLE` (a committed activation always leaves `RUNNING`
+  atomically, so a stuck `RUNNING` never committed and is safe to re-run).
+- **Retry.** A handler raising `RetryableError` moves the process
+  `RUNNING → RETRY_WAIT → RUNNABLE → COMPLETED` with exponential backoff; plain
+  exceptions are terminal `FAILED`.
+- **Timers.** A process can suspend on a timer (`ctx.suspend_on_timer`); a
+  `runtime.tick()` fires due timers as ordinary `timer_fired` events that resume
+  it. Time comes from an injectable `Clock` so tests stay fast and deterministic.
+- **Spawn / join.** A process can `ctx.spawn_and_join(...)` children and suspend
+  until `all`/`any` finish — expressed with the normal event + continuation
+  machinery, not a new primitive.
+
+`runtime.tick()` drives time-based work (timers, retry backoff); `submit_event`
+drives event-based work. Both end by draining all `RUNNABLE` processes.
+
 ## Repository layout
 
 ```
 nexus_seed/
 ├── core/            # data models: event, process, state, context, continuation
-├── runtime/         # runtime, router, scheduler, executor, continuation_resolver
-├── storage/         # sqlite: database + event/process/state/continuation stores
+├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
+│                    #   clock, join_coordinator
+├── storage/         # sqlite: database + event/process/state/continuation/
+│                    #   timer/join/activation stores
 ├── processes/       # concrete Processes (demo_resistance)
 └── demo.py          # runnable acceptance scenario (with runtime restart)
-tests/               # test_event_store, test_process_execution, test_suspend_resume
+tests/               # phase 1: event_store, process_execution, suspend_resume
+                     # phase 2a: atomic_transition, idempotency, crash_recovery,
+                     #           retry, timer_resume, spawn_join
 ```
 
 ## Install

@@ -6,14 +6,17 @@ from .event import Event, utcnow
 from .process import (
     Handler,
     HandlerRegistry,
+    JoinRequest,
     ProcessContext,
     ProcessDefinition,
     ProcessInstance,
     ProcessResult,
     ProcessStatus,
+    RetryableError,
     SpawnSpec,
+    TimerSpec,
 )
-from .state import StateEntry
+from .state import StateChange, StateEntry, StateView
 
 __all__ = [
     "Continuation",
@@ -23,11 +26,16 @@ __all__ = [
     "utcnow",
     "Handler",
     "HandlerRegistry",
+    "JoinRequest",
     "ProcessContext",
     "ProcessDefinition",
     "ProcessInstance",
     "ProcessResult",
     "ProcessStatus",
+    "RetryableError",
     "SpawnSpec",
+    "TimerSpec",
+    "StateChange",
     "StateEntry",
+    "StateView",
 ]

@@ -64,6 +64,7 @@ class Router:
                 status=ProcessStatus.RUNNABLE,
                 input={"trigger_event_id": str(event.id), "payload": event.payload},
                 pending_event_id=event.id,
+                max_retries=definition.max_retries,
             )
             self.process_store.save_instance(instance)
             logger.info(

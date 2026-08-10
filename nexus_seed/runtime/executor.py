@@ -1,55 +1,84 @@
-"""Process Executor — runs one activation of one process instance.
+"""Process Executor — runs one activation and commits its effects atomically.
 
 The executor is pure mechanism.  It resolves the handler, builds the
 :class:`ProcessContext`, awaits the handler, and applies the returned
-:class:`ProcessResult` to persistent state:
+:class:`ProcessResult` in a **single database transaction** (Phase 2A):
 
-* transition the instance to COMPLETED / SUSPENDED / FAILED,
-* persist a new continuation on suspend and remove a consumed one on resume,
-* clear the pending activation.
+* apply all state changes, emitted events, continuation create/delete, spawned
+  children and joins together — or roll them all back on error;
+* transition the instance to COMPLETED / SUSPENDED / RETRY_WAIT / FAILED;
+* record the activation so the same event cannot apply effects twice.
 
-It does **not** route emitted events — that is the runtime's drain loop.
+It does not route emitted events — that is the runtime's drain loop.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from ..core.context import build_context
+from ..core.continuation import Continuation
 from ..core.process import (
     HandlerRegistry,
     ProcessContext,
     ProcessInstance,
     ProcessResult,
     ProcessStatus,
+    RetryableError,
+    TimerSpec,
 )
+from ..core.state import StateView
+from ..storage.activation_store import ActivationStore, activation_key
 from ..storage.continuation_store import ContinuationStore
+from ..storage.database import Database
 from ..storage.event_store import EventStore
+from ..storage.join_store import JoinRecord, JoinStore
 from ..storage.process_store import ProcessStore
 from ..storage.state_store import StateStore
+from ..storage.timer_store import TimerRecord, TimerStore
+from .clock import Clock
 
 logger = logging.getLogger("nexus_seed.runtime.executor")
 
 
 class Executor:
-    """Executes a single process activation and persists its outcome."""
+    """Executes a single process activation and persists its outcome atomically."""
 
     def __init__(
         self,
+        db: Database,
         registry: HandlerRegistry,
         process_store: ProcessStore,
         continuation_store: ContinuationStore,
         state_store: StateStore,
         event_store: EventStore,
+        timer_store: TimerStore,
+        join_store: JoinStore,
+        activation_store: ActivationStore,
+        clock: Clock,
     ) -> None:
+        self.db = db
         self.registry = registry
         self.process_store = process_store
         self.continuation_store = continuation_store
         self.state_store = state_store
         self.event_store = event_store
+        self.timer_store = timer_store
+        self.join_store = join_store
+        self.activation_store = activation_store
+        self.clock = clock
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
         """Run one activation of ``instance`` and return its result."""
+        original_event_id = instance.pending_event_id
+        key = activation_key(instance.id, original_event_id)
+        if self.activation_store.exists(key):
+            # Should not happen: a committed activation advances status out of
+            # RUNNABLE.  Fail loudly rather than risk re-applying / looping.
+            logger.error("activation %s already applied but still runnable", key)
+            return self._fail(instance, "duplicate activation")
+
         definition = self.process_store.get_definition(
             instance.definition_name, instance.definition_version
         )
@@ -61,11 +90,8 @@ class Executor:
         except KeyError as exc:
             return self._fail(instance, str(exc))
 
-        # Determine activation mode from persisted state (survives restart).
         event = (
-            self.event_store.get(instance.pending_event_id)
-            if instance.pending_event_id
-            else None
+            self.event_store.get(original_event_id) if original_event_id else None
         )
         active_continuation = self.continuation_store.for_instance(instance.id)
         resume_point = active_continuation.resume_point if active_continuation else None
@@ -73,6 +99,7 @@ class Executor:
             active_continuation.saved_process_state if active_continuation else {}
         )
 
+        # RUNNING marker is committed on its own so crash recovery can see it.
         instance.status = ProcessStatus.RUNNING
         self.process_store.save_instance(instance)
 
@@ -85,7 +112,7 @@ class Executor:
         ctx = ProcessContext(
             instance=instance,
             event=event,
-            state=self.state_store,
+            state=StateView(self.state_store),
             context=context,
             resume_point=resume_point,
             saved_process_state=saved_state,
@@ -94,47 +121,168 @@ class Executor:
 
         try:
             result = await handler(ctx)
+        except RetryableError as exc:
+            logger.warning("handler %s retryable error: %s", definition.handler, exc)
+            result = ProcessResult(
+                status=ProcessStatus.FAILED, output={"error": str(exc)}, retryable=True
+            )
         except Exception as exc:  # noqa: BLE001 - surface, don't swallow
             logger.exception("handler %s raised", definition.handler)
-            return self._fail(instance, exc)
+            result = ProcessResult(
+                status=ProcessStatus.FAILED, output={"error": str(exc)}, retryable=False
+            )
 
-        return self._apply(instance, active_continuation, result)
+        if result.status is ProcessStatus.FAILED:
+            return self._handle_failure(instance, key, result)
+        return self._commit(instance, key, original_event_id, active_continuation, result)
 
-    def _apply(
+    def _commit(
         self,
         instance: ProcessInstance,
+        key: str,
+        original_event_id,
         active_continuation,
         result: ProcessResult,
     ) -> ProcessResult:
-        # A resumed activation consumes its continuation regardless of outcome.
-        if active_continuation is not None:
-            self.continuation_store.delete(active_continuation.id)
+        """Apply a successful (COMPLETED/SUSPENDED) result in one transaction."""
+        try:
+            with self.db.atomic():
+                for change in result.state_changes:
+                    self.state_store.set(
+                        change.entity,
+                        change.attribute,
+                        change.value,
+                        source_event=change.source_event,
+                    )
 
-        if result.status is ProcessStatus.SUSPENDED:
-            if result.continuation is None:
-                return self._fail(instance, "suspended without a continuation")
-            self.continuation_store.save(result.continuation)
-            instance.status = ProcessStatus.SUSPENDED
-        elif result.status is ProcessStatus.COMPLETED:
-            instance.status = ProcessStatus.COMPLETED
-            if result.output is not None:
-                instance.local_state["output"] = result.output
-        elif result.status is ProcessStatus.FAILED:
-            instance.status = ProcessStatus.FAILED
-            if result.output is not None:
-                instance.local_state.update(result.output)
-        else:  # pragma: no cover - defensive
-            return self._fail(instance, f"invalid result status {result.status}")
+                if active_continuation is not None:
+                    self.continuation_store.delete(active_continuation.id)
+                for cont_id in result.continuations_to_delete:
+                    self.continuation_store.delete(cont_id)
 
-        instance.pending_event_id = None
-        self.process_store.save_instance(instance)
+                for timer_spec in result.timers_to_create:
+                    self.timer_store.save(self._timer_record(timer_spec))
+
+                for cont in result.continuations_to_create:
+                    self.continuation_store.save(cont)
+
+                for event in result.emitted_events:
+                    self.event_store.append(event)
+
+                self._apply_spawns_and_join(instance, result)
+
+                if result.status is ProcessStatus.SUSPENDED:
+                    instance.status = ProcessStatus.SUSPENDED
+                else:
+                    instance.status = ProcessStatus.COMPLETED
+                    if result.output is not None:
+                        instance.local_state["output"] = result.output
+                instance.pending_event_id = None
+                instance.updated_at = self.clock.now()
+                self.process_store.save_instance(instance)
+
+                self.activation_store.record(key, instance.id, original_event_id)
+        except Exception:  # noqa: BLE001 - rollback already happened
+            logger.exception("failed to commit activation %s; rolled back", key)
+            return self._fail(instance, "transaction failed")
+
         logger.info("instance %s -> %s", instance.id, instance.status.value)
         return result
 
-    def _fail(self, instance: ProcessInstance, error: object) -> ProcessResult:
-        instance.status = ProcessStatus.FAILED
-        instance.local_state["error"] = str(error)
-        instance.pending_event_id = None
-        self.process_store.save_instance(instance)
+    def _apply_spawns_and_join(
+        self, instance: ProcessInstance, result: ProcessResult
+    ) -> None:
+        """Create spawned children (and a join record if the parent is joining)."""
+        child_ids = []
+        for spec in result.spawned_processes:
+            child = ProcessInstance(
+                definition_name=spec.definition_name,
+                definition_version=spec.definition_version,
+                status=ProcessStatus.RUNNABLE,
+                input=dict(spec.input),
+                parent_process_id=instance.id,
+                priority=spec.priority,
+            )
+            child_def = self.process_store.get_definition(
+                spec.definition_name, spec.definition_version
+            )
+            if child_def is not None:
+                child.max_retries = child_def.max_retries
+            self.process_store.save_instance(child)
+            child_ids.append(child.id)
+
+        if result.join is not None:
+            join = JoinRecord(
+                parent_instance_id=instance.id,
+                child_ids=child_ids,
+                mode=result.join.mode,
+                resume_point=result.join.resume_point,
+                saved_process_state=result.join.saved_process_state,
+            )
+            self.join_store.save(join)
+            self.continuation_store.save(
+                Continuation(
+                    process_instance_id=instance.id,
+                    resume_point=result.join.resume_point,
+                    waiting_for={
+                        "event_type": "join_satisfied",
+                        "join_id": str(join.id),
+                    },
+                    saved_process_state=join.saved_process_state,
+                )
+            )
+
+    def _timer_record(self, spec: TimerSpec) -> TimerRecord:
+        if spec.fire_at is not None:
+            fire_at = spec.fire_at
+        else:
+            fire_at = self.clock.now() + timedelta(seconds=spec.delay or 0)
+        return TimerRecord(
+            fire_at=fire_at,
+            event_type="timer_fired",
+            payload=spec.payload,
+            id=spec.id,
+        )
+
+    def _handle_failure(
+        self, instance: ProcessInstance, key: str, result: ProcessResult
+    ) -> ProcessResult:
+        """Route a FAILED result to RETRY_WAIT or terminal FAILED."""
+        error = (result.output or {}).get("error", "unknown error")
+        if result.retryable and instance.retry_count < instance.max_retries:
+            instance.retry_count += 1
+            delay = (
+                result.retry_delay
+                if result.retry_delay is not None
+                else float(2 ** (instance.retry_count - 1))
+            )
+            with self.db.atomic():
+                instance.status = ProcessStatus.RETRY_WAIT
+                instance.next_retry_at = self.clock.now() + timedelta(seconds=delay)
+                instance.last_error = error
+                instance.updated_at = self.clock.now()
+                self.process_store.save_instance(instance)
+            logger.info(
+                "instance %s -> RETRY_WAIT (attempt %d/%d, +%.0fs)",
+                instance.id,
+                instance.retry_count,
+                instance.max_retries,
+                delay,
+            )
+            return result
+        return self._fail(instance, error, key=key)
+
+    def _fail(
+        self, instance: ProcessInstance, error: object, *, key: str | None = None
+    ) -> ProcessResult:
+        with self.db.atomic():
+            instance.status = ProcessStatus.FAILED
+            instance.last_error = str(error)
+            instance.local_state["error"] = str(error)
+            instance.pending_event_id = None
+            instance.updated_at = self.clock.now()
+            self.process_store.save_instance(instance)
+            if key is not None:
+                self.activation_store.record(key, instance.id, None)
         logger.error("instance %s failed: %s", instance.id, error)
         return ProcessResult(status=ProcessStatus.FAILED, output={"error": str(error)})

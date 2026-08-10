@@ -3,18 +3,21 @@
 A **Process** is *anything* the system does.  Skill, Agent, Workflow, Harness,
 Deep Research, a resident monitor — none of these are separate base types.  They
 are all Processes; those words describe the *role* a process plays in a given
-context, not a different data model.
+context, not a different data model (a role may be recorded in
+``ProcessDefinition.metadata``, never as a new core type).
 
 Two things are kept apart:
 
 * :class:`ProcessDefinition` — *what* a process does (static, stateless).
 * :class:`ProcessInstance` — a *running* process (has state, status, identity).
 
-Many instances can be created from one definition.
-
 Every process handler shares the same execution interface::
 
     async def handler(ctx: ProcessContext) -> ProcessResult: ...
+
+Handlers do not touch storage.  They stage state writes through ``ctx.state``
+and return every effect in a :class:`ProcessResult`; the runtime commits the
+whole thing in one transaction (Phase 2A: atomic process transition).
 """
 
 from __future__ import annotations
@@ -25,14 +28,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .continuation import Continuation
 from .context import Context
 from .event import Event, utcnow
+from .state import StateChange, StateView
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..storage.state_store import StateStore
+    pass
 
 
 class ProcessStatus(str, Enum):
@@ -41,8 +45,13 @@ class ProcessStatus(str, Enum):
     RUNNABLE = "RUNNABLE"
     RUNNING = "RUNNING"
     SUSPENDED = "SUSPENDED"
+    RETRY_WAIT = "RETRY_WAIT"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class RetryableError(Exception):
+    """Raise from a handler to signal a *transient* failure worth retrying."""
 
 
 @dataclass(frozen=True)
@@ -53,15 +62,18 @@ class ProcessDefinition:
         name: Logical name (e.g. ``"resistance_analysis"``).
         version: Definition version string.
         handler: Name of the registered handler callable to run.
-        trigger_event_types: Event types that start a fresh instance of this
-            definition.  Kept simple in Phase 1 (a plain tuple of type names);
-            the field is the extension point for richer triggering later.
+        trigger_event_types: Event types that start a fresh instance.
+        max_retries: How many times a retryable failure may be retried.
+        metadata: Free-form tags (e.g. ``{"role": "skill"}``).  Never a new
+            core type — just annotations on a Process.
     """
 
     name: str
     version: str
     handler: str
     trigger_event_types: tuple[str, ...] = ()
+    max_retries: int = 0
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -80,6 +92,10 @@ class ProcessInstance:
         pending_event_id: Runtime coordination field — the event that will
             (re)activate this instance on its next run.  Persisted so activation
             survives a runtime restart.
+        retry_count: How many retries have been attempted.
+        max_retries: Retry budget copied from the definition.
+        next_retry_at: When a RETRY_WAIT instance becomes RUNNABLE again.
+        last_error: Message from the most recent failure.
         created_at: When the instance was created (UTC).
         updated_at: When the instance was last updated (UTC).
     """
@@ -93,54 +109,97 @@ class ProcessInstance:
     parent_process_id: uuid.UUID | None = None
     priority: int = 0
     pending_event_id: uuid.UUID | None = None
+    retry_count: int = 0
+    max_retries: int = 0
+    next_retry_at: datetime | None = None
+    last_error: str | None = None
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
 
 
 @dataclass
 class SpawnSpec:
-    """A request to spawn a child process.
-
-    Phase 1 keeps spawning minimal but the structure exists so it can grow.
-    """
+    """A request to spawn a child process."""
 
     definition_name: str
     definition_version: str
     input: dict = field(default_factory=dict)
     priority: int = 0
+    correlation_id: uuid.UUID | None = None
+
+
+@dataclass
+class TimerSpec:
+    """A request to arm a timer that will emit a ``timer_fired`` event."""
+
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    delay: float | None = None
+    fire_at: datetime | None = None
+    payload: dict = field(default_factory=dict)
+
+
+@dataclass
+class JoinRequest:
+    """A request to suspend the parent until spawned children finish.
+
+    Attributes:
+        mode: ``"all"`` waits for every child; ``"any"`` for the first.
+        resume_point: Where the parent resumes once the join is satisfied.
+        saved_process_state: State handed back to the parent on resume.
+    """
+
+    mode: str
+    resume_point: str
+    saved_process_state: dict = field(default_factory=dict)
 
 
 @dataclass
 class ProcessResult:
-    """The outcome of running a process handler.
+    """The outcome of running a process handler — a batch of effects.
+
+    The runtime applies all of these in a single transaction.
 
     Attributes:
         status: The status the instance should transition to.
         output: Optional structured output.
+        state_changes: World-state writes to apply.
         emitted_events: New events the process produced.
+        continuations_to_create: Continuations to persist (e.g. on suspend).
+        continuations_to_delete: Continuation ids to remove.
         spawned_processes: Child processes to create.
-        continuation: Set when the process suspended; describes how to resume.
+        timers_to_create: Timers to arm.
+        join: Optional join request (suspend until children finish).
+        retryable: If FAILED, whether the failure may be retried.
+        retry_delay: Optional explicit backoff (seconds) for a retry.
     """
 
     status: ProcessStatus
     output: dict | None = None
+    state_changes: list[StateChange] = field(default_factory=list)
     emitted_events: list[Event] = field(default_factory=list)
+    continuations_to_create: list[Continuation] = field(default_factory=list)
+    continuations_to_delete: list[uuid.UUID] = field(default_factory=list)
     spawned_processes: list[SpawnSpec] = field(default_factory=list)
-    continuation: Continuation | None = None
+    timers_to_create: list[TimerSpec] = field(default_factory=list)
+    join: JoinRequest | None = None
+    retryable: bool = False
+    retry_delay: float | None = None
 
 
 @dataclass
 class ProcessContext:
     """The handle passed to a process handler — its whole view of the world.
 
-    A handler reads/writes world state through :attr:`state`, inspects the
+    A handler reads/writes world state through :attr:`state` (a
+    :class:`~nexus_seed.core.state.StateView`; writes are staged), inspects the
     triggering/resuming :attr:`event`, and returns a :class:`ProcessResult`
-    built with the :meth:`complete`, :meth:`suspend` or :meth:`fail` helpers.
+    built with :meth:`complete`, :meth:`suspend`, :meth:`suspend_on_timer`,
+    :meth:`spawn_and_join`, :meth:`retry` or :meth:`fail`.
     """
 
     instance: ProcessInstance
     event: Event | None
-    state: "StateStore"
+    state: StateView
     context: Context
     resume_point: str | None = None
     saved_process_state: dict = field(default_factory=dict)
@@ -151,9 +210,10 @@ class ProcessContext:
     @property
     def correlation_id(self) -> uuid.UUID | None:
         """Correlation id to propagate onto events this process emits."""
-        if self.event is None:
-            return None
-        return self.event.correlation_id or self.event.id
+        if self.event is not None:
+            return self.event.correlation_id or self.event.id
+        cid = self.instance.input.get("correlation_id")
+        return uuid.UUID(cid) if isinstance(cid, str) else None
 
     def new_event(
         self,
@@ -186,6 +246,7 @@ class ProcessContext:
         return ProcessResult(
             status=ProcessStatus.COMPLETED,
             output=output,
+            state_changes=list(self.state.changes),
             emitted_events=list(emitted_events or []),
             spawned_processes=list(spawned_processes or []),
         )
@@ -209,8 +270,64 @@ class ProcessContext:
         )
         return ProcessResult(
             status=ProcessStatus.SUSPENDED,
+            state_changes=list(self.state.changes),
             emitted_events=list(emitted_events or []),
-            continuation=continuation,
+            continuations_to_create=[continuation],
+        )
+
+    def suspend_on_timer(
+        self,
+        *,
+        resume_point: str,
+        delay: float | None = None,
+        fire_at: datetime | None = None,
+        saved_process_state: dict | None = None,
+    ) -> ProcessResult:
+        """Suspend until a timer fires (``delay`` seconds from now, or ``fire_at``)."""
+        timer = TimerSpec(delay=delay, fire_at=fire_at)
+        timer.payload = {"timer_id": str(timer.id)}
+        continuation = Continuation(
+            process_instance_id=self.instance.id,
+            resume_point=resume_point,
+            waiting_for={"event_type": "timer_fired", "timer_id": str(timer.id)},
+            saved_process_state=dict(saved_process_state or {}),
+        )
+        return ProcessResult(
+            status=ProcessStatus.SUSPENDED,
+            state_changes=list(self.state.changes),
+            continuations_to_create=[continuation],
+            timers_to_create=[timer],
+        )
+
+    def spawn_and_join(
+        self,
+        specs: list[SpawnSpec],
+        *,
+        mode: str,
+        resume_point: str,
+        saved_process_state: dict | None = None,
+    ) -> ProcessResult:
+        """Spawn ``specs`` as children and suspend until ``mode`` are done."""
+        if mode not in ("all", "any"):
+            raise ValueError(f"join mode must be 'all' or 'any', got {mode!r}")
+        return ProcessResult(
+            status=ProcessStatus.SUSPENDED,
+            state_changes=list(self.state.changes),
+            spawned_processes=list(specs),
+            join=JoinRequest(
+                mode=mode,
+                resume_point=resume_point,
+                saved_process_state=dict(saved_process_state or {}),
+            ),
+        )
+
+    def retry(self, error: object, *, delay: float | None = None) -> ProcessResult:
+        """Return a *retryable* failure result (no side effects are applied)."""
+        return ProcessResult(
+            status=ProcessStatus.FAILED,
+            output={"error": str(error)},
+            retryable=True,
+            retry_delay=delay,
         )
 
     def fail(
@@ -219,7 +336,7 @@ class ProcessContext:
         *,
         emitted_events: list[Event] | None = None,
     ) -> ProcessResult:
-        """Return a result marking the process FAILED."""
+        """Return a non-retryable FAILED result."""
         return ProcessResult(
             status=ProcessStatus.FAILED,
             output={"error": str(error)},

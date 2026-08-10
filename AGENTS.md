@@ -51,13 +51,22 @@ No abstract base-class towers, factory-of-factories, DI frameworks, event-bus
 frameworks, microservices, or premature optimization. Phase 1 is a single
 Python application.
 
-## Phase 2 candidates (do not build yet)
+## Done in Phase 2A (Durable Runtime)
 
-- Startup recovery sweep for instances left `RUNNABLE`/`RUNNING` by a crash
-  mid-drain (Phase 1 relies on synchronous drain right after routing).
-- Timer / scheduled events (`waiting_for` on wall-clock time).
+- Atomic process transitions (`Database.atomic`, executor commits one batch).
+- Idempotency (idempotent `submit_event` + `process_activations` ledger).
+- Crash recovery sweep (`Runtime.recover`, RUNNING → RUNNABLE on startup).
+- Retry model (`RETRY_WAIT`, `retry_count`/`max_retries`/`next_retry_at`).
+- Timer events (`TimerStore`, `Clock`, `ctx.suspend_on_timer`, `runtime.tick`).
+- Spawn / join (`ctx.spawn_and_join`, `JoinStore`, `JoinCoordinator`).
+
+## Later-phase candidates (do not build yet)
+
+- Phase 2B — Semantic World Model: `Observation`, `StateDelta`, state history +
+  provenance, `interpret_event` / `apply_state_delta` processes.
+- Phase 2C — Work Intelligence: `WorkRequirement`, impact analysis, work
+  matching / missing-work detection, deterministic work spawn.
 - Richer `waiting_for` matching (ranges, predicates) and indexed resolution.
 - Context persistence and smarter `build_context` selection.
-- Real spawn semantics (parent/child coordination, join).
 - Pluggable state backend behind the `(entity, attribute, value)` shape (graph).
-- The first real intelligence boundary: an LLM-backed process handler.
+- The first real intelligence boundary: an LLM-backed process handler (Phase 3).

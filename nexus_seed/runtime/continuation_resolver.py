@@ -16,9 +16,12 @@ logger = logging.getLogger("nexus_seed.runtime.continuation_resolver")
 class ContinuationResolver:
     """Finds suspended processes whose ``waiting_for`` an event satisfies.
 
-    Matching is a simple dict comparison (Phase 1): every key in ``waiting_for``
-    must match, where the special key ``event_type`` compares against the
-    event's ``type`` and any other key compares against the event's payload.
+    Two ``waiting_for`` shapes are supported:
+
+    * a flat dict — every key must match, where ``event_type`` compares against
+      the event's type and any other key compares against the event payload;
+    * ``{"any": [cond, ...]}`` — matches if *any* flat condition matches
+      (the basis for "event OR timer" waits).
     """
 
     def __init__(
@@ -46,10 +49,16 @@ class ContinuationResolver:
             matches.append((instance, continuation))
         return matches
 
+    @classmethod
+    def matches(cls, waiting_for: dict, event: Event) -> bool:
+        """Return ``True`` if ``event`` satisfies ``waiting_for``."""
+        if "any" in waiting_for:
+            return any(cls._matches_flat(cond, event) for cond in waiting_for["any"])
+        return cls._matches_flat(waiting_for, event)
+
     @staticmethod
-    def matches(waiting_for: dict, event: Event) -> bool:
-        """Return ``True`` if ``event`` satisfies every ``waiting_for`` condition."""
-        for key, expected in waiting_for.items():
+    def _matches_flat(condition: dict, event: Event) -> bool:
+        for key, expected in condition.items():
             if key == "event_type":
                 if event.type != expected:
                     return False

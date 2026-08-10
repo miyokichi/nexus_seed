@@ -13,6 +13,10 @@ def _uuid(value: str | None) -> uuid.UUID | None:
     return uuid.UUID(value) if value else None
 
 
+def _dt(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value else None
+
+
 class ProcessStore:
     """Reads and writes :class:`ProcessDefinition` and :class:`ProcessInstance`."""
 
@@ -25,17 +29,22 @@ class ProcessStore:
         """Insert or replace a process definition (idempotent by name+version)."""
         self.db.execute(
             """
-            INSERT INTO process_definitions (name, version, handler, trigger_event_types)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO process_definitions
+                (name, version, handler, trigger_event_types, max_retries, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(name, version) DO UPDATE SET
                 handler = excluded.handler,
-                trigger_event_types = excluded.trigger_event_types
+                trigger_event_types = excluded.trigger_event_types,
+                max_retries = excluded.max_retries,
+                metadata = excluded.metadata
             """,
             (
                 definition.name,
                 definition.version,
                 definition.handler,
                 dumps(list(definition.trigger_event_types)),
+                definition.max_retries,
+                dumps(definition.metadata),
             ),
         )
 
@@ -65,8 +74,9 @@ class ProcessStore:
             """
             INSERT INTO process_instances
                 (id, definition_name, definition_version, status, input, local_state,
-                 parent_process_id, priority, pending_event_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 parent_process_id, priority, pending_event_id, retry_count, max_retries,
+                 next_retry_at, last_error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 input = excluded.input,
@@ -74,6 +84,10 @@ class ProcessStore:
                 parent_process_id = excluded.parent_process_id,
                 priority = excluded.priority,
                 pending_event_id = excluded.pending_event_id,
+                retry_count = excluded.retry_count,
+                max_retries = excluded.max_retries,
+                next_retry_at = excluded.next_retry_at,
+                last_error = excluded.last_error,
                 updated_at = excluded.updated_at
             """,
             (
@@ -86,6 +100,10 @@ class ProcessStore:
                 str(instance.parent_process_id) if instance.parent_process_id else None,
                 instance.priority,
                 str(instance.pending_event_id) if instance.pending_event_id else None,
+                instance.retry_count,
+                instance.max_retries,
+                instance.next_retry_at.isoformat() if instance.next_retry_at else None,
+                instance.last_error,
                 instance.created_at.isoformat(),
                 instance.updated_at.isoformat(),
             ),
@@ -124,6 +142,18 @@ class ProcessStore:
         )
         return self._row_to_instance(row) if row else None
 
+    def due_retries(self, now_iso: str) -> list[ProcessInstance]:
+        """Return RETRY_WAIT instances whose ``next_retry_at`` has passed."""
+        rows = self.db.query(
+            """
+            SELECT * FROM process_instances
+            WHERE status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+            ORDER BY next_retry_at ASC
+            """,
+            (ProcessStatus.RETRY_WAIT.value, now_iso),
+        )
+        return [self._row_to_instance(r) for r in rows]
+
     # --- row mapping -------------------------------------------------------
 
     @staticmethod
@@ -133,6 +163,8 @@ class ProcessStore:
             version=row["version"],
             handler=row["handler"],
             trigger_event_types=tuple(loads(row["trigger_event_types"]) or ()),
+            max_retries=row["max_retries"],
+            metadata=loads(row["metadata"]) or {},
         )
 
     @staticmethod
@@ -147,6 +179,10 @@ class ProcessStore:
             parent_process_id=_uuid(row["parent_process_id"]),
             priority=row["priority"],
             pending_event_id=_uuid(row["pending_event_id"]),
+            retry_count=row["retry_count"],
+            max_retries=row["max_retries"],
+            next_retry_at=_dt(row["next_retry_at"]),
+            last_error=row["last_error"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
