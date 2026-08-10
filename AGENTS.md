@@ -60,13 +60,27 @@ Python application.
 - Timer events (`TimerStore`, `Clock`, `ctx.suspend_on_timer`, `runtime.tick`).
 - Spawn / join (`ctx.spawn_and_join`, `JoinStore`, `JoinCoordinator`).
 
+## Done in Phase 2B (Semantic World Model)
+
+- `Observation` / `StateDelta` as domain data under `world/` (NOT core types).
+- Two-part world state: `world_state_history` (source of truth, append-only) +
+  `world_state_current` (projection, `rebuild_current_state()`).
+- Provenance: `get_state_provenance` walks current → history → delta →
+  observation → raw event, DB-only.
+- `interpret_event` / `apply_state_delta` processes; `state_changed` event.
+- Conflict checking as a domain `StateConflict` (not a runtime error).
+- State application stays inside the Phase 2A atomic transaction.
+- `ctx.observe()` / `ctx.propose_delta()`; `ProcessResult.observations/state_deltas`.
+- Invariant: Observation != StateDelta; schema is not 1:1-locked (one event may
+  yield many observations; one observation many deltas).
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 2B — Semantic World Model: `Observation`, `StateDelta`, state history +
-  provenance, `interpret_event` / `apply_state_delta` processes.
-- Phase 2C — Work Intelligence: `WorkRequirement`, impact analysis, work
-  matching / missing-work detection, deterministic work spawn.
+- Phase 2C — Work Intelligence: `WorkRequirement`, impact analysis (triggered by
+  `state_changed`), work matching / missing-work detection, deterministic work
+  spawn. Do NOT build until instructed.
 - Richer `waiting_for` matching (ranges, predicates) and indexed resolution.
-- Context persistence and smarter `build_context` selection.
+- Context persistence and smarter `build_context` selection (keep world-state
+  APIs decoupled from runtime internals — Phase 2B already does).
 - Pluggable state backend behind the `(entity, attribute, value)` shape (graph).
 - The first real intelligence boundary: an LLM-backed process handler (Phase 3).

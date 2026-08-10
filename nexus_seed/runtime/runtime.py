@@ -36,9 +36,13 @@ from ..storage.continuation_store import ContinuationStore
 from ..storage.database import Database
 from ..storage.event_store import EventStore
 from ..storage.join_store import JoinStore
+from ..storage.observation_store import ObservationStore
 from ..storage.process_store import ProcessStore
+from ..storage.state_delta_store import StateDeltaStore
 from ..storage.state_store import StateStore
 from ..storage.timer_store import TimerStore
+from ..core.state import StateEntry, StateHistoryEntry
+from ..world.provenance import Provenance, get_state_provenance
 from .clock import Clock
 from .continuation_resolver import ContinuationResolver
 from .executor import Executor
@@ -75,6 +79,8 @@ class Runtime:
         self.timer_store = TimerStore(self.db)
         self.join_store = JoinStore(self.db)
         self.activation_store = ActivationStore(self.db)
+        self.observation_store = ObservationStore(self.db)
+        self.state_delta_store = StateDeltaStore(self.db)
 
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)
@@ -91,6 +97,8 @@ class Runtime:
             self.timer_store,
             self.join_store,
             self.activation_store,
+            self.observation_store,
+            self.state_delta_store,
             self.clock,
         )
 
@@ -105,6 +113,39 @@ class Runtime:
         self.process_store.upsert_definition(definition)
         self.registry.register(definition.handler, handler)
         logger.info("registered process %s v%s", definition.name, definition.version)
+
+    # --- world-state queries ----------------------------------------------
+
+    def get_current_state(self, entity: str, attribute: str) -> StateEntry | None:
+        """Return the current fact for ``entity.attribute`` (with provenance ids)."""
+        return self.state_store.get_current(entity, attribute)
+
+    def get_state_history(
+        self, entity: str, attribute: str
+    ) -> list[StateHistoryEntry]:
+        """Return every version of ``entity.attribute``, oldest first."""
+        return self.state_store.get_history(entity, attribute)
+
+    def get_state_at_version(
+        self, entity: str, attribute: str, version: int
+    ) -> StateHistoryEntry | None:
+        """Return a specific historical version of ``entity.attribute``."""
+        return self.state_store.get_state_at_version(entity, attribute, version)
+
+    def get_state_provenance(self, entity: str, attribute: str) -> Provenance | None:
+        """Walk ``entity.attribute`` back to the raw event that produced it."""
+        return get_state_provenance(
+            entity,
+            attribute,
+            state_store=self.state_store,
+            state_delta_store=self.state_delta_store,
+            observation_store=self.observation_store,
+            event_store=self.event_store,
+        )
+
+    def rebuild_current_state(self) -> int:
+        """Rebuild the ``current`` projection from history; return facts rebuilt."""
+        return self.state_store.rebuild_current_state()
 
     # --- event intake ------------------------------------------------------
 

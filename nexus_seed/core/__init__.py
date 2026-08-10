@@ -16,7 +16,7 @@ from .process import (
     SpawnSpec,
     TimerSpec,
 )
-from .state import StateChange, StateEntry, StateView
+from .state import StateChange, StateEntry, StateHistoryEntry, StateView
 
 __all__ = [
     "Continuation",
@@ -37,5 +37,6 @@ __all__ = [
     "TimerSpec",
     "StateChange",
     "StateEntry",
+    "StateHistoryEntry",
     "StateView",
 ]

@@ -34,7 +34,9 @@ from ..storage.continuation_store import ContinuationStore
 from ..storage.database import Database
 from ..storage.event_store import EventStore
 from ..storage.join_store import JoinRecord, JoinStore
+from ..storage.observation_store import ObservationStore
 from ..storage.process_store import ProcessStore
+from ..storage.state_delta_store import StateDeltaStore
 from ..storage.state_store import StateStore
 from ..storage.timer_store import TimerRecord, TimerStore
 from .clock import Clock
@@ -56,6 +58,8 @@ class Executor:
         timer_store: TimerStore,
         join_store: JoinStore,
         activation_store: ActivationStore,
+        observation_store: ObservationStore,
+        state_delta_store: StateDeltaStore,
         clock: Clock,
     ) -> None:
         self.db = db
@@ -67,6 +71,8 @@ class Executor:
         self.timer_store = timer_store
         self.join_store = join_store
         self.activation_store = activation_store
+        self.observation_store = observation_store
+        self.state_delta_store = state_delta_store
         self.clock = clock
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
@@ -112,7 +118,7 @@ class Executor:
         ctx = ProcessContext(
             instance=instance,
             event=event,
-            state=StateView(self.state_store),
+            state=StateView(self.state_store, created_by_process_id=instance.id),
             context=context,
             resume_point=resume_point,
             saved_process_state=saved_state,
@@ -147,12 +153,21 @@ class Executor:
         """Apply a successful (COMPLETED/SUSPENDED) result in one transaction."""
         try:
             with self.db.atomic():
+                for observation in result.observations:
+                    self.observation_store.save(observation)
+                for delta in result.state_deltas:
+                    self.state_delta_store.save(delta)
+
                 for change in result.state_changes:
                     self.state_store.set(
                         change.entity,
                         change.attribute,
                         change.value,
                         source_event=change.source_event,
+                        observation_id=change.observation_id,
+                        state_delta_id=change.state_delta_id,
+                        created_by_process_id=change.created_by_process_id,
+                        confidence=change.confidence,
                     )
 
                 if active_continuation is not None:

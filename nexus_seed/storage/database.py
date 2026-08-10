@@ -71,15 +71,65 @@ CREATE TABLE IF NOT EXISTS continuations (
 );
 CREATE INDEX IF NOT EXISTS idx_cont_instance ON continuations(process_instance_id);
 
-CREATE TABLE IF NOT EXISTS world_state (
-    entity       TEXT NOT NULL,
-    attribute    TEXT NOT NULL,
-    value        TEXT NOT NULL,
-    version      INTEGER NOT NULL DEFAULT 1,
-    source_event TEXT,
-    updated_at   TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS world_state_history (
+    id                    TEXT PRIMARY KEY,
+    entity                TEXT NOT NULL,
+    attribute             TEXT NOT NULL,
+    value                 TEXT NOT NULL,
+    version               INTEGER NOT NULL,
+    valid_from            TEXT NOT NULL,
+    valid_to              TEXT,
+    source_event          TEXT,
+    observation_id        TEXT,
+    state_delta_id        TEXT,
+    created_by_process_id TEXT,
+    confidence            REAL NOT NULL DEFAULT 1.0,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_key ON world_state_history(entity, attribute, version);
+
+CREATE TABLE IF NOT EXISTS world_state_current (
+    entity                TEXT NOT NULL,
+    attribute             TEXT NOT NULL,
+    value                 TEXT NOT NULL,
+    version               INTEGER NOT NULL,
+    history_id            TEXT,
+    source_event          TEXT,
+    observation_id        TEXT,
+    state_delta_id        TEXT,
+    created_by_process_id TEXT,
+    confidence            REAL NOT NULL DEFAULT 1.0,
+    updated_at            TEXT NOT NULL,
     PRIMARY KEY (entity, attribute)
 );
+
+CREATE TABLE IF NOT EXISTS observations (
+    id                    TEXT PRIMARY KEY,
+    source_event_id       TEXT,
+    created_by_process_id TEXT,
+    subject               TEXT NOT NULL,
+    predicate             TEXT NOT NULL,
+    extracted             TEXT NOT NULL,
+    confidence            REAL NOT NULL DEFAULT 1.0,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_obs_event ON observations(source_event_id);
+
+CREATE TABLE IF NOT EXISTS state_deltas (
+    id                    TEXT PRIMARY KEY,
+    entity                TEXT NOT NULL,
+    attribute             TEXT NOT NULL,
+    old_value             TEXT,
+    new_value             TEXT,
+    source_event_id       TEXT,
+    observation_id        TEXT,
+    created_by_process_id TEXT,
+    confidence            REAL NOT NULL DEFAULT 1.0,
+    reason                TEXT,
+    valid_from            TEXT NOT NULL,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_delta_key ON state_deltas(entity, attribute);
 
 CREATE TABLE IF NOT EXISTS timers (
     id            TEXT PRIMARY KEY,

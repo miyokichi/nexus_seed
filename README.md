@@ -106,20 +106,70 @@ The runtime is built to run continuously without corrupting state:
 `runtime.tick()` drives time-based work (timers, retry backoff); `submit_event`
 drives event-based work. Both end by draining all `RUNNABLE` processes.
 
+## Semantic world model (Phase 2B)
+
+A meaning layer sits between raw events and world state, keeping four things
+distinct:
+
+| | meaning |
+| --- | --- |
+| **Event** | what happened |
+| **Observation** | what a process *read* from the event |
+| **StateDelta** | what it concluded *changed* about the world |
+| **World State** | how the world is currently *believed* to be |
+
+`Observation` and `StateDelta` are **domain data** under `nexus_seed/world/`,
+not new core primitives. The pipeline is two ordinary processes:
+
+```mermaid
+flowchart LR
+    RAW["process_parameter_changed"] --> INT["interpret_event"]
+    INT --> OBS["Observation (persisted)"]
+    INT --> DEL["StateDelta (persisted)"]
+    INT --> SDC["state_delta_created"]
+    SDC --> APP["apply_state_delta"]
+    APP --> HIST["world_state_history (append)"]
+    APP --> CUR["world_state_current (projection)"]
+    APP --> SC["state_changed"]
+```
+
+- **History is the source of truth.** `world_state_history` is append-only —
+  every version of every `entity.attribute`, with `valid_from`/`valid_to`.
+  `world_state_current` is a projection and is fully rebuildable with
+  `runtime.rebuild_current_state()`.
+- **Provenance.** Every fact records why it is believed.
+  `runtime.get_state_provenance(entity, attribute)` walks
+  Current → History → StateDelta → Observation → raw Event, purely from the DB.
+- **Conflict-checked application.** `apply_state_delta` validates a delta's
+  `old_value` against current state; a mismatch is a domain `StateConflict`
+  (the process fails, nothing is applied — no partial update).
+- **Atomicity preserved.** Applying a delta writes the history row, the
+  projection, the delta, and emits `state_changed` inside the one Phase 2A
+  transaction.
+
+Read APIs: `get_current_state`, `get_state_history`, `get_state_at_version`,
+`get_state_provenance`, `rebuild_current_state`.
+`state_changed` events are emitted for Phase 2C (Impact Analysis) to consume
+later — Phase 2B does not act on them.
+
 ## Repository layout
 
 ```
 nexus_seed/
 ├── core/            # data models: event, process, state, context, continuation
+├── world/           # semantic domain data: observation, state_delta, provenance
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
 │                    #   clock, join_coordinator
 ├── storage/         # sqlite: database + event/process/state/continuation/
-│                    #   timer/join/activation stores
-├── processes/       # concrete Processes (demo_resistance)
+│                    #   timer/join/activation/observation/state_delta stores
+├── processes/       # concrete Processes (demo_resistance, semantic)
 └── demo.py          # runnable acceptance scenario (with runtime restart)
 tests/               # phase 1: event_store, process_execution, suspend_resume
                      # phase 2a: atomic_transition, idempotency, crash_recovery,
                      #           retry, timer_resume, spawn_join
+                     # phase 2b: observation, state_delta, state_history,
+                     #           state_provenance, state_conflict,
+                     #           state_projection_rebuild, semantic_..._integration
 ```
 
 ## Install

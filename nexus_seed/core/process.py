@@ -34,6 +34,8 @@ from .continuation import Continuation
 from .context import Context
 from .event import Event, utcnow
 from .state import StateChange, StateView
+from ..world.observation import Observation
+from ..world.state_delta import StateDelta
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     pass
@@ -168,6 +170,8 @@ class ProcessResult:
         continuations_to_delete: Continuation ids to remove.
         spawned_processes: Child processes to create.
         timers_to_create: Timers to arm.
+        observations: Observations to persist.
+        state_deltas: State deltas to persist.
         join: Optional join request (suspend until children finish).
         retryable: If FAILED, whether the failure may be retried.
         retry_delay: Optional explicit backoff (seconds) for a retry.
@@ -181,6 +185,8 @@ class ProcessResult:
     continuations_to_delete: list[uuid.UUID] = field(default_factory=list)
     spawned_processes: list[SpawnSpec] = field(default_factory=list)
     timers_to_create: list[TimerSpec] = field(default_factory=list)
+    observations: list[Observation] = field(default_factory=list)
+    state_deltas: list[StateDelta] = field(default_factory=list)
     join: JoinRequest | None = None
     retryable: bool = False
     retry_delay: float | None = None
@@ -206,6 +212,8 @@ class ProcessContext:
     logger: logging.Logger = field(
         default_factory=lambda: logging.getLogger("nexus_seed.process")
     )
+    _observations: list[Observation] = field(default_factory=list)
+    _state_deltas: list[StateDelta] = field(default_factory=list)
 
     @property
     def correlation_id(self) -> uuid.UUID | None:
@@ -235,6 +243,52 @@ class ProcessContext:
             causation_id=self.event.id if self.event else None,
         )
 
+    def observe(
+        self,
+        *,
+        subject: str,
+        predicate: str,
+        extracted: dict,
+        confidence: float = 1.0,
+    ) -> Observation:
+        """Record a semantic reading of the current event (staged on the result)."""
+        observation = Observation(
+            subject=subject,
+            predicate=predicate,
+            extracted=dict(extracted),
+            source_event_id=self.event.id if self.event else None,
+            created_by_process_id=self.instance.id,
+            confidence=confidence,
+        )
+        self._observations.append(observation)
+        return observation
+
+    def propose_delta(
+        self,
+        *,
+        entity: str,
+        attribute: str,
+        old_value: object,
+        new_value: object,
+        observation: Observation | None = None,
+        confidence: float = 1.0,
+        reason: str | None = None,
+    ) -> StateDelta:
+        """Propose a world-state change (staged on the result; not applied here)."""
+        delta = StateDelta(
+            entity=entity,
+            attribute=attribute,
+            old_value=old_value,
+            new_value=new_value,
+            source_event_id=self.event.id if self.event else None,
+            observation_id=observation.id if observation else None,
+            created_by_process_id=self.instance.id,
+            confidence=confidence,
+            reason=reason,
+        )
+        self._state_deltas.append(delta)
+        return delta
+
     def complete(
         self,
         output: dict | None = None,
@@ -249,6 +303,8 @@ class ProcessContext:
             state_changes=list(self.state.changes),
             emitted_events=list(emitted_events or []),
             spawned_processes=list(spawned_processes or []),
+            observations=list(self._observations),
+            state_deltas=list(self._state_deltas),
         )
 
     def suspend(
@@ -273,6 +329,8 @@ class ProcessContext:
             state_changes=list(self.state.changes),
             emitted_events=list(emitted_events or []),
             continuations_to_create=[continuation],
+            observations=list(self._observations),
+            state_deltas=list(self._state_deltas),
         )
 
     def suspend_on_timer(
