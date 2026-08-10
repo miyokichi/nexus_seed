@@ -10,6 +10,7 @@ from .process_store import ProcessStore
 from .state_delta_store import StateDeltaStore
 from .state_store import StateStore
 from .timer_store import TimerRecord, TimerStore
+from .work_requirement_store import WorkRequirementStore
 
 __all__ = [
     "ActivationStore",
@@ -25,4 +26,5 @@ __all__ = [
     "StateStore",
     "TimerRecord",
     "TimerStore",
+    "WorkRequirementStore",
 ]

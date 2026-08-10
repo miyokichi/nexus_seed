@@ -149,8 +149,55 @@ flowchart LR
 
 Read APIs: `get_current_state`, `get_state_history`, `get_state_at_version`,
 `get_state_provenance`, `rebuild_current_state`.
-`state_changed` events are emitted for Phase 2C (Impact Analysis) to consume
-later — Phase 2B does not act on them.
+
+## Work intelligence (Phase 2C)
+
+NEXUS SEED now discovers the work a world change *requires* and spawns it
+automatically. `Impact`, `WorkRequirement`, `WorkMatch` are **domain data**
+under `nexus_seed/work/` — work is still executed as ordinary `ProcessInstance`s
+(no `Task`/`Agent`/`Skill` primitive). The boundary the pipeline preserves:
+
+| | meaning |
+| --- | --- |
+| **StateDelta** | the world changed |
+| **Impact** | that change has these consequences |
+| **WorkRequirement** | this work needs doing (a *Need*) |
+| **ProcessInstance** | this work is being done |
+
+```mermaid
+flowchart LR
+    SC["state_changed"] --> IA["impact_analysis"]
+    IA --> WR["WorkRequirement (EXPECTED)"]
+    IA --> WRQ["work_required"]
+    WRQ --> WM["work_matcher"]
+    WM --> WMD["work_matched (NEW / ALREADY_*)"]
+    WMD --> MWD["missing_work_detector"]
+    MWD --> WMS["work_missing"]
+    WMS --> WS["work_spawner"]
+    WS --> RC["resistance_check (spawned)"]
+    RC --> DONE["resistance_analysis_completed<br/>WorkRequirement SATISFIED"]
+```
+
+- **Separated stages.** Impact analysis never spawns; matching, missing-work
+  detection and spawning are distinct processes connected by events.
+- **`work_key` idempotency.** A requirement's identity includes the state
+  version (`resistance_check:D1_CD:v2`), so re-processing a change never
+  duplicates work, and a *new* version is genuinely new work.
+- **Matching.** `work_matcher` classifies a requirement `NEW` /
+  `ALREADY_RUNNING` / `ALREADY_COMPLETED` against existing processes by
+  `work_key` (a suspended/running process ⇒ no re-spawn).
+- **Deterministic rules only.** Impact rules and the work→process registry live
+  in `work/rules.py`; the Runtime holds no domain rules.
+- **Completion.** A work process marks its `WorkRequirement` `SATISFIED` as a
+  declarative, atomic side effect (`ctx.satisfy_work()`).
+- **Provenance / trace.** `runtime.get_work_trace(id)` walks ProcessInstance →
+  WorkRequirement → StateDelta → Observation → raw Event — *why is this process
+  running?*, answered from the DB.
+
+Read APIs: `get_work_requirement`, `get_work_requirements`, `get_work_trace`.
+`work_required` / `work_spawned` / `work_satisfied` events give the work loop a
+causal trail. Everything (requirement persist, spawn, status updates, links,
+emitted events) commits inside the Phase 2A atomic transaction.
 
 ## Repository layout
 
@@ -158,11 +205,14 @@ later — Phase 2B does not act on them.
 nexus_seed/
 ├── core/            # data models: event, process, state, context, continuation
 ├── world/           # semantic domain data: observation, state_delta, provenance
+├── work/            # work domain data: work_requirement, impact, work_match,
+│                    #   rules, trace
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
-│                    #   clock, join_coordinator
-├── storage/         # sqlite: database + event/process/state/continuation/
-│                    #   timer/join/activation/observation/state_delta stores
-├── processes/       # concrete Processes (demo_resistance, semantic)
+│                    #   clock, join_coordinator, services
+├── storage/         # sqlite: database + event/process/state/continuation/timer/
+│                    #   join/activation/observation/state_delta/work_requirement
+├── processes/       # concrete Processes (demo_resistance, semantic,
+│                    #   work_intelligence)
 └── demo.py          # runnable acceptance scenario (with runtime restart)
 tests/               # phase 1: event_store, process_execution, suspend_resume
                      # phase 2a: atomic_transition, idempotency, crash_recovery,
@@ -170,6 +220,9 @@ tests/               # phase 1: event_store, process_execution, suspend_resume
                      # phase 2b: observation, state_delta, state_history,
                      #           state_provenance, state_conflict,
                      #           state_projection_rebuild, semantic_..._integration
+                     # phase 2c: work_requirement, impact_analysis, work_matching,
+                     #           missing_work_detection, work_spawn,
+                     #           work_idempotency, work_trace, work_..._integration
 ```
 
 ## Install

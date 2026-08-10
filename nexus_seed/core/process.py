@@ -36,6 +36,7 @@ from .event import Event, utcnow
 from .state import StateChange, StateView
 from ..world.observation import Observation
 from ..world.state_delta import StateDelta
+from ..work.work_requirement import WorkRequirement, WorkStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     pass
@@ -94,6 +95,8 @@ class ProcessInstance:
         pending_event_id: Runtime coordination field — the event that will
             (re)activate this instance on its next run.  Persisted so activation
             survives a runtime restart.
+        work_key: Logical work identity this process fulfils (if any).
+        work_requirement_id: The WorkRequirement this process fulfils (if any).
         retry_count: How many retries have been attempted.
         max_retries: Retry budget copied from the definition.
         next_retry_at: When a RETRY_WAIT instance becomes RUNNABLE again.
@@ -111,6 +114,8 @@ class ProcessInstance:
     parent_process_id: uuid.UUID | None = None
     priority: int = 0
     pending_event_id: uuid.UUID | None = None
+    work_key: str | None = None
+    work_requirement_id: uuid.UUID | None = None
     retry_count: int = 0
     max_retries: int = 0
     next_retry_at: datetime | None = None
@@ -128,6 +133,8 @@ class SpawnSpec:
     input: dict = field(default_factory=dict)
     priority: int = 0
     correlation_id: uuid.UUID | None = None
+    work_key: str | None = None
+    work_requirement_id: uuid.UUID | None = None
 
 
 @dataclass
@@ -172,6 +179,8 @@ class ProcessResult:
         timers_to_create: Timers to arm.
         observations: Observations to persist.
         state_deltas: State deltas to persist.
+        work_requirements: Work requirements to persist (insert-or-ignore by key).
+        work_requirement_updates: ``(requirement_id, new_status)`` transitions.
         join: Optional join request (suspend until children finish).
         retryable: If FAILED, whether the failure may be retried.
         retry_delay: Optional explicit backoff (seconds) for a retry.
@@ -187,6 +196,8 @@ class ProcessResult:
     timers_to_create: list[TimerSpec] = field(default_factory=list)
     observations: list[Observation] = field(default_factory=list)
     state_deltas: list[StateDelta] = field(default_factory=list)
+    work_requirements: list[WorkRequirement] = field(default_factory=list)
+    work_requirement_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     join: JoinRequest | None = None
     retryable: bool = False
     retry_delay: float | None = None
@@ -209,11 +220,14 @@ class ProcessContext:
     context: Context
     resume_point: str | None = None
     saved_process_state: dict = field(default_factory=dict)
+    services: object | None = None
     logger: logging.Logger = field(
         default_factory=lambda: logging.getLogger("nexus_seed.process")
     )
     _observations: list[Observation] = field(default_factory=list)
     _state_deltas: list[StateDelta] = field(default_factory=list)
+    _work_requirements: list[WorkRequirement] = field(default_factory=list)
+    _work_requirement_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
 
     @property
     def correlation_id(self) -> uuid.UUID | None:
@@ -289,6 +303,41 @@ class ProcessContext:
         self._state_deltas.append(delta)
         return delta
 
+    def require_work(
+        self,
+        *,
+        work_type: str,
+        work_key: str,
+        related_entities: list[str] | None = None,
+        reason: str = "",
+        source_state_delta_id: uuid.UUID | None = None,
+        priority: int = 0,
+        metadata: dict | None = None,
+    ) -> WorkRequirement:
+        """Declare that a unit of work is required (staged on the result)."""
+        requirement = WorkRequirement(
+            work_type=work_type,
+            work_key=work_key,
+            related_entities=list(related_entities or []),
+            reason=reason,
+            source_event_id=self.event.id if self.event else None,
+            source_state_delta_id=source_state_delta_id,
+            priority=priority,
+            metadata=dict(metadata or {}),
+        )
+        self._work_requirements.append(requirement)
+        return requirement
+
+    def mark_work(self, requirement_id: uuid.UUID, status: WorkStatus | str) -> None:
+        """Stage a WorkRequirement status transition (applied atomically)."""
+        value = status.value if isinstance(status, WorkStatus) else status
+        self._work_requirement_updates.append((requirement_id, value))
+
+    def satisfy_work(self) -> None:
+        """Mark this process's WorkRequirement (if any) SATISFIED."""
+        if self.instance.work_requirement_id is not None:
+            self.mark_work(self.instance.work_requirement_id, WorkStatus.SATISFIED)
+
     def complete(
         self,
         output: dict | None = None,
@@ -305,6 +354,8 @@ class ProcessContext:
             spawned_processes=list(spawned_processes or []),
             observations=list(self._observations),
             state_deltas=list(self._state_deltas),
+            work_requirements=list(self._work_requirements),
+            work_requirement_updates=list(self._work_requirement_updates),
         )
 
     def suspend(
@@ -331,6 +382,8 @@ class ProcessContext:
             continuations_to_create=[continuation],
             observations=list(self._observations),
             state_deltas=list(self._state_deltas),
+            work_requirements=list(self._work_requirements),
+            work_requirement_updates=list(self._work_requirement_updates),
         )
 
     def suspend_on_timer(

@@ -41,9 +41,13 @@ from ..storage.process_store import ProcessStore
 from ..storage.state_delta_store import StateDeltaStore
 from ..storage.state_store import StateStore
 from ..storage.timer_store import TimerStore
+from ..storage.work_requirement_store import WorkRequirementStore
 from ..core.state import StateEntry, StateHistoryEntry
 from ..world.provenance import Provenance, get_state_provenance
+from ..work.trace import WorkTrace, get_work_trace
+from ..work.work_requirement import WorkRequirement, WorkStatus
 from .clock import Clock
+from .services import RuntimeServices
 from .continuation_resolver import ContinuationResolver
 from .executor import Executor
 from .join_coordinator import JoinCoordinator
@@ -81,12 +85,18 @@ class Runtime:
         self.activation_store = ActivationStore(self.db)
         self.observation_store = ObservationStore(self.db)
         self.state_delta_store = StateDeltaStore(self.db)
+        self.work_requirement_store = WorkRequirementStore(self.db)
 
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)
         self.router = Router(self.process_store, self.resolver)
         self.scheduler = Scheduler(self.process_store)
         self.join_coordinator = JoinCoordinator(self.join_store, self.process_store)
+        self.services = RuntimeServices(
+            process_store=self.process_store,
+            work_requirement_store=self.work_requirement_store,
+            state_store=self.state_store,
+        )
         self.executor = Executor(
             self.db,
             self.registry,
@@ -99,7 +109,9 @@ class Runtime:
             self.activation_store,
             self.observation_store,
             self.state_delta_store,
+            self.work_requirement_store,
             self.clock,
+            self.services,
         )
 
         self.recover()
@@ -146,6 +158,31 @@ class Runtime:
     def rebuild_current_state(self) -> int:
         """Rebuild the ``current`` projection from history; return facts rebuilt."""
         return self.state_store.rebuild_current_state()
+
+    # --- work-intelligence queries ----------------------------------------
+
+    def get_work_requirement(self, requirement_id) -> WorkRequirement | None:
+        """Return a work requirement by id."""
+        return self.work_requirement_store.get(requirement_id)
+
+    def get_work_requirements(
+        self, status: WorkStatus | str | None = None
+    ) -> list[WorkRequirement]:
+        """Return all work requirements, optionally filtered by ``status``."""
+        if status is None:
+            return self.work_requirement_store.all()
+        return self.work_requirement_store.by_status(status)
+
+    def get_work_trace(self, requirement_id) -> WorkTrace | None:
+        """Trace a work requirement back to the raw event that caused it."""
+        return get_work_trace(
+            requirement_id,
+            work_requirement_store=self.work_requirement_store,
+            process_store=self.process_store,
+            state_delta_store=self.state_delta_store,
+            observation_store=self.observation_store,
+            event_store=self.event_store,
+        )
 
     # --- event intake ------------------------------------------------------
 

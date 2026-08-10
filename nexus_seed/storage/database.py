@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS process_instances (
     parent_process_id  TEXT,
     priority           INTEGER NOT NULL DEFAULT 0,
     pending_event_id   TEXT,
+    work_key           TEXT,
+    work_requirement_id TEXT,
     retry_count        INTEGER NOT NULL DEFAULT 0,
     max_retries        INTEGER NOT NULL DEFAULT 0,
     next_retry_at      TEXT,
@@ -59,6 +61,8 @@ CREATE TABLE IF NOT EXISTS process_instances (
     updated_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_instances_status ON process_instances(status);
+CREATE INDEX IF NOT EXISTS idx_instances_work_key ON process_instances(work_key);
+CREATE INDEX IF NOT EXISTS idx_instances_work_req ON process_instances(work_requirement_id);
 
 CREATE TABLE IF NOT EXISTS continuations (
     id                  TEXT PRIMARY KEY,
@@ -159,6 +163,22 @@ CREATE TABLE IF NOT EXISTS process_activations (
     event_id       TEXT,
     created_at     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS work_requirements (
+    id                    TEXT PRIMARY KEY,
+    work_type             TEXT NOT NULL,
+    work_key              TEXT NOT NULL UNIQUE,
+    related_entities      TEXT NOT NULL DEFAULT '[]',
+    reason                TEXT,
+    source_event_id       TEXT,
+    source_state_delta_id TEXT,
+    priority              INTEGER NOT NULL DEFAULT 0,
+    status                TEXT NOT NULL,
+    metadata              TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_status ON work_requirements(status);
 """
 
 

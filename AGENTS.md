@@ -74,13 +74,31 @@ Python application.
 - Invariant: Observation != StateDelta; schema is not 1:1-locked (one event may
   yield many observations; one observation many deltas).
 
+## Done in Phase 2C (Work Intelligence)
+
+- `Impact` / `WorkRequirement` / `WorkMatch` as domain data under `work/`
+  (NOT core types); work executes as ordinary `ProcessInstance`s.
+- Pipeline processes: `impact_analysis` → `work_matcher` →
+  `missing_work_detector` → `work_spawner` → `resistance_check`, connected by
+  `work_required` / `work_matched` / `work_missing` / `work_spawned` /
+  `work_satisfied` events. Impact analysis never spawns directly.
+- `work_key` (includes state version) gives work logical identity →
+  idempotency; new version = new work. `work_requirements.work_key` is UNIQUE.
+- Deterministic rules + work→process registry in `work/rules.py`; Runtime holds
+  no domain rules.
+- `ctx.services` (read-only `RuntimeServices`) for cross-cutting reads;
+  writes stay declarative via `ProcessResult.work_requirements` /
+  `work_requirement_updates`. `ctx.require_work` / `mark_work` / `satisfy_work`.
+- `process_instances.work_key` / `work_requirement_id` link work→process;
+  `get_work_trace` walks process → requirement → delta → observation → raw event.
+- WorkRequirement completion (SATISFIED) is a declarative atomic side effect.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 2C — Work Intelligence: `WorkRequirement`, impact analysis (triggered by
-  `state_changed`), work matching / missing-work detection, deterministic work
-  spawn. Do NOT build until instructed.
 - Richer `waiting_for` matching (ranges, predicates) and indexed resolution.
-- Context persistence and smarter `build_context` selection (keep world-state
-  APIs decoupled from runtime internals — Phase 2B already does).
+- Context persistence and smarter `build_context` selection (keep world-state /
+  work APIs decoupled from runtime internals — Phase 2B/2C already do).
 - Pluggable state backend behind the `(entity, attribute, value)` shape (graph).
+- Work dependency DAG (`depends_on`/`blocks`/`invalidates` — room left in
+  `WorkRequirement.metadata`).
 - The first real intelligence boundary: an LLM-backed process handler (Phase 3).

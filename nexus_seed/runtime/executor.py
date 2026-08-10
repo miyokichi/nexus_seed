@@ -39,6 +39,7 @@ from ..storage.process_store import ProcessStore
 from ..storage.state_delta_store import StateDeltaStore
 from ..storage.state_store import StateStore
 from ..storage.timer_store import TimerRecord, TimerStore
+from ..storage.work_requirement_store import WorkRequirementStore
 from .clock import Clock
 
 logger = logging.getLogger("nexus_seed.runtime.executor")
@@ -60,7 +61,9 @@ class Executor:
         activation_store: ActivationStore,
         observation_store: ObservationStore,
         state_delta_store: StateDeltaStore,
+        work_requirement_store: WorkRequirementStore,
         clock: Clock,
+        services: object | None = None,
     ) -> None:
         self.db = db
         self.registry = registry
@@ -73,7 +76,9 @@ class Executor:
         self.activation_store = activation_store
         self.observation_store = observation_store
         self.state_delta_store = state_delta_store
+        self.work_requirement_store = work_requirement_store
         self.clock = clock
+        self.services = services
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
         """Run one activation of ``instance`` and return its result."""
@@ -122,6 +127,7 @@ class Executor:
             context=context,
             resume_point=resume_point,
             saved_process_state=saved_state,
+            services=self.services,
             logger=logging.getLogger(f"nexus_seed.process.{definition.name}"),
         )
 
@@ -157,6 +163,10 @@ class Executor:
                     self.observation_store.save(observation)
                 for delta in result.state_deltas:
                     self.state_delta_store.save(delta)
+                for requirement in result.work_requirements:
+                    self.work_requirement_store.save(requirement)
+                for requirement_id, status in result.work_requirement_updates:
+                    self.work_requirement_store.update_status(requirement_id, status)
 
                 for change in result.state_changes:
                     self.state_store.set(
@@ -217,6 +227,8 @@ class Executor:
                 input=dict(spec.input),
                 parent_process_id=instance.id,
                 priority=spec.priority,
+                work_key=spec.work_key,
+                work_requirement_id=spec.work_requirement_id,
             )
             child_def = self.process_store.get_definition(
                 spec.definition_name, spec.definition_version

@@ -9,6 +9,14 @@ from .semantic import (
     INTERPRET as INTERPRET_EVENT,
 )
 from .semantic import apply_state_delta, bootstrap_semantic, interpret_event
+from .work_intelligence import (
+    bootstrap_work_intelligence,
+    impact_analysis,
+    missing_work_detector,
+    resistance_check,
+    work_matcher,
+    work_spawner,
+)
 
 __all__ = [
     "RESISTANCE_ANALYSIS",
@@ -19,4 +27,10 @@ __all__ = [
     "interpret_event",
     "apply_state_delta",
     "bootstrap_semantic",
+    "impact_analysis",
+    "work_matcher",
+    "missing_work_detector",
+    "work_spawner",
+    "resistance_check",
+    "bootstrap_work_intelligence",
 ]

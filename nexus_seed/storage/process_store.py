@@ -74,9 +74,10 @@ class ProcessStore:
             """
             INSERT INTO process_instances
                 (id, definition_name, definition_version, status, input, local_state,
-                 parent_process_id, priority, pending_event_id, retry_count, max_retries,
+                 parent_process_id, priority, pending_event_id, work_key,
+                 work_requirement_id, retry_count, max_retries,
                  next_retry_at, last_error, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 input = excluded.input,
@@ -84,6 +85,8 @@ class ProcessStore:
                 parent_process_id = excluded.parent_process_id,
                 priority = excluded.priority,
                 pending_event_id = excluded.pending_event_id,
+                work_key = excluded.work_key,
+                work_requirement_id = excluded.work_requirement_id,
                 retry_count = excluded.retry_count,
                 max_retries = excluded.max_retries,
                 next_retry_at = excluded.next_retry_at,
@@ -100,6 +103,8 @@ class ProcessStore:
                 str(instance.parent_process_id) if instance.parent_process_id else None,
                 instance.priority,
                 str(instance.pending_event_id) if instance.pending_event_id else None,
+                instance.work_key,
+                str(instance.work_requirement_id) if instance.work_requirement_id else None,
                 instance.retry_count,
                 instance.max_retries,
                 instance.next_retry_at.isoformat() if instance.next_retry_at else None,
@@ -142,6 +147,25 @@ class ProcessStore:
         )
         return self._row_to_instance(row) if row else None
 
+    def find_by_work_key(self, work_key: str) -> list[ProcessInstance]:
+        """Return all instances fulfilling ``work_key`` (any status)."""
+        rows = self.db.query(
+            "SELECT * FROM process_instances WHERE work_key = ? ORDER BY created_at ASC",
+            (work_key,),
+        )
+        return [self._row_to_instance(r) for r in rows]
+
+    def find_by_work_requirement_id(
+        self, work_requirement_id: uuid.UUID
+    ) -> list[ProcessInstance]:
+        """Return all instances fulfilling ``work_requirement_id``."""
+        rows = self.db.query(
+            "SELECT * FROM process_instances WHERE work_requirement_id = ? "
+            "ORDER BY created_at ASC",
+            (str(work_requirement_id),),
+        )
+        return [self._row_to_instance(r) for r in rows]
+
     def due_retries(self, now_iso: str) -> list[ProcessInstance]:
         """Return RETRY_WAIT instances whose ``next_retry_at`` has passed."""
         rows = self.db.query(
@@ -179,6 +203,8 @@ class ProcessStore:
             parent_process_id=_uuid(row["parent_process_id"]),
             priority=row["priority"],
             pending_event_id=_uuid(row["pending_event_id"]),
+            work_key=row["work_key"],
+            work_requirement_id=_uuid(row["work_requirement_id"]),
             retry_count=row["retry_count"],
             max_retries=row["max_retries"],
             next_retry_at=_dt(row["next_retry_at"]),

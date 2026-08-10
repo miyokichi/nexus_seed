@@ -1,0 +1,64 @@
+"""WorkRequirement — "this work needs doing" (a Need, not an execution).
+
+Domain data, not a Runtime primitive.  A WorkRequirement expresses that some
+work is *required*; the work is actually *executed* by a ProcessInstance:
+
+    StateDelta      = the world changed
+    Impact          = that change has these consequences
+    WorkRequirement = this work needs doing
+    ProcessInstance = this work is being done
+
+A ``work_key`` gives each requirement a logical identity (including the world
+state version), so the same change never spawns the same work twice.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+
+from ..core.event import utcnow
+
+
+class WorkStatus(str, Enum):
+    """Lifecycle of a :class:`WorkRequirement` (distinct from ProcessStatus)."""
+
+    EXPECTED = "EXPECTED"  # derived by impact analysis, not yet matched
+    MATCHED = "MATCHED"  # already covered by existing work
+    SPAWNED = "SPAWNED"  # a process was spawned to do it
+    SATISFIED = "SATISFIED"  # the work completed
+    CANCELLED = "CANCELLED"  # no longer needed / unspawnable
+
+
+@dataclass
+class WorkRequirement:
+    """A required unit of work derived from a world-state change.
+
+    Attributes:
+        work_type: What kind of work (e.g. ``"resistance_check"``).
+        related_entities: Entities the work concerns.
+        reason: Why the work is required.
+        work_key: Logical identity, e.g. ``"resistance_check:D1_CD:v2"``.
+        source_event_id: The event that led to this requirement.
+        source_state_delta_id: The delta that led to this requirement.
+        priority: Scheduling priority for the spawned process.
+        status: Current :class:`WorkStatus`.
+        metadata: Free-form extras (room for ``depends_on`` etc. later).
+        id: Unique identifier.
+        created_at / updated_at: Timestamps (UTC).
+    """
+
+    work_type: str
+    work_key: str
+    related_entities: list[str] = field(default_factory=list)
+    reason: str = ""
+    source_event_id: uuid.UUID | None = None
+    source_state_delta_id: uuid.UUID | None = None
+    priority: int = 0
+    status: WorkStatus = WorkStatus.EXPECTED
+    metadata: dict = field(default_factory=dict)
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    created_at: datetime = field(default_factory=utcnow)
+    updated_at: datetime = field(default_factory=utcnow)
