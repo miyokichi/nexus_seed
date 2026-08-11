@@ -169,6 +169,14 @@ class StateStore:
     # ``get_entry`` kept as an alias so existing callers keep working.
     get_entry = get_current
 
+    def current_for_entity(self, entity: str) -> list[StateEntry]:
+        """Return all current facts for one entity, ordered by attribute."""
+        rows = self.db.query(
+            "SELECT * FROM world_state_current WHERE entity = ? ORDER BY attribute ASC",
+            (entity,),
+        )
+        return [self._row_to_current(r) for r in rows]
+
     def all_current(self) -> list[StateEntry]:
         """Return every current fact."""
         rows = self.db.query(

@@ -56,6 +56,22 @@ class EventStore:
         )
         return [self._row_to_event(r) for r in rows]
 
+    def recent(self, n: int) -> list[Event]:
+        """Return the ``n`` most recently appended events, oldest first."""
+        rows = self.db.query(
+            "SELECT * FROM events ORDER BY seq DESC LIMIT ?", (n,)
+        )
+        return [self._row_to_event(r) for r in reversed(rows)]
+
+    def referencing_entity(self, entity: str) -> list[Event]:
+        """Return events whose payload references ``entity`` (deterministic scan)."""
+        result = []
+        for row in self.db.query("SELECT * FROM events ORDER BY seq ASC"):
+            event = self._row_to_event(row)
+            if entity in [v for v in event.payload.values() if isinstance(v, str)]:
+                result.append(event)
+        return result
+
     def by_correlation(self, correlation_id: uuid.UUID) -> list[Event]:
         """Return all events sharing ``correlation_id`` in insertion order."""
         rows = self.db.query(

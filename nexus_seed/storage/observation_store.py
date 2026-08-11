@@ -63,6 +63,21 @@ class ObservationStore:
         rows = self.db.query("SELECT * FROM observations ORDER BY created_at ASC")
         return [self._row(r) for r in rows]
 
+    def recent(self, n: int) -> list[Observation]:
+        """Return the ``n`` most recent observations, oldest first."""
+        rows = self.db.query(
+            "SELECT * FROM observations ORDER BY created_at DESC LIMIT ?", (n,)
+        )
+        return [self._row(r) for r in reversed(rows)]
+
+    def by_subject(self, subject: str) -> list[Observation]:
+        """Return all observations about ``subject`` in creation order."""
+        rows = self.db.query(
+            "SELECT * FROM observations WHERE subject = ? ORDER BY created_at ASC",
+            (subject,),
+        )
+        return [self._row(r) for r in rows]
+
     @staticmethod
     def _row(row) -> Observation:
         return Observation(

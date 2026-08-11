@@ -42,6 +42,9 @@ from ..storage.state_delta_store import StateDeltaStore
 from ..storage.state_store import StateStore
 from ..storage.timer_store import TimerStore
 from ..storage.work_requirement_store import WorkRequirementStore
+from ..storage.context_snapshot_store import ContextSnapshotStore
+from ..context.compiler import ContextCompiler
+from ..context.models import ContextSnapshot
 from ..core.state import StateEntry, StateHistoryEntry
 from ..world.provenance import Provenance, get_state_provenance
 from ..work.trace import WorkTrace, get_work_trace
@@ -86,6 +89,7 @@ class Runtime:
         self.observation_store = ObservationStore(self.db)
         self.state_delta_store = StateDeltaStore(self.db)
         self.work_requirement_store = WorkRequirementStore(self.db)
+        self.context_snapshot_store = ContextSnapshotStore(self.db)
 
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)
@@ -96,6 +100,15 @@ class Runtime:
             process_store=self.process_store,
             work_requirement_store=self.work_requirement_store,
             state_store=self.state_store,
+        )
+        self.context_compiler = ContextCompiler(
+            process_store=self.process_store,
+            event_store=self.event_store,
+            state_store=self.state_store,
+            observation_store=self.observation_store,
+            state_delta_store=self.state_delta_store,
+            work_requirement_store=self.work_requirement_store,
+            continuation_store=self.continuation_store,
         )
         self.executor = Executor(
             self.db,
@@ -111,6 +124,8 @@ class Runtime:
             self.state_delta_store,
             self.work_requirement_store,
             self.clock,
+            self.context_compiler,
+            self.context_snapshot_store,
             self.services,
         )
 
@@ -183,6 +198,16 @@ class Runtime:
             observation_store=self.observation_store,
             event_store=self.event_store,
         )
+
+    # --- context (audit) ---------------------------------------------------
+
+    def get_context_snapshots(self, instance_id) -> list[ContextSnapshot]:
+        """Return all compiled-context audit snapshots for an instance."""
+        return self.context_snapshot_store.for_instance(instance_id)
+
+    def get_latest_context_snapshot(self, instance_id) -> ContextSnapshot | None:
+        """Return the most recent context snapshot for an instance."""
+        return self.context_snapshot_store.latest_for_instance(instance_id)
 
     # --- event intake ------------------------------------------------------
 

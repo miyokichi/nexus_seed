@@ -93,12 +93,35 @@ Python application.
   `get_work_trace` walks process → requirement → delta → observation → raw event.
 - WorkRequirement completion (SATISFIED) is a declarative atomic side effect.
 
+## Done in Phase 3A (Context Compiler / Memory Architecture)
+
+- Memory = the persistent stores (collective name, NOT a new primitive).
+  Context = a regenerable per-activation view compiled from Memory.
+- `ContextRequirements` (domain data under `context/`) declared on a
+  `ProcessDefinition` (persisted as JSON, restored on reload); `None` ⇒ minimal.
+- `ContextCompiler` builds a read-only, selective, deterministic
+  `ProcessContextView` (`ctx.view`); handlers read it instead of the stores.
+- Fresh resume: the executor recompiles context every activation, so resume
+  sees CURRENT state, not the suspend-time snapshot (Invariant 13).
+- `context_snapshots` table + `runtime.get_context_snapshots` for audit (never
+  a resume source).
+- `resistance_check` migrated to `ctx.view`; `ctx.services` kept only for
+  special explicit queries.
+
+## Runtime invariants (added in Phase 3A — keep them)
+
+- **11.** Processes receive needed info via Context, not by reading whole stores.
+- **12.** Context is a regenerable temporary view, never the source of truth.
+- **13.** Resume recompiles Context from current state.
+- **14.** Continuation and Context are not the same thing.
+- **15.** No direct writes from Context to persistent state (writes = ProcessResult).
+
 ## Later-phase candidates (do not build yet)
 
+- Phase 3B — LLM integration (LLM-backed `interpret_event`, structured output,
+  human approval via continuation). Do NOT build until instructed.
+- Context compiler extensions: semantic retrieval, token budget, priority,
+  summarization, artifact loading (don't over-abstract for these yet).
 - Richer `waiting_for` matching (ranges, predicates) and indexed resolution.
-- Context persistence and smarter `build_context` selection (keep world-state /
-  work APIs decoupled from runtime internals — Phase 2B/2C already do).
 - Pluggable state backend behind the `(entity, attribute, value)` shape (graph).
-- Work dependency DAG (`depends_on`/`blocks`/`invalidates` — room left in
-  `WorkRequirement.metadata`).
-- The first real intelligence boundary: an LLM-backed process handler (Phase 3).
+- Work dependency DAG (`depends_on`/`blocks`/`invalidates`).

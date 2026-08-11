@@ -37,9 +37,10 @@ from .state import StateChange, StateView
 from ..world.observation import Observation
 from ..world.state_delta import StateDelta
 from ..work.work_requirement import WorkRequirement, WorkStatus
+from ..context.requirements import ContextRequirements
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    pass
+    from ..context.models import ProcessContextView
 
 
 class ProcessStatus(str, Enum):
@@ -69,6 +70,8 @@ class ProcessDefinition:
         max_retries: How many times a retryable failure may be retried.
         metadata: Free-form tags (e.g. ``{"role": "skill"}``).  Never a new
             core type — just annotations on a Process.
+        context_requirements: What context this process needs compiled at run
+            time (``None`` = minimal context).
     """
 
     name: str
@@ -77,6 +80,7 @@ class ProcessDefinition:
     trigger_event_types: tuple[str, ...] = ()
     max_retries: int = 0
     metadata: dict = field(default_factory=dict)
+    context_requirements: ContextRequirements | None = None
 
 
 @dataclass
@@ -217,7 +221,8 @@ class ProcessContext:
     instance: ProcessInstance
     event: Event | None
     state: StateView
-    context: Context
+    view: "ProcessContextView | None" = None
+    context: Context | None = None
     resume_point: str | None = None
     saved_process_state: dict = field(default_factory=dict)
     services: object | None = None

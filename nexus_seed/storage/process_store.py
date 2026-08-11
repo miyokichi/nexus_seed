@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from ..context.requirements import ContextRequirements
 from ..core.process import ProcessDefinition, ProcessInstance, ProcessStatus
 from .database import Database, dumps, loads
 
@@ -30,13 +31,15 @@ class ProcessStore:
         self.db.execute(
             """
             INSERT INTO process_definitions
-                (name, version, handler, trigger_event_types, max_retries, metadata)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (name, version, handler, trigger_event_types, max_retries, metadata,
+                 context_requirements)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name, version) DO UPDATE SET
                 handler = excluded.handler,
                 trigger_event_types = excluded.trigger_event_types,
                 max_retries = excluded.max_retries,
-                metadata = excluded.metadata
+                metadata = excluded.metadata,
+                context_requirements = excluded.context_requirements
             """,
             (
                 definition.name,
@@ -45,6 +48,9 @@ class ProcessStore:
                 dumps(list(definition.trigger_event_types)),
                 definition.max_retries,
                 dumps(definition.metadata),
+                dumps(definition.context_requirements.to_dict())
+                if definition.context_requirements is not None
+                else None,
             ),
         )
 
@@ -166,6 +172,15 @@ class ProcessStore:
         )
         return [self._row_to_instance(r) for r in rows]
 
+    def children_of(self, parent_id: uuid.UUID) -> list[ProcessInstance]:
+        """Return the child instances of ``parent_id``, oldest first."""
+        rows = self.db.query(
+            "SELECT * FROM process_instances WHERE parent_process_id = ? "
+            "ORDER BY created_at ASC",
+            (str(parent_id),),
+        )
+        return [self._row_to_instance(r) for r in rows]
+
     def due_retries(self, now_iso: str) -> list[ProcessInstance]:
         """Return RETRY_WAIT instances whose ``next_retry_at`` has passed."""
         rows = self.db.query(
@@ -189,6 +204,9 @@ class ProcessStore:
             trigger_event_types=tuple(loads(row["trigger_event_types"]) or ()),
             max_retries=row["max_retries"],
             metadata=loads(row["metadata"]) or {},
+            context_requirements=ContextRequirements.from_dict(
+                loads(row["context_requirements"])
+            ),
         )
 
     @staticmethod

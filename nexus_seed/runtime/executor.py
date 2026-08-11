@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from ..core.context import build_context
+from ..context.models import ContextSnapshot
 from ..core.continuation import Continuation
 from ..core.process import (
     HandlerRegistry,
@@ -63,6 +63,8 @@ class Executor:
         state_delta_store: StateDeltaStore,
         work_requirement_store: WorkRequirementStore,
         clock: Clock,
+        compiler=None,
+        context_snapshot_store=None,
         services: object | None = None,
     ) -> None:
         self.db = db
@@ -78,6 +80,8 @@ class Executor:
         self.state_delta_store = state_delta_store
         self.work_requirement_store = work_requirement_store
         self.clock = clock
+        self.compiler = compiler
+        self.context_snapshot_store = context_snapshot_store
         self.services = services
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
@@ -114,17 +118,28 @@ class Executor:
         instance.status = ProcessStatus.RUNNING
         self.process_store.save_instance(instance)
 
-        correlation_id = None
-        if event is not None:
-            correlation_id = event.correlation_id or event.id
-        context = build_context(
-            instance, self.state_store, self.event_store, correlation_id=correlation_id
-        )
+        # Compile a fresh, read-only Context view from current Memory.  On
+        # resume this recompiles against *current* state, never the suspend-time
+        # snapshot (Invariant 13).  A compile failure means the handler does not
+        # run (spec §49).
+        try:
+            view = self.compiler.compile(
+                definition=definition,
+                process_instance=instance,
+                trigger_event=event,
+                continuation=active_continuation,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface, don't swallow
+            logger.exception("context compile failed for %s", definition.name)
+            return self._fail(instance, f"context compile failed: {exc}", key=key)
+
+        self._save_snapshot(instance, event, view, key)
+
         ctx = ProcessContext(
             instance=instance,
             event=event,
             state=StateView(self.state_store, created_by_process_id=instance.id),
-            context=context,
+            view=view,
             resume_point=resume_point,
             saved_process_state=saved_state,
             services=self.services,
@@ -147,6 +162,22 @@ class Executor:
         if result.status is ProcessStatus.FAILED:
             return self._handle_failure(instance, key, result)
         return self._commit(instance, key, original_event_id, active_continuation, result)
+
+    def _save_snapshot(self, instance, event, view, key) -> None:
+        """Persist an audit snapshot of the compiled context (best-effort)."""
+        if self.context_snapshot_store is None:
+            return
+        try:
+            self.context_snapshot_store.save(
+                ContextSnapshot(
+                    process_instance_id=instance.id,
+                    context_json=view.to_snapshot_dict(),
+                    trigger_event_id=event.id if event else None,
+                    activation_id=key,
+                )
+            )
+        except Exception:  # noqa: BLE001 - auditing must never break execution
+            logger.exception("failed to save context snapshot for %s", instance.id)
 
     def _commit(
         self,

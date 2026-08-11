@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS process_definitions (
     trigger_event_types TEXT NOT NULL DEFAULT '[]',
     max_retries         INTEGER NOT NULL DEFAULT 0,
     metadata            TEXT NOT NULL DEFAULT '{}',
+    context_requirements TEXT,
     PRIMARY KEY (name, version)
 );
 
@@ -179,6 +180,16 @@ CREATE TABLE IF NOT EXISTS work_requirements (
     updated_at            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_work_status ON work_requirements(status);
+
+CREATE TABLE IF NOT EXISTS context_snapshots (
+    id                  TEXT PRIMARY KEY,
+    process_instance_id TEXT NOT NULL,
+    activation_id       TEXT,
+    trigger_event_id    TEXT,
+    context_json        TEXT NOT NULL,
+    compiled_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ctxsnap_instance ON context_snapshots(process_instance_id);
 """
 
 

@@ -199,6 +199,43 @@ Read APIs: `get_work_requirement`, `get_work_requirements`, `get_work_trace`.
 causal trail. Everything (requirement persist, spawn, status updates, links,
 emitted events) commits inside the Phase 2A atomic transaction.
 
+## Context compiler / memory architecture (Phase 3A)
+
+Processes no longer read the stores freely for their standard inputs. Instead:
+
+```
+Memory (Event / State / Observation / Delta / Work / Process / Continuation)
+   → ContextRequirements (declared on the ProcessDefinition)
+   → ContextCompiler
+   → ProcessContextView (ctx.view)
+   → Process execution
+```
+
+- **Memory** is the collective name for the persistent stores — *not* a new
+  primitive. **Context** is a temporary, regenerable view compiled from Memory
+  for one activation.
+- **Declared needs.** A `ProcessDefinition` carries `ContextRequirements`
+  (world-state entities, recent/related events, observations, deltas, work,
+  process tree, continuation). No requirements ⇒ **minimal context**
+  (process instance + trigger event only).
+- **Selective & deterministic.** The compiler pulls only what's declared, in a
+  fixed order — never the whole DB. `ctx.view` is **read-only**; writes stay in
+  `ProcessResult`.
+- **Fresh resume (the key property).** The view is recompiled every activation,
+  so a process resumed after the world moved on sees the **current** state, not
+  a suspend-time snapshot. Continuation ≠ Context: the continuation says where
+  to resume; the context is recompiled from current Memory.
+- **Provenance.** Every item keeps its persistent record id (event id, history
+  id, delta id, work id, …).
+- **Audit snapshots.** Each activation's compiled context is saved to
+  `context_snapshots` (via `runtime.get_context_snapshots(id)`) — an audit of
+  "what did this activation see", never used to resume.
+
+`resistance_check` reads its standard inputs (current target, its
+WorkRequirement, trigger, continuation) from `ctx.view`; `ctx.services` remains
+only for special explicit queries. Requirements persist on the definition, so a
+runtime rebuilt from SQLite recompiles the same context.
+
 ## Repository layout
 
 ```
@@ -207,10 +244,13 @@ nexus_seed/
 ├── world/           # semantic domain data: observation, state_delta, provenance
 ├── work/            # work domain data: work_requirement, impact, work_match,
 │                    #   rules, trace
+├── context/         # context architecture: requirements, models (view/snapshot),
+│                    #   compiler
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
 │                    #   clock, join_coordinator, services
 ├── storage/         # sqlite: database + event/process/state/continuation/timer/
-│                    #   join/activation/observation/state_delta/work_requirement
+│                    #   join/activation/observation/state_delta/work_requirement/
+│                    #   context_snapshot
 ├── processes/       # concrete Processes (demo_resistance, semantic,
 │                    #   work_intelligence)
 └── demo.py          # runnable acceptance scenario (with runtime restart)
@@ -223,6 +263,11 @@ tests/               # phase 1: event_store, process_execution, suspend_resume
                      # phase 2c: work_requirement, impact_analysis, work_matching,
                      #           missing_work_detection, work_spawn,
                      #           work_idempotency, work_trace, work_..._integration
+                     # phase 3a: context_requirements, context_compiler,
+                     #           context_selective_state, context_events,
+                     #           context_work, context_process_tree,
+                     #           context_continuation, context_fresh_resume,
+                     #           context_snapshot, context_restart
 ```
 
 ## Install

@@ -19,6 +19,12 @@ from __future__ import annotations
 
 import uuid
 
+from ..context.requirements import (
+    ContextRequirements,
+    ContinuationReq,
+    WorkReq,
+    WorldStateReq,
+)
 from ..core.process import (
     ProcessContext,
     ProcessDefinition,
@@ -80,6 +86,15 @@ RESISTANCE_CHECK = ProcessDefinition(
     version="1",
     handler="resistance_check",
     metadata={"role": "work"},
+    # This process's standard inputs come from the compiled Context, not from
+    # direct store reads: the entities named by its WorkRequirement, that
+    # requirement itself, the trigger event, and (on resume) the continuation.
+    context_requirements=ContextRequirements(
+        include_trigger_event=True,
+        world_state=WorldStateReq(include_work_entities=True),
+        work=WorkReq(current=True),
+        continuation=ContinuationReq(include=True),
+    ),
 )
 
 
@@ -205,10 +220,19 @@ async def work_spawner(ctx: ProcessContext) -> ProcessResult:
 
 
 async def resistance_check(ctx: ProcessContext) -> ProcessResult:
-    """The work process: analyse resistance, suspending for a missing measurement."""
+    """The work process: analyse resistance, suspending for a missing measurement.
+
+    Standard inputs come from ``ctx.view`` (the compiled Context): the current
+    target of the analysed entity and the WorkRequirement being fulfilled.  The
+    wafer measurement is an explicit lookup via ``ctx.state`` (kept as a special
+    query, not a standard input).  Because the view is recompiled every
+    activation, a resume sees the *current* target, not the suspend-time value.
+    """
+    entity = ctx.instance.input.get("entity")
+    wafer = ctx.instance.input.get("wafer", DEFAULT_WAFER)
+    observed_target = ctx.view.get_state(entity, "target") if ctx.view and entity else None
+
     if ctx.resume_point is None:
-        wafer = ctx.instance.input.get("wafer", DEFAULT_WAFER)
-        entity = ctx.instance.input.get("entity")
         measurement = ctx.state.get(f"measurement_{wafer}", "resistance")
         if measurement is None:
             ctx.logger.info("no measurement for %s; suspending", wafer)
@@ -217,22 +241,21 @@ async def resistance_check(ctx: ProcessContext) -> ProcessResult:
                 waiting_for={"event_type": "measurement_completed", "wafer": wafer},
                 saved_process_state={"wafer": wafer, "entity": entity},
             )
-        return _finish(ctx, entity, wafer, measurement)
+        return _finish(ctx, entity, wafer, measurement, observed_target)
 
     if ctx.resume_point == "compare_resistance":
-        saved = ctx.saved_process_state
-        wafer = saved["wafer"]
         resistance = ctx.event.payload["resistance"]
         ctx.state.set(
             f"measurement_{wafer}", "resistance", resistance, source_event=ctx.event.id
         )
-        return _finish(ctx, saved.get("entity"), wafer, resistance)
+        return _finish(ctx, entity, wafer, resistance, observed_target)
 
     return ctx.fail(f"unknown resume_point: {ctx.resume_point!r}")
 
 
-def _finish(ctx: ProcessContext, entity, wafer, resistance) -> ProcessResult:
+def _finish(ctx: ProcessContext, entity, wafer, resistance, observed_target) -> ProcessResult:
     """Emit completion + work_satisfied events and mark the requirement SATISFIED."""
+    work = ctx.view.current_work_requirement if ctx.view else None
     completed = ctx.new_event(
         "resistance_analysis_completed",
         {
@@ -253,7 +276,12 @@ def _finish(ctx: ProcessContext, entity, wafer, resistance) -> ProcessResult:
     )
     ctx.satisfy_work()
     return ctx.complete(
-        output={"wafer": wafer, "resistance": resistance},
+        output={
+            "wafer": wafer,
+            "resistance": resistance,
+            "observed_target": observed_target,
+            "work_requirement_id": str(work.id) if work is not None else None,
+        },
         emitted_events=[completed, satisfied],
     )
 

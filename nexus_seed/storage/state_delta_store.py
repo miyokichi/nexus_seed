@@ -71,6 +71,21 @@ class StateDeltaStore:
         rows = self.db.query("SELECT * FROM state_deltas ORDER BY created_at ASC")
         return [self._row(r) for r in rows]
 
+    def recent(self, n: int) -> list[StateDelta]:
+        """Return the ``n`` most recent deltas, oldest first."""
+        rows = self.db.query(
+            "SELECT * FROM state_deltas ORDER BY created_at DESC LIMIT ?", (n,)
+        )
+        return [self._row(r) for r in reversed(rows)]
+
+    def by_entity(self, entity: str) -> list[StateDelta]:
+        """Return all deltas for ``entity`` (any attribute), oldest first."""
+        rows = self.db.query(
+            "SELECT * FROM state_deltas WHERE entity = ? ORDER BY created_at ASC",
+            (entity,),
+        )
+        return [self._row(r) for r in rows]
+
     @staticmethod
     def _row(row) -> StateDelta:
         return StateDelta(
