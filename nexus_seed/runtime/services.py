@@ -35,10 +35,12 @@ class RuntimeServices:
         process_store: ProcessStore,
         work_requirement_store: WorkRequirementStore,
         state_store: StateStore,
+        proposal_store=None,
     ) -> None:
         self._process_store = process_store
         self._work_requirement_store = work_requirement_store
         self._state_store = state_store
+        self._proposal_store = proposal_store
 
     # --- work requirements -------------------------------------------------
 
@@ -71,6 +73,14 @@ class RuntimeServices:
             for p in self._process_store.find_by_work_key(work_key)
             if p.status is ProcessStatus.COMPLETED
         ]
+
+    # --- proposals ---------------------------------------------------------
+
+    def get_proposal(self, proposal_id: uuid.UUID):
+        """Return a stored interpretation proposal by id (or ``None``)."""
+        if self._proposal_store is None:
+            return None
+        return self._proposal_store.get(proposal_id)
 
     # --- state -------------------------------------------------------------
 

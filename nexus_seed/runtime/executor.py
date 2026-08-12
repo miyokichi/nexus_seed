@@ -65,6 +65,9 @@ class Executor:
         clock: Clock,
         compiler=None,
         context_snapshot_store=None,
+        proposal_store=None,
+        llm_invocation_store=None,
+        backends: dict | None = None,
         services: object | None = None,
     ) -> None:
         self.db = db
@@ -82,6 +85,9 @@ class Executor:
         self.clock = clock
         self.compiler = compiler
         self.context_snapshot_store = context_snapshot_store
+        self.proposal_store = proposal_store
+        self.llm_invocation_store = llm_invocation_store
+        self.backends = backends if backends is not None else {}
         self.services = services
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
@@ -133,7 +139,7 @@ class Executor:
             logger.exception("context compile failed for %s", definition.name)
             return self._fail(instance, f"context compile failed: {exc}", key=key)
 
-        self._save_snapshot(instance, event, view, key)
+        snapshot_id = self._save_snapshot(instance, event, view, key)
 
         ctx = ProcessContext(
             instance=instance,
@@ -143,6 +149,9 @@ class Executor:
             resume_point=resume_point,
             saved_process_state=saved_state,
             services=self.services,
+            backends=self.backends,
+            context_snapshot_id=snapshot_id,
+            activation_id=key,
             logger=logging.getLogger(f"nexus_seed.process.{definition.name}"),
         )
 
@@ -163,21 +172,22 @@ class Executor:
             return self._handle_failure(instance, key, result)
         return self._commit(instance, key, original_event_id, active_continuation, result)
 
-    def _save_snapshot(self, instance, event, view, key) -> None:
-        """Persist an audit snapshot of the compiled context (best-effort)."""
+    def _save_snapshot(self, instance, event, view, key):
+        """Persist an audit snapshot of the compiled context; return its id."""
         if self.context_snapshot_store is None:
-            return
+            return None
         try:
-            self.context_snapshot_store.save(
-                ContextSnapshot(
-                    process_instance_id=instance.id,
-                    context_json=view.to_snapshot_dict(),
-                    trigger_event_id=event.id if event else None,
-                    activation_id=key,
-                )
+            snapshot = ContextSnapshot(
+                process_instance_id=instance.id,
+                context_json=view.to_snapshot_dict(),
+                trigger_event_id=event.id if event else None,
+                activation_id=key,
             )
+            self.context_snapshot_store.save(snapshot)
+            return snapshot.id
         except Exception:  # noqa: BLE001 - auditing must never break execution
             logger.exception("failed to save context snapshot for %s", instance.id)
+            return None
 
     def _commit(
         self,
@@ -198,6 +208,14 @@ class Executor:
                     self.work_requirement_store.save(requirement)
                 for requirement_id, status in result.work_requirement_updates:
                     self.work_requirement_store.update_status(requirement_id, status)
+                if self.llm_invocation_store is not None:
+                    for invocation in result.llm_invocations:
+                        self.llm_invocation_store.save(invocation)
+                if self.proposal_store is not None:
+                    for proposal in result.proposals:
+                        self.proposal_store.save(proposal)
+                    for proposal_id, decision in result.proposal_updates:
+                        self.proposal_store.update_decision(proposal_id, decision)
 
                 for change in result.state_changes:
                     self.state_store.set(

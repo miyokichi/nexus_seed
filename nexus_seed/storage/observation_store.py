@@ -25,8 +25,8 @@ class ObservationStore:
             """
             INSERT INTO observations
                 (id, source_event_id, created_by_process_id, subject, predicate,
-                 extracted, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 extracted, confidence, proposal_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(observation.id),
@@ -38,6 +38,7 @@ class ObservationStore:
                 observation.predicate,
                 dumps(observation.extracted),
                 observation.confidence,
+                str(observation.proposal_id) if observation.proposal_id else None,
                 observation.created_at.isoformat(),
             ),
         )
@@ -87,6 +88,7 @@ class ObservationStore:
             source_event_id=_uuid(row["source_event_id"]),
             created_by_process_id=_uuid(row["created_by_process_id"]),
             confidence=row["confidence"],
+            proposal_id=_uuid(row["proposal_id"]),
             id=uuid.UUID(row["id"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )

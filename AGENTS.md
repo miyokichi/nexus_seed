@@ -116,12 +116,36 @@ Python application.
 - **14.** Continuation and Context are not the same thing.
 - **15.** No direct writes from Context to persistent state (writes = ProcessResult).
 
+## Done in Phase 3B (LLM Intelligence Boundary)
+
+- LLM is a swappable `ExecutionBackend` (`backends/`) called from a Process,
+  never in the Runtime. `LLMBackend` + `FakeLLMBackend` share one interface.
+- LLM output → `InterpretationProposal` (`intelligence/`) → schema + consistency
+  validation → `InterpretationPolicy` → ACCEPT/REVIEW/REJECT. A state conflict
+  overrides confidence (>= REVIEW). Schema/parse/backend failures are retryable
+  (Phase 2A); nothing partial persists.
+- Only ACCEPT becomes Observation + StateDelta, reusing the existing
+  `apply_state_delta` pipeline (no private LLM write path). REVIEW suspends on a
+  normal Continuation waiting for `interpretation_reviewed` (approve/reject/
+  modify), restart-safe.
+- New: `interpretation_proposals`, `llm_invocations` tables; `observations.
+  proposal_id`; `runtime.register_backend` / `get_proposal` / `get_llm_invocation`.
+- Deterministic `interpret_event` and LLM `interpret_event_llm` coexist.
+
+## Runtime invariants (added in Phase 3B — keep them)
+
+- **16.** LLM output is never committed directly to World State.
+- **17.** LLM output is a Proposal that must pass Validation + Policy.
+- **18.** Human review is an ordinary Event + Continuation (no special primitive).
+- **19.** A backend never mutates Runtime/domain state.
+- **20.** Real LLM and FakeLLM use the same backend interface.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 3B — LLM integration (LLM-backed `interpret_event`, structured output,
-  human approval via continuation). Do NOT build until instructed.
+- Phase 3C+ — external observation adapters (file/webhook/CLI → Raw Event),
+  ExecutionBackend adapters (Claude Code / OpenClaw / MCP), dynamic organization,
+  self extension. Do NOT build until instructed.
 - Context compiler extensions: semantic retrieval, token budget, priority,
-  summarization, artifact loading (don't over-abstract for these yet).
-- Richer `waiting_for` matching (ranges, predicates) and indexed resolution.
-- Pluggable state backend behind the `(entity, attribute, value)` shape (graph).
-- Work dependency DAG (`depends_on`/`blocks`/`invalidates`).
+  summarization, artifact loading (don't over-abstract yet).
+- Richer `waiting_for` matching; pluggable graph state backend; work dependency
+  DAG (`depends_on`/`blocks`/`invalidates`).

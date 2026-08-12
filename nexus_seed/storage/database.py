@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS observations (
     predicate             TEXT NOT NULL,
     extracted             TEXT NOT NULL,
     confidence            REAL NOT NULL DEFAULT 1.0,
+    proposal_id           TEXT,
     created_at            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_obs_event ON observations(source_event_id);
@@ -190,6 +191,35 @@ CREATE TABLE IF NOT EXISTS context_snapshots (
     compiled_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ctxsnap_instance ON context_snapshots(process_instance_id);
+
+CREATE TABLE IF NOT EXISTS interpretation_proposals (
+    id                    TEXT PRIMARY KEY,
+    source_event_id       TEXT,
+    created_by_process_id TEXT,
+    context_snapshot_id   TEXT,
+    llm_invocation_id     TEXT,
+    proposal_json         TEXT NOT NULL,
+    confidence            REAL NOT NULL DEFAULT 0.0,
+    decision              TEXT NOT NULL DEFAULT 'PENDING',
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_decision ON interpretation_proposals(decision);
+
+CREATE TABLE IF NOT EXISTS llm_invocations (
+    id                  TEXT PRIMARY KEY,
+    process_instance_id TEXT NOT NULL,
+    activation_id       TEXT,
+    backend             TEXT NOT NULL,
+    model               TEXT,
+    request_metadata    TEXT NOT NULL DEFAULT '{}',
+    response_metadata   TEXT NOT NULL DEFAULT '{}',
+    context_snapshot_id TEXT,
+    success             INTEGER NOT NULL DEFAULT 1,
+    error               TEXT,
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llminv_instance ON llm_invocations(process_instance_id);
 """
 
 

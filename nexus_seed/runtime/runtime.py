@@ -43,8 +43,12 @@ from ..storage.state_store import StateStore
 from ..storage.timer_store import TimerStore
 from ..storage.work_requirement_store import WorkRequirementStore
 from ..storage.context_snapshot_store import ContextSnapshotStore
+from ..storage.proposal_store import ProposalStore
+from ..storage.llm_invocation_store import LLMInvocationStore
 from ..context.compiler import ContextCompiler
 from ..context.models import ContextSnapshot
+from ..backends.base import ExecutionBackend, LLMInvocation
+from ..intelligence.proposal import InterpretationProposal
 from ..core.state import StateEntry, StateHistoryEntry
 from ..world.provenance import Provenance, get_state_provenance
 from ..work.trace import WorkTrace, get_work_trace
@@ -90,6 +94,9 @@ class Runtime:
         self.state_delta_store = StateDeltaStore(self.db)
         self.work_requirement_store = WorkRequirementStore(self.db)
         self.context_snapshot_store = ContextSnapshotStore(self.db)
+        self.proposal_store = ProposalStore(self.db)
+        self.llm_invocation_store = LLMInvocationStore(self.db)
+        self.backends: dict[str, ExecutionBackend] = {}
 
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)
@@ -100,6 +107,7 @@ class Runtime:
             process_store=self.process_store,
             work_requirement_store=self.work_requirement_store,
             state_store=self.state_store,
+            proposal_store=self.proposal_store,
         )
         self.context_compiler = ContextCompiler(
             process_store=self.process_store,
@@ -126,6 +134,9 @@ class Runtime:
             self.clock,
             self.context_compiler,
             self.context_snapshot_store,
+            self.proposal_store,
+            self.llm_invocation_store,
+            self.backends,
             self.services,
         )
 
@@ -140,6 +151,29 @@ class Runtime:
         self.process_store.upsert_definition(definition)
         self.registry.register(definition.handler, handler)
         logger.info("registered process %s v%s", definition.name, definition.version)
+
+    def register_backend(self, name: str, backend: ExecutionBackend) -> None:
+        """Register an execution backend under ``name`` (e.g. ``"llm"``).
+
+        Handlers reach it via ``ctx.backends[name]``.  Registering a different
+        implementation under the same name swaps the backend transparently.
+        """
+        self.backends[name] = backend
+        logger.info("registered backend %s (%s)", name, type(backend).__name__)
+
+    # --- intelligence queries ---------------------------------------------
+
+    def get_proposal(self, proposal_id) -> InterpretationProposal | None:
+        """Return a stored interpretation proposal by id."""
+        return self.proposal_store.get(proposal_id)
+
+    def get_proposals(self) -> list[InterpretationProposal]:
+        """Return all stored interpretation proposals."""
+        return self.proposal_store.all()
+
+    def get_llm_invocation(self, invocation_id) -> LLMInvocation | None:
+        """Return a stored LLM invocation record by id."""
+        return self.llm_invocation_store.get(invocation_id)
 
     # --- world-state queries ----------------------------------------------
 

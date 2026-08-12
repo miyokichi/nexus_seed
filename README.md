@@ -236,6 +236,54 @@ WorkRequirement, trigger, continuation) from `ctx.view`; `ctx.services` remains
 only for special explicit queries. Requirements persist on the definition, so a
 runtime rebuilt from SQLite recompiles the same context.
 
+## LLM intelligence boundary (Phase 3B)
+
+The LLM is a **swappable backend called from a Process** — never embedded in the
+Runtime. Its output is a **Proposal**, gated before it can touch the world:
+
+```
+LLM → Proposal → Schema validation → Consistency validation → Policy
+    → ACCEPT / REVIEW / REJECT
+```
+
+```mermaid
+flowchart LR
+    HM["human_message"] --> IP["interpret_event_llm"]
+    IP --> BE["ExecutionBackend (LLM / Fake)"]
+    BE --> PR["InterpretationProposal"]
+    PR --> VAL["validate + policy"]
+    VAL -->|ACCEPT| OBS["Observation + StateDelta"]
+    OBS --> APP["apply_state_delta (existing)"]
+    APP --> WS["World State"]
+    VAL -->|REVIEW| SUS["suspend (Continuation)"]
+    SUS -->|interpretation_reviewed| IP
+    VAL -->|REJECT| END["complete, no change"]
+```
+
+- **Strict separation.** `LLM output ≠ Observation ≠ StateDelta ≠ World State`.
+  Only an **ACCEPTED** proposal becomes an Observation + StateDelta, which flow
+  through the *existing* Phase 2B `apply_state_delta` — the LLM has no private
+  write path (Invariants 16–19). An accepted proposal then drives the full
+  Phase 2C work pipeline unchanged.
+- **Swappable backend.** `ExecutionBackend` (`backends/`) maps a
+  `BackendRequest` to a `BackendResult` and does nothing else. `LLMBackend`
+  (reads its API key from the env) and `FakeLLMBackend` (test workhorse, no
+  network) share one interface (Invariant 20). Register with
+  `runtime.register_backend("llm", backend)`; handlers reach it via
+  `ctx.backends`.
+- **Policy, not Runtime.** `InterpretationPolicy` (thresholds) decides
+  ACCEPT/REVIEW/REJECT from confidence; a **state conflict overrides confidence**
+  and forces at least REVIEW. Schema/parse failures are **retryable** (Phase 2A
+  retry); nothing partial is persisted.
+- **Human review = ordinary Event + Continuation.** REVIEW suspends waiting for
+  `interpretation_reviewed`; `approve` re-validates and applies, `reject` ends
+  with no change, `modify` re-proposes. Survives a full runtime restart.
+- **Provenance.** World value → StateDelta → Observation → InterpretationProposal
+  → LLMInvocation → ContextSnapshot → raw Event, all from the DB.
+- **Coexistence.** The deterministic `interpret_event` (on
+  `process_parameter_changed`) and the LLM `interpret_event_llm` (on
+  `human_message`) both remain available.
+
 ## Repository layout
 
 ```
@@ -246,13 +294,15 @@ nexus_seed/
 │                    #   rules, trace
 ├── context/         # context architecture: requirements, models (view/snapshot),
 │                    #   compiler
+├── backends/        # ExecutionBackend protocol + LLMBackend / FakeLLMBackend
+├── intelligence/    # proposal, validation, policy (the LLM boundary)
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
 │                    #   clock, join_coordinator, services
 ├── storage/         # sqlite: database + event/process/state/continuation/timer/
 │                    #   join/activation/observation/state_delta/work_requirement/
-│                    #   context_snapshot
+│                    #   context_snapshot/proposal/llm_invocation
 ├── processes/       # concrete Processes (demo_resistance, semantic,
-│                    #   work_intelligence)
+│                    #   work_intelligence, llm_interpret)
 └── demo.py          # runnable acceptance scenario (with runtime restart)
 tests/               # phase 1: event_store, process_execution, suspend_resume
                      # phase 2a: atomic_transition, idempotency, crash_recovery,
@@ -268,6 +318,12 @@ tests/               # phase 1: event_store, process_execution, suspend_resume
                      #           context_work, context_process_tree,
                      #           context_continuation, context_fresh_resume,
                      #           context_snapshot, context_restart
+                     # phase 3b: llm_backend, interpretation_proposal,
+                     #           proposal_validation, proposal_policy,
+                     #           llm_interpret_high_confidence, llm_interpret_review,
+                     #           llm_human_approve, llm_human_reject,
+                     #           llm_review_restart, llm_conflict, llm_retry,
+                     #           llm_trace, llm_work_integration
 ```
 
 ## Install

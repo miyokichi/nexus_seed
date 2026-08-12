@@ -41,6 +41,8 @@ from ..context.requirements import ContextRequirements
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..context.models import ProcessContextView
+    from ..backends.base import LLMInvocation
+    from ..intelligence.proposal import InterpretationProposal
 
 
 class ProcessStatus(str, Enum):
@@ -202,6 +204,9 @@ class ProcessResult:
     state_deltas: list[StateDelta] = field(default_factory=list)
     work_requirements: list[WorkRequirement] = field(default_factory=list)
     work_requirement_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    proposals: list["InterpretationProposal"] = field(default_factory=list)
+    proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    llm_invocations: list["LLMInvocation"] = field(default_factory=list)
     join: JoinRequest | None = None
     retryable: bool = False
     retry_delay: float | None = None
@@ -226,6 +231,9 @@ class ProcessContext:
     resume_point: str | None = None
     saved_process_state: dict = field(default_factory=dict)
     services: object | None = None
+    backends: dict = field(default_factory=dict)
+    context_snapshot_id: uuid.UUID | None = None
+    activation_id: str | None = None
     logger: logging.Logger = field(
         default_factory=lambda: logging.getLogger("nexus_seed.process")
     )
@@ -233,6 +241,9 @@ class ProcessContext:
     _state_deltas: list[StateDelta] = field(default_factory=list)
     _work_requirements: list[WorkRequirement] = field(default_factory=list)
     _work_requirement_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    _proposals: list["InterpretationProposal"] = field(default_factory=list)
+    _proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    _llm_invocations: list["LLMInvocation"] = field(default_factory=list)
 
     @property
     def correlation_id(self) -> uuid.UUID | None:
@@ -269,18 +280,47 @@ class ProcessContext:
         predicate: str,
         extracted: dict,
         confidence: float = 1.0,
+        proposal_id: uuid.UUID | None = None,
+        source_event_id: uuid.UUID | None = None,
     ) -> Observation:
         """Record a semantic reading of the current event (staged on the result)."""
         observation = Observation(
             subject=subject,
             predicate=predicate,
             extracted=dict(extracted),
-            source_event_id=self.event.id if self.event else None,
+            source_event_id=source_event_id
+            or (self.event.id if self.event else None),
             created_by_process_id=self.instance.id,
             confidence=confidence,
+            proposal_id=proposal_id,
         )
         self._observations.append(observation)
         return observation
+
+    def add_observation(self, observation: Observation) -> Observation:
+        """Stage a pre-built observation (used when its source event differs)."""
+        self._observations.append(observation)
+        return observation
+
+    def add_state_delta(self, delta: StateDelta) -> StateDelta:
+        """Stage a pre-built state delta (used when its source event differs)."""
+        self._state_deltas.append(delta)
+        return delta
+
+    def record_proposal(self, proposal) -> object:
+        """Stage an interpretation proposal for persistence."""
+        self._proposals.append(proposal)
+        return proposal
+
+    def update_proposal(self, proposal_id: uuid.UUID, decision) -> None:
+        """Stage a proposal decision transition."""
+        value = getattr(decision, "value", decision)
+        self._proposal_updates.append((proposal_id, value))
+
+    def record_llm_invocation(self, invocation) -> object:
+        """Stage an LLM invocation audit record."""
+        self._llm_invocations.append(invocation)
+        return invocation
 
     def propose_delta(
         self,
@@ -361,6 +401,9 @@ class ProcessContext:
             state_deltas=list(self._state_deltas),
             work_requirements=list(self._work_requirements),
             work_requirement_updates=list(self._work_requirement_updates),
+            proposals=list(self._proposals),
+            proposal_updates=list(self._proposal_updates),
+            llm_invocations=list(self._llm_invocations),
         )
 
     def suspend(
@@ -389,6 +432,9 @@ class ProcessContext:
             state_deltas=list(self._state_deltas),
             work_requirements=list(self._work_requirements),
             work_requirement_updates=list(self._work_requirement_updates),
+            proposals=list(self._proposals),
+            proposal_updates=list(self._proposal_updates),
+            llm_invocations=list(self._llm_invocations),
         )
 
     def suspend_on_timer(

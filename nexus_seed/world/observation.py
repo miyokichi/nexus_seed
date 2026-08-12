@@ -45,5 +45,6 @@ class Observation:
     source_event_id: uuid.UUID | None = None
     created_by_process_id: uuid.UUID | None = None
     confidence: float = 1.0
+    proposal_id: uuid.UUID | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: datetime = field(default_factory=utcnow)

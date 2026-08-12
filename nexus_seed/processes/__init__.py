@@ -17,6 +17,11 @@ from .work_intelligence import (
     work_matcher,
     work_spawner,
 )
+from .llm_interpret import (
+    INTERPRET_LLM,
+    bootstrap_llm_interpreter,
+    interpret_event_llm,
+)
 
 __all__ = [
     "RESISTANCE_ANALYSIS",
@@ -33,4 +38,7 @@ __all__ = [
     "work_spawner",
     "resistance_check",
     "bootstrap_work_intelligence",
+    "INTERPRET_LLM",
+    "interpret_event_llm",
+    "bootstrap_llm_interpreter",
 ]
