@@ -1,4 +1,6 @@
-# NEXUS SEED — Core Runtime (Phase 1)
+# NEXUS SEED — Core Runtime
+
+*[日本語版: README.ja.md](README.ja.md)*
 
 NEXUS SEED is an **event-driven runtime**. It receives Events from the outside
 world, starts / suspends / resumes Processes, and updates its State as it runs
@@ -11,8 +13,19 @@ core loop real:
 Event → Process → State → Continuation → Event → Resume
 ```
 
-No LLM, no Claude Code, no MCP, no web search, no mail — Phase 1 deliberately
-implements only the *mechanism* those things will later plug into.
+Later phases build on that loop without adding a seventh primitive, up to the
+boundaries where NEXUS SEED perceives and acts on the real world:
+
+| Phase | What it added |
+| --- | --- |
+| **1** | The core loop (Event / Process / State / Context / Continuation / Runtime) |
+| **2A** | Durability (atomicity, idempotency, crash recovery, retry, timers, spawn/join) |
+| **2B** | Semantic world model (Observation / StateDelta / World State) |
+| **2C** | Work intelligence (discovering and spawning the work a change requires) |
+| **3A** | Context compiler / memory architecture |
+| **3B** | LLM intelligence boundary (Proposal → validation → policy) |
+| **3C** | Action / tool execution boundary (acting on the world) |
+| **3D** | External observation / ingress boundary (taking the world in) |
 
 ## Design principles
 
@@ -284,6 +297,126 @@ flowchart LR
   `process_parameter_changed`) and the LLM `interpret_event_llm` (on
   `human_message`) both remain available.
 
+## Action / tool execution boundary (Phase 3C)
+
+Phase 3B built perception (world → NEXUS SEED). Phase 3C builds the mirror
+image, action (NEXUS SEED → world), on the same primitives:
+
+```
+World State / Work → Process → ActionProposal
+    → Schema → Backend capability → Permission → Risk policy
+    → APPROVE / REVIEW / REJECT → ExecutionBackend → ActionExecution
+    → action_succeeded / action_failed → Event → World
+```
+
+```mermaid
+flowchart LR
+    W["WorkRequirement"] --> P["action-capable Process"]
+    P --> AP["ActionProposal (PENDING)"]
+    AP --> V["action_validator"]
+    V -->|APPROVE| EX["action_executor"]
+    V -->|REVIEW| SUS["suspend (Continuation)"]
+    SUS -->|action_reviewed| V
+    V -->|REJECT| NO["complete, no side effect"]
+    EX --> BE["ActionBackend (Fake / LocalFile)"]
+    BE --> EXE["ActionExecution journal"]
+    EXE --> EV["action_succeeded / action_failed"]
+    EV --> P
+```
+
+- **Four things stay distinct.** `Process intention ≠ ActionProposal ≠ approved
+  proposal ≠ external side effect`. A handler's only route outward is
+  `ctx.propose_action(...)`, which *stages a candidate* — it never executes
+  anything (Invariants 21–22).
+- **Permissions are granted to definitions, not claimed by instances.** A
+  `ProcessDefinition` carries `metadata["permissions"]` (default: none). Every
+  backend action type also declares **mandatory** permissions, so a proposal
+  that under-declares (`required_permissions: []`) is rejected rather than
+  quietly escalating.
+- **Risk is configuration.** `ActionPolicy` maps `RiskLevel` →
+  APPROVE/REVIEW/REJECT and lives in the validator's definition metadata;
+  an unmapped level falls back to REVIEW. The Runtime holds no risk rules.
+- **Human review = ordinary Event + Continuation**, as in 3B. `approve`
+  **re-validates against current state** before acting; `modify` produces a new
+  PENDING proposal that re-enters validation from the top. Survives a restart.
+- **Safety model: at-most-once per idempotency key** — explicitly *not*
+  distributed exactly-once (no 2PC). A SUCCEEDED `ActionExecution` blocks
+  re-execution, and `LocalFileActionBackend` keeps a durable journal so even the
+  "effect landed, commit lost" crash window does not repeat the effect.
+- **Every attempt is recorded**, including failures, timeouts and idempotent
+  skips — the attempt journals survive the rollback a retry causes
+  (Invariant 26). Retries reuse the Phase 2A mechanism; backends never retry.
+- **Results come back as Events, not state writes.** A backend result lands in
+  the `ActionExecution` journal and an `action_succeeded` payload; changing
+  world state still requires the ordinary Observation → StateDelta path
+  (Invariants 24–25).
+- **Traceable.** `runtime.get_action_trace(id)` walks execution → proposal →
+  process → work → delta → observation → raw event, plus the ContextSnapshot
+  the decision was made against, the permission provenance of each decision,
+  and any human `action_reviewed` events.
+
+## External observation / ingress boundary (Phase 3D)
+
+Phase 3C let NEXUS SEED act on the world; Phase 3D lets the world reach it —
+through one door, with an identity discipline strong enough that redeliveries
+and restarts converge instead of duplicating:
+
+```
+External source → Adapter → IngressEnvelope
+    → validation → deduplication → IngressReceipt + Raw Event
+    → (the existing perception pipeline)
+```
+
+```mermaid
+flowchart LR
+    EXT["External source"] --> AD["Adapter (manual / webhook / file)"]
+    AD --> ENV["IngressEnvelope"]
+    ENV --> VAL["validate"]
+    VAL -->|invalid| REJ["REJECTED — no Event"]
+    VAL --> DUP{"(adapter_id,<br/>source_event_key)<br/>seen before?"}
+    DUP -->|yes| EXIST["DUPLICATE — existing Event"]
+    DUP -->|no| TX["one transaction:<br/>receipt + Event + checkpoint"]
+    TX --> EV["Raw Event"]
+    EV --> INT["interpret / work / action"]
+```
+
+- **External identity is not our identity.** `Event.id` is what NEXUS SEED calls
+  an occurrence; `source_event_key` is what the *world* calls it. A UNIQUE index
+  on `(adapter_id, source_event_key)` means the database — not application
+  logic — is what stops a redelivery becoming a second Event (Invariants 30–31).
+  The adapter chooses that key, because only it knows what makes two
+  observations "the same thing"; an envelope without one is refused rather than
+  given an invented key.
+- **All-or-nothing intake.** The receipt, the Event and the adapter's checkpoint
+  commit in one transaction. Delivery into the Runtime happens *after* that
+  commit, so a failure while processing leaves a durable, already-deduplicated
+  event — never a receipt marking an occurrence handled that never ran.
+- **Checkpoint ≠ Continuation** (Invariant 33). A Continuation is where *our*
+  process resumes; a Checkpoint is how much of the *world* we have looked at.
+  Losing a checkpoint costs a re-observation, not lost work.
+- **Adapters observe, they do not interpret** (Invariant 34). The file adapter
+  reports that bytes under `allowed_root` changed, with a sha256 fingerprint —
+  it never opens the workbook. Interpretation stays in the perception pipeline
+  where it is proposed, validated and auditable.
+- **Delivery semantics:** at-least-once acquisition plus deduplication at
+  ingress. No distributed exactly-once, no 2PC.
+- **Three adapters ship:** manual/CLI, generic webhook (stdlib asyncio HTTP,
+  shared-secret auth, duplicate → `200 {"duplicate": true}`), and a sandboxed
+  local file watcher. A webhook returns as soon as the Event is durable; it
+  never waits for the LLM, the work pipeline or an action.
+- **Traceable in both directions.** `runtime.get_ingress_trace(event_id)` — or
+  `get_ingress_trace_by_source_key(adapter_id, key)`, when all you have is the
+  provider's delivery id — walks forward to the observations, deltas, work and
+  actions it caused, and joins the Phase 3C action trace to close the loop.
+
+The four idempotency mechanisms stay deliberately separate — `Event.id` (2A),
+`work_key` (2C), action `idempotency_key` (3C), `source_event_key` (3D) — and
+must agree without being merged into one general mechanism:
+
+```
+1 real external event → 1 Event → 1 WorkRequirement → 1 Action → 1 side effect
+```
+
 ## Repository layout
 
 ```
@@ -294,15 +427,24 @@ nexus_seed/
 │                    #   rules, trace
 ├── context/         # context architecture: requirements, models (view/snapshot),
 │                    #   compiler
-├── backends/        # ExecutionBackend protocol + LLMBackend / FakeLLMBackend
+├── backends/        # ExecutionBackend protocol + LLMBackend / FakeLLMBackend;
+│                    #   ActionBackend + FakeAction / LocalFileAction
 ├── intelligence/    # proposal, validation, policy (the LLM boundary)
+├── actions/         # action domain data: models, permissions, validation,
+│                    #   policy, trace (the outward boundary)
+├── ingress/         # ingress domain data: models, validation, service, trace
+│                    #   (the inward boundary)
+├── adapters/        # external adapters: manual, webhook, local file watcher
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
 │                    #   clock, join_coordinator, services
 ├── storage/         # sqlite: database + event/process/state/continuation/timer/
 │                    #   join/activation/observation/state_delta/work_requirement/
-│                    #   context_snapshot/proposal/llm_invocation
+│                    #   context_snapshot/proposal/llm_invocation/
+│                    #   action_proposal/action_execution/action_decision/
+│                    #   ingress_receipt/adapter_checkpoint
 ├── processes/       # concrete Processes (demo_resistance, semantic,
-│                    #   work_intelligence, llm_interpret)
+│                    #   work_intelligence, llm_interpret, actions)
+├── ingress_cli.py   # submit one external occurrence by hand
 └── demo.py          # runnable acceptance scenario (with runtime restart)
 tests/               # phase 1: event_store, process_execution, suspend_resume
                      # phase 2a: atomic_transition, idempotency, crash_recovery,
@@ -324,6 +466,23 @@ tests/               # phase 1: event_store, process_execution, suspend_resume
                      #           llm_human_approve, llm_human_reject,
                      #           llm_review_restart, llm_conflict, llm_retry,
                      #           llm_trace, llm_work_integration
+                     # phase 3c: action_proposal, action_validation,
+                     #           action_policy, action_permissions,
+                     #           action_backend, action_auto_approve,
+                     #           action_review, action_review_restart,
+                     #           action_reject, action_retry,
+                     #           action_idempotency, action_trace,
+                     #           action_context_trace, action_file_sandbox,
+                     #           action_boundary, action_work_integration,
+                     #           llm_invocation_logging
+                     # phase 3d: ingress_models, ingress_service,
+                     #           ingress_duplicate, ingress_atomicity,
+                     #           manual_adapter, webhook_adapter, webhook_auth,
+                     #           file_adapter, file_adapter_restart,
+                     #           file_adapter_sandbox, adapter_checkpoint,
+                     #           ingress_trace, ingress_llm_integration,
+                     #           ingress_closed_loop,
+                     #           ingress_duplicate_closed_loop
 ```
 
 ## Install
@@ -332,7 +491,9 @@ Requires Python 3.12+. No runtime dependencies; tests use `pytest` +
 `pytest-asyncio`.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS / Linux
 pip install -e ".[dev]"
 ```
 
@@ -346,6 +507,12 @@ The key test is `tests/test_suspend_resume.py`: it suspends a process, **closes
 and discards the Runtime**, rebuilds a new Runtime from the same SQLite file,
 and only then delivers the resuming event — proving process state is fully
 recovered from disk.
+
+That same discard-and-rebuild pattern recurs at every phase boundary:
+`test_llm_review_restart.py` (an LLM proposal awaiting review),
+`test_action_review_restart.py` (an action awaiting approval),
+`test_file_adapter_restart.py` (files already observed), and
+`test_ingress_closed_loop.py` (the whole loop).
 
 ## Demo
 
@@ -364,9 +531,28 @@ This runs the Phase 1 acceptance scenario:
 6. The Continuation Resolver matches it and resumes the process.
 7. The process completes and emits `resistance_analysis_completed`.
 
+## Submitting one external occurrence (Phase 3D)
+
+```bash
+python -m nexus_seed.ingress_cli --db world.db \
+    --event-type human_message \
+    --source-event-key demo-001 \
+    --payload '{"text": "D1のCD targetを48nmから45nmへ変更しました"}'
+```
+
+Running the same command twice is a no-op: the second call reports `duplicate`
+and creates no second Event — the same rule a webhook redelivery obeys, made
+visible at the smallest possible scale. Add `--bootstrap` to register the
+standard perception + work + action stack before ingesting.
+
 ## What Phase 1 intentionally excludes
 
 LLM / model APIs, Claude Code, OpenClaw, MCP, mail/Slack, web search, vector or
 graph databases, embeddings, GUI, knowledge graph, multi-agent orchestration,
 self-modification. Only the boundaries where those will later attach are in
-place. See `AGENTS.md` for the working agreement and Phase 2 candidates.
+place.
+
+Later phases filled in three of those boundaries — the LLM boundary (3B), the
+action boundary (3C) and the observation boundary (3D). The Artifact / Resource
+layer, dynamic organization and self extension remain unbuilt. See `AGENTS.md`
+for the working agreement and the current later-phase candidates.

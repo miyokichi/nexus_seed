@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS events (
     payload        TEXT NOT NULL,
     occurred_at    TEXT NOT NULL,
     correlation_id TEXT,
-    causation_id   TEXT
+    causation_id   TEXT,
+    -- Phase 3D: set only on events that entered from outside, so
+    -- "did this come from the world or from us?" is answerable directly.
+    ingress_receipt_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_correlation ON events(correlation_id);
@@ -220,7 +223,101 @@ CREATE TABLE IF NOT EXISTS llm_invocations (
     created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llminv_instance ON llm_invocations(process_instance_id);
+
+CREATE TABLE IF NOT EXISTS action_proposals (
+    id                        TEXT PRIMARY KEY,
+    created_by_process_id     TEXT,
+    source_work_requirement_id TEXT,
+    trigger_event_id          TEXT,
+    context_snapshot_id       TEXT,
+    backend                   TEXT NOT NULL,
+    action_type               TEXT NOT NULL,
+    target                    TEXT,
+    parameters_json           TEXT NOT NULL DEFAULT '{}',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    declared_side_effects_json TEXT NOT NULL DEFAULT '[]',
+    risk_level                TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    rationale                 TEXT,
+    idempotency_key           TEXT,
+    root_proposal_id          TEXT,
+    replaces_proposal_id      TEXT,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_proposal_status ON action_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_action_proposal_root ON action_proposals(root_proposal_id);
+
+CREATE TABLE IF NOT EXISTS action_executions (
+    id                  TEXT PRIMARY KEY,
+    action_proposal_id  TEXT NOT NULL,
+    process_instance_id TEXT NOT NULL,
+    backend             TEXT NOT NULL,
+    action_type         TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    attempt             INTEGER NOT NULL DEFAULT 1,
+    idempotency_key     TEXT,
+    result_json         TEXT,
+    error               TEXT,
+    started_at          TEXT NOT NULL,
+    completed_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_action_exec_proposal ON action_executions(action_proposal_id);
+CREATE INDEX IF NOT EXISTS idx_action_exec_idem ON action_executions(idempotency_key, status);
+
+CREATE TABLE IF NOT EXISTS action_decisions (
+    id                        TEXT PRIMARY KEY,
+    action_proposal_id        TEXT NOT NULL,
+    decision                  TEXT NOT NULL,
+    risk_level                TEXT NOT NULL,
+    decided_by_process_id     TEXT,
+    process_definition_name   TEXT,
+    process_definition_version TEXT,
+    granted_permissions_json  TEXT NOT NULL DEFAULT '[]',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    mandatory_permissions_json TEXT NOT NULL DEFAULT '[]',
+    reasons_json              TEXT NOT NULL DEFAULT '[]',
+    policy_json               TEXT NOT NULL DEFAULT '{}',
+    reviewed_by_event_id      TEXT,
+    created_at                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_decision_proposal ON action_decisions(action_proposal_id);
+
+CREATE TABLE IF NOT EXISTS ingress_receipts (
+    id               TEXT PRIMARY KEY,
+    adapter_id       TEXT NOT NULL,
+    source_type      TEXT NOT NULL,
+    source_event_key TEXT NOT NULL,
+    event_type       TEXT NOT NULL,
+    payload_json     TEXT NOT NULL DEFAULT '{}',
+    source_cursor    TEXT,
+    metadata_json    TEXT NOT NULL DEFAULT '{}',
+    reasons_json     TEXT NOT NULL DEFAULT '[]',
+    observed_at      TEXT NOT NULL,
+    received_at      TEXT NOT NULL,
+    event_id         TEXT,
+    status           TEXT NOT NULL,
+    UNIQUE (adapter_id, source_event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ingress_event ON ingress_receipts(event_id);
+CREATE INDEX IF NOT EXISTS idx_ingress_adapter ON ingress_receipts(adapter_id, status);
+
+CREATE TABLE IF NOT EXISTS adapter_checkpoints (
+    adapter_id    TEXT NOT NULL,
+    stream_key    TEXT NOT NULL,
+    cursor        TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (adapter_id, stream_key)
+);
 """
+
+#: Columns added to pre-existing tables after they shipped.  ``CREATE TABLE IF
+#: NOT EXISTS`` cannot widen a table that already exists, so a database written
+#: by an earlier phase needs these added explicitly.  ``(table, column, ddl)``.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("events", "ingress_receipt_id", "TEXT"),
+)
 
 
 def dumps(value: Any) -> str:
@@ -254,9 +351,23 @@ class Database:
         self.init_schema()
 
     def init_schema(self) -> None:
-        """Create all tables if they do not already exist."""
+        """Create all tables if they do not already exist, then widen old ones."""
         self.conn.executescript(SCHEMA)
+        self._add_missing_columns()
         self.conn.commit()
+
+    def _add_missing_columns(self) -> None:
+        """Add columns introduced after a table first shipped (idempotent).
+
+        Keeps a database written by an earlier phase readable by a later one
+        without a migration framework.
+        """
+        for table, column, ddl in ADDED_COLUMNS:
+            existing = {
+                row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a statement, committing immediately unless inside ``atomic``."""

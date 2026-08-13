@@ -15,6 +15,7 @@ dev = [
 
 [project.scripts]
 nexus-seed-demo = "nexus_seed.demo:main"
+nexus-seed-ingress = "nexus_seed.ingress_cli:main"
 
 [build-system]
 requires = ["hatchling"]

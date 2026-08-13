@@ -43,6 +43,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..context.models import ProcessContextView
     from ..backends.base import LLMInvocation
     from ..intelligence.proposal import InterpretationProposal
+    from ..actions.models import (
+        ActionDecisionRecord,
+        ActionExecution,
+        ActionProposal,
+    )
 
 
 class ProcessStatus(str, Enum):
@@ -187,9 +192,20 @@ class ProcessResult:
         state_deltas: State deltas to persist.
         work_requirements: Work requirements to persist (insert-or-ignore by key).
         work_requirement_updates: ``(requirement_id, new_status)`` transitions.
+        action_proposals: Action proposals to persist (never executed here — a
+            proposal is a *candidate*; the action subsystem authorizes it).
+        action_proposal_updates: ``(proposal_id, new_status)`` transitions.
+        action_executions: Attempt records for the external-effect journal.
+        action_decisions: Authorization decisions (permission provenance).
         join: Optional join request (suspend until children finish).
         retryable: If FAILED, whether the failure may be retried.
         retry_delay: Optional explicit backoff (seconds) for a retry.
+
+    Most fields are discarded when the result is FAILED — a failed activation
+    must leave no partial effects.  The two *journals*
+    (:attr:`llm_invocations`, :attr:`action_executions`) are the exception: they
+    record what was *attempted*, so they are persisted on failure too
+    (Invariant 26).
     """
 
     status: ProcessStatus
@@ -207,6 +223,10 @@ class ProcessResult:
     proposals: list["InterpretationProposal"] = field(default_factory=list)
     proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     llm_invocations: list["LLMInvocation"] = field(default_factory=list)
+    action_proposals: list["ActionProposal"] = field(default_factory=list)
+    action_proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    action_executions: list["ActionExecution"] = field(default_factory=list)
+    action_decisions: list["ActionDecisionRecord"] = field(default_factory=list)
     join: JoinRequest | None = None
     retryable: bool = False
     retry_delay: float | None = None
@@ -244,6 +264,10 @@ class ProcessContext:
     _proposals: list["InterpretationProposal"] = field(default_factory=list)
     _proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     _llm_invocations: list["LLMInvocation"] = field(default_factory=list)
+    _action_proposals: list["ActionProposal"] = field(default_factory=list)
+    _action_proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    _action_executions: list["ActionExecution"] = field(default_factory=list)
+    _action_decisions: list["ActionDecisionRecord"] = field(default_factory=list)
 
     @property
     def correlation_id(self) -> uuid.UUID | None:
@@ -322,6 +346,73 @@ class ProcessContext:
         self._llm_invocations.append(invocation)
         return invocation
 
+    def propose_action(
+        self,
+        *,
+        backend: str,
+        action_type: str,
+        target: str | None = None,
+        parameters: dict | None = None,
+        required_permissions: list[str] | None = None,
+        declared_side_effects: list[str] | None = None,
+        risk_level="LOW",
+        rationale: str | None = None,
+        idempotency_key: str | None = None,
+    ):
+        """Propose an external action (staged; **not** executed here).
+
+        This is the only way a Process may reach the outside world: a handler
+        never calls a side-effecting backend itself (Invariants 21–22).  What is
+        returned is a *candidate* — the action subsystem still has to validate
+        it, check permissions and apply risk policy before anything runs.
+
+        The proposal automatically carries this activation's provenance: the
+        proposing instance, its WorkRequirement, the trigger event and the
+        compiled ContextSnapshot the decision was made against.
+        """
+        from ..actions.models import ActionProposal, RiskLevel
+
+        level = RiskLevel.coerce(risk_level)
+        if level is None:
+            raise ValueError(f"invalid risk_level {risk_level!r}")
+
+        proposal = ActionProposal(
+            backend=backend,
+            action_type=action_type,
+            target=target,
+            parameters=dict(parameters or {}),
+            required_permissions=list(required_permissions or []),
+            declared_side_effects=list(declared_side_effects or []),
+            risk_level=level,
+            rationale=rationale,
+            created_by_process_id=self.instance.id,
+            source_work_requirement_id=self.instance.work_requirement_id,
+            trigger_event_id=self.event.id if self.event else None,
+            context_snapshot_id=self.context_snapshot_id,
+            idempotency_key=idempotency_key,
+        )
+        self._action_proposals.append(proposal)
+        return proposal
+
+    def add_action_proposal(self, proposal):
+        """Stage a pre-built action proposal (e.g. a review replacement)."""
+        self._action_proposals.append(proposal)
+        return proposal
+
+    def update_action_proposal(self, proposal_id: uuid.UUID, status) -> None:
+        """Stage an action-proposal status transition (applied atomically)."""
+        self._action_proposal_updates.append((proposal_id, getattr(status, "value", status)))
+
+    def record_action_execution(self, execution):
+        """Stage an action-execution journal entry (kept even if this fails)."""
+        self._action_executions.append(execution)
+        return execution
+
+    def record_action_decision(self, decision):
+        """Stage an authorization decision record (permission provenance)."""
+        self._action_decisions.append(decision)
+        return decision
+
     def propose_delta(
         self,
         *,
@@ -383,6 +474,29 @@ class ProcessContext:
         if self.instance.work_requirement_id is not None:
             self.mark_work(self.instance.work_requirement_id, WorkStatus.SATISFIED)
 
+    def _staged(self) -> dict:
+        """Every effect staged on this context, as ProcessResult kwargs."""
+        return {
+            "observations": list(self._observations),
+            "state_deltas": list(self._state_deltas),
+            "work_requirements": list(self._work_requirements),
+            "work_requirement_updates": list(self._work_requirement_updates),
+            "proposals": list(self._proposals),
+            "proposal_updates": list(self._proposal_updates),
+            "llm_invocations": list(self._llm_invocations),
+            "action_proposals": list(self._action_proposals),
+            "action_proposal_updates": list(self._action_proposal_updates),
+            "action_executions": list(self._action_executions),
+            "action_decisions": list(self._action_decisions),
+        }
+
+    def _staged_journals(self) -> dict:
+        """Only the attempt journals — the effects that survive a failure."""
+        return {
+            "llm_invocations": list(self._llm_invocations),
+            "action_executions": list(self._action_executions),
+        }
+
     def complete(
         self,
         output: dict | None = None,
@@ -397,13 +511,7 @@ class ProcessContext:
             state_changes=list(self.state.changes),
             emitted_events=list(emitted_events or []),
             spawned_processes=list(spawned_processes or []),
-            observations=list(self._observations),
-            state_deltas=list(self._state_deltas),
-            work_requirements=list(self._work_requirements),
-            work_requirement_updates=list(self._work_requirement_updates),
-            proposals=list(self._proposals),
-            proposal_updates=list(self._proposal_updates),
-            llm_invocations=list(self._llm_invocations),
+            **self._staged(),
         )
 
     def suspend(
@@ -428,13 +536,7 @@ class ProcessContext:
             state_changes=list(self.state.changes),
             emitted_events=list(emitted_events or []),
             continuations_to_create=[continuation],
-            observations=list(self._observations),
-            state_deltas=list(self._state_deltas),
-            work_requirements=list(self._work_requirements),
-            work_requirement_updates=list(self._work_requirement_updates),
-            proposals=list(self._proposals),
-            proposal_updates=list(self._proposal_updates),
-            llm_invocations=list(self._llm_invocations),
+            **self._staged(),
         )
 
     def suspend_on_timer(
@@ -484,12 +586,18 @@ class ProcessContext:
         )
 
     def retry(self, error: object, *, delay: float | None = None) -> ProcessResult:
-        """Return a *retryable* failure result (no side effects are applied)."""
+        """Return a *retryable* failure result.
+
+        No world-changing effect is applied — but the attempt journals staged on
+        this context are kept, so "we called the backend and it timed out"
+        stays visible after the rollback (Invariant 26 / spec §69).
+        """
         return ProcessResult(
             status=ProcessStatus.FAILED,
             output={"error": str(error)},
             retryable=True,
             retry_delay=delay,
+            **self._staged_journals(),
         )
 
     def fail(
@@ -498,11 +606,12 @@ class ProcessContext:
         *,
         emitted_events: list[Event] | None = None,
     ) -> ProcessResult:
-        """Return a non-retryable FAILED result."""
+        """Return a non-retryable FAILED result (attempt journals are kept)."""
         return ProcessResult(
             status=ProcessStatus.FAILED,
             output={"error": str(error)},
             emitted_events=list(emitted_events or []),
+            **self._staged_journals(),
         )
 
 

@@ -45,10 +45,28 @@ from ..storage.work_requirement_store import WorkRequirementStore
 from ..storage.context_snapshot_store import ContextSnapshotStore
 from ..storage.proposal_store import ProposalStore
 from ..storage.llm_invocation_store import LLMInvocationStore
+from ..storage.action_proposal_store import ActionProposalStore
+from ..storage.action_execution_store import ActionExecutionStore
+from ..storage.action_decision_store import ActionDecisionStore
+from ..storage.ingress_receipt_store import IngressReceiptStore
+from ..storage.adapter_checkpoint_store import AdapterCheckpointStore
 from ..context.compiler import ContextCompiler
 from ..context.models import ContextSnapshot
 from ..backends.base import ExecutionBackend, LLMInvocation
 from ..intelligence.proposal import InterpretationProposal
+from ..actions.models import (
+    ActionDecisionRecord,
+    ActionExecution,
+    ActionProposal,
+    ActionProposalStatus,
+)
+from ..actions.trace import ActionTrace, get_action_trace
+from ..ingress.models import AdapterCheckpoint, IngressReceipt
+from ..ingress.trace import (
+    IngressTrace,
+    get_ingress_trace,
+    get_ingress_trace_by_source_key,
+)
 from ..core.state import StateEntry, StateHistoryEntry
 from ..world.provenance import Provenance, get_state_provenance
 from ..work.trace import WorkTrace, get_work_trace
@@ -96,6 +114,11 @@ class Runtime:
         self.context_snapshot_store = ContextSnapshotStore(self.db)
         self.proposal_store = ProposalStore(self.db)
         self.llm_invocation_store = LLMInvocationStore(self.db)
+        self.action_proposal_store = ActionProposalStore(self.db)
+        self.action_execution_store = ActionExecutionStore(self.db)
+        self.action_decision_store = ActionDecisionStore(self.db)
+        self.ingress_receipt_store = IngressReceiptStore(self.db)
+        self.adapter_checkpoint_store = AdapterCheckpointStore(self.db)
         self.backends: dict[str, ExecutionBackend] = {}
 
         self.registry = registry or HandlerRegistry()
@@ -108,6 +131,8 @@ class Runtime:
             work_requirement_store=self.work_requirement_store,
             state_store=self.state_store,
             proposal_store=self.proposal_store,
+            action_proposal_store=self.action_proposal_store,
+            action_execution_store=self.action_execution_store,
         )
         self.context_compiler = ContextCompiler(
             process_store=self.process_store,
@@ -138,6 +163,9 @@ class Runtime:
             self.llm_invocation_store,
             self.backends,
             self.services,
+            action_proposal_store=self.action_proposal_store,
+            action_execution_store=self.action_execution_store,
+            action_decision_store=self.action_decision_store,
         )
 
         self.recover()
@@ -174,6 +202,93 @@ class Runtime:
     def get_llm_invocation(self, invocation_id) -> LLMInvocation | None:
         """Return a stored LLM invocation record by id."""
         return self.llm_invocation_store.get(invocation_id)
+
+    def get_llm_invocations(self, instance_id) -> list[LLMInvocation]:
+        """Return every backend call an instance made (successes and failures)."""
+        return self.llm_invocation_store.for_instance(instance_id)
+
+    # --- action queries ----------------------------------------------------
+
+    def get_action_proposal(self, proposal_id) -> ActionProposal | None:
+        """Return a stored action proposal by id."""
+        return self.action_proposal_store.get(proposal_id)
+
+    def get_action_proposals(
+        self, status: ActionProposalStatus | str | None = None
+    ) -> list[ActionProposal]:
+        """Return all action proposals, optionally filtered by ``status``."""
+        if status is None:
+            return self.action_proposal_store.all()
+        return self.action_proposal_store.by_status(status)
+
+    def get_action_executions(self, proposal_id) -> list[ActionExecution]:
+        """Return every execution attempt made for a proposal, oldest first."""
+        return self.action_execution_store.for_proposal(proposal_id)
+
+    def get_action_decisions(self, proposal_id) -> list[ActionDecisionRecord]:
+        """Return the authorization decisions recorded for a proposal."""
+        return self.action_decision_store.for_proposal(proposal_id)
+
+    def get_action_trace(self, proposal_id) -> ActionTrace | None:
+        """Trace an action back through work, delta and observation to its event."""
+        return get_action_trace(
+            proposal_id,
+            action_proposal_store=self.action_proposal_store,
+            action_execution_store=self.action_execution_store,
+            action_decision_store=self.action_decision_store,
+            process_store=self.process_store,
+            work_requirement_store=self.work_requirement_store,
+            state_delta_store=self.state_delta_store,
+            observation_store=self.observation_store,
+            event_store=self.event_store,
+            context_snapshot_store=self.context_snapshot_store,
+        )
+
+    # --- ingress queries ---------------------------------------------------
+
+    def get_ingress_receipt(self, receipt_id) -> IngressReceipt | None:
+        """Return a stored ingress receipt by id."""
+        return self.ingress_receipt_store.get(receipt_id)
+
+    def get_ingress_receipts(self, adapter_id: str | None = None) -> list[IngressReceipt]:
+        """Return ingress receipts, optionally only those from one adapter."""
+        if adapter_id is None:
+            return self.ingress_receipt_store.all()
+        return self.ingress_receipt_store.for_adapter(adapter_id)
+
+    def get_ingress_receipt_for_event(self, event_id) -> IngressReceipt | None:
+        """Return the receipt that produced ``event_id`` (``None`` if internal)."""
+        return self.ingress_receipt_store.for_event(event_id)
+
+    def get_adapter_checkpoint(self, adapter_id: str, stream_key: str) -> AdapterCheckpoint | None:
+        """Return one adapter's observation position for a stream."""
+        return self.adapter_checkpoint_store.get(adapter_id, stream_key)
+
+    def get_adapter_checkpoints(self, adapter_id: str) -> list[AdapterCheckpoint]:
+        """Return every stream checkpoint held by ``adapter_id``."""
+        return self.adapter_checkpoint_store.for_adapter(adapter_id)
+
+    def get_ingress_trace(self, event_id) -> IngressTrace | None:
+        """Trace an ingested event forward to everything it caused."""
+        return get_ingress_trace(event_id, **self._ingress_trace_stores())
+
+    def get_ingress_trace_by_source_key(
+        self, adapter_id: str, source_event_key: str
+    ) -> IngressTrace | None:
+        """Trace an external identity forward, without knowing any NEXUS id."""
+        return get_ingress_trace_by_source_key(
+            adapter_id, source_event_key, **self._ingress_trace_stores()
+        )
+
+    def _ingress_trace_stores(self) -> dict:
+        return {
+            "ingress_receipt_store": self.ingress_receipt_store,
+            "event_store": self.event_store,
+            "observation_store": self.observation_store,
+            "state_delta_store": self.state_delta_store,
+            "work_requirement_store": self.work_requirement_store,
+            "action_proposal_store": self.action_proposal_store,
+        }
 
     # --- world-state queries ----------------------------------------------
 
@@ -256,6 +371,16 @@ class Runtime:
             logger.info("event %s already ingested; skipping (idempotent)", event.id)
             return []
         self.event_store.append(event)
+        return await self.deliver_event(event)
+
+    async def deliver_event(self, event: Event) -> list[Event]:
+        """Route an **already-persisted** event and drain the system.
+
+        The half of :meth:`submit_event` after the append.  Phase 3D's ingress
+        boundary persists the event itself (inside the same transaction as its
+        receipt), then calls this — so the event is stored exactly once but
+        still runs through the ordinary router and scheduler.
+        """
         self.router.route(event)
         return await self._drain()
 

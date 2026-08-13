@@ -31,6 +31,10 @@ class Event:
         occurred_at: When the event happened (UTC).
         correlation_id: Groups a whole unit of work across many events.
         causation_id: The id of the event that directly caused this one.
+        ingress_receipt_id: Set only when this event entered from *outside*
+            through the Phase 3D ingress boundary (Invariant 28).  Events a
+            process emits leave it ``None``, so the field doubles as the answer
+            to "did the world tell us this, or did we conclude it?".
     """
 
     type: str
@@ -40,3 +44,9 @@ class Event:
     occurred_at: datetime = field(default_factory=utcnow)
     correlation_id: uuid.UUID | None = None
     causation_id: uuid.UUID | None = None
+    ingress_receipt_id: uuid.UUID | None = None
+
+    @property
+    def is_external(self) -> bool:
+        """Whether this event came from the outside world via ingress."""
+        return self.ingress_receipt_id is not None

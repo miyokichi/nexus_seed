@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 
-from ..core.process import ProcessInstance, ProcessStatus
+from ..core.process import ProcessDefinition, ProcessInstance, ProcessStatus
 from ..core.state import StateEntry
 from ..storage.process_store import ProcessStore
 from ..storage.state_store import StateStore
@@ -36,11 +36,15 @@ class RuntimeServices:
         work_requirement_store: WorkRequirementStore,
         state_store: StateStore,
         proposal_store=None,
+        action_proposal_store=None,
+        action_execution_store=None,
     ) -> None:
         self._process_store = process_store
         self._work_requirement_store = work_requirement_store
         self._state_store = state_store
         self._proposal_store = proposal_store
+        self._action_proposal_store = action_proposal_store
+        self._action_execution_store = action_execution_store
 
     # --- work requirements -------------------------------------------------
 
@@ -53,6 +57,14 @@ class RuntimeServices:
         return self._work_requirement_store.get_by_work_key(work_key)
 
     # --- processes ---------------------------------------------------------
+
+    def get_process_instance(self, instance_id: uuid.UUID) -> ProcessInstance | None:
+        """Return a process instance by id (used to attribute a proposal)."""
+        return self._process_store.get_instance(instance_id)
+
+    def get_definition(self, name: str, version: str) -> ProcessDefinition | None:
+        """Return a ProcessDefinition — the carrier of granted permissions."""
+        return self._process_store.get_definition(name, version)
 
     def find_processes_by_work_key(self, work_key: str) -> list[ProcessInstance]:
         """Return every process (any status) fulfilling ``work_key``."""
@@ -81,6 +93,30 @@ class RuntimeServices:
         if self._proposal_store is None:
             return None
         return self._proposal_store.get(proposal_id)
+
+    # --- actions -----------------------------------------------------------
+
+    def get_action_proposal(self, proposal_id: uuid.UUID):
+        """Return a stored action proposal by id (or ``None``)."""
+        if self._action_proposal_store is None:
+            return None
+        return self._action_proposal_store.get(proposal_id)
+
+    def get_action_executions(self, proposal_id: uuid.UUID) -> list:
+        """Return every execution attempt recorded for a proposal."""
+        if self._action_execution_store is None:
+            return []
+        return self._action_execution_store.for_proposal(proposal_id)
+
+    def find_succeeded_action_execution(self, idempotency_key: str | None):
+        """Return a SUCCEEDED execution for ``idempotency_key``, if one exists.
+
+        The idempotency guard: a hit means the external effect already happened
+        and the backend must not be called again (Invariant 27).
+        """
+        if self._action_execution_store is None:
+            return None
+        return self._action_execution_store.succeeded_for_key(idempotency_key)
 
     # --- state -------------------------------------------------------------
 

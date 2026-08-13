@@ -140,11 +140,119 @@ Python application.
 - **19.** A backend never mutates Runtime/domain state.
 - **20.** Real LLM and FakeLLM use the same backend interface.
 
+## Done in Phase 3C (Action / Tool Execution Boundary)
+
+- The outbound mirror of 3B. `ActionProposal` / `ActionExecution` /
+  `ActionDecisionRecord` / `RiskLevel` are domain data under `actions/` (NOT
+  core types); the pipeline is three ordinary Processes in `processes/actions.py`
+  (`action_validator`, `action_executor`, plus `write_analysis_result` as an
+  action-performing work process), wired by `action_proposed` /
+  `action_approved` / `action_rejected` / `action_reviewed` /
+  `action_succeeded` / `action_failed`.
+- `ctx.propose_action()` is the *only* way a handler reaches the world. Four
+  things stay distinct: intention ≠ ActionProposal ≠ approved proposal ≠
+  external side effect.
+- Validation order: schema → backend capability → permission → risk policy.
+  Permissions are flat strings granted on `ProcessDefinition.metadata
+  ["permissions"]` (default deny). A proposal that *under-declares* is rejected:
+  each backend action type carries mandatory permissions, so declaring
+  `required_permissions: []` cannot escalate.
+- `ActionPolicy` (risk → APPROVE/REVIEW/REJECT) lives in the validator's
+  definition metadata, so risk appetite is configuration; unmapped ⇒ REVIEW.
+  Deliberately not merged with `InterpretationPolicy`.
+- REVIEW suspends on a normal Continuation waiting for `action_reviewed`;
+  `approve` **re-validates** before acting, `modify` creates a new PENDING
+  proposal (never a directly-approved one). `root_proposal_id` keeps the
+  original waiter attached across a modify-chain.
+- Action backends (`backends/action.py`) publish `BackendCapabilities` (a
+  deterministic dict, no capability search). `FakeActionBackend` +
+  `LocalFileActionBackend` (sandboxed to `allowed_root`, path traversal is a
+  permanent non-retryable failure).
+- **Safety model = at-most-once per `idempotency_key`**, not distributed
+  exactly-once: a SUCCEEDED `ActionExecution` for the key stops re-execution,
+  and `LocalFileActionBackend` keeps a durable on-disk journal so the
+  "effect landed, commit lost" crash window is covered too. No 2PC.
+- Backend failures reuse the Phase 2A retry loop (no bespoke retry). Attempt
+  *journals* (`llm_invocations`, `action_executions`) are now persisted on the
+  failure path as well as the success path — this also closes the Phase 3B gap
+  where a failed LLM call left no trace (`llm_interpret` now returns
+  `ctx.retry(...)` after recording the invocation).
+- New tables: `action_proposals`, `action_executions`, `action_decisions`.
+  New `ProcessResult` fields + `ctx.propose_action` / `update_action_proposal` /
+  `record_action_execution` / `record_action_decision`.
+- `runtime.get_action_trace()` walks execution → proposal → process → work →
+  delta → observation → raw event, plus ContextSnapshot, decisions (permission
+  provenance) and `action_reviewed` events.
+
+## Runtime invariants (added in Phase 3C — keep them)
+
+- **21.** A Process never calls a side-effecting backend directly.
+- **22.** Every external side effect goes through an ActionProposal.
+- **23.** Every ActionProposal passes Permission + Risk Policy.
+- **24.** External action results come back as Events.
+- **25.** An action backend never changes World State.
+- **26.** Failed action attempts stay in the audit journal.
+- **27.** The same ActionProposal never produces the side effect twice.
+
+## Done in Phase 3D (External Observation / Ingress Boundary)
+
+- The inbound mirror of 3C, and the stage *before* perception. `IngressEnvelope`
+  / `IngressReceipt` / `AdapterCheckpoint` are domain data under `ingress/`
+  (NOT core types); `IngressService` is the only thing that turns an outside
+  occurrence into an Event.
+- **`source_event_key` is the load-bearing idea.** `Event.id` is our name for
+  something; `source_event_key` is the world's name for it. Unique index on
+  `(adapter_id, source_event_key)` — the *database*, not application logic,
+  makes a redelivery impossible to turn into a second Event.
+- Adapters decide `source_event_key`; the service never invents one. An
+  envelope without one is REJECTED rather than ingested, because a made-up key
+  would make every redelivery look new.
+- Atomic: receipt + Event + checkpoint commit in one transaction. Delivery into
+  the Runtime happens *after* that commit, so a handler blowing up leaves a
+  durable, already-deduplicated event rather than a lost occurrence.
+- Three adapters: `ManualAdapter` (+ `python -m nexus_seed.ingress_cli`),
+  `WebhookAdapter`/`WebhookIngress`/`WebhookServer` (stdlib asyncio HTTP, shared
+  -secret auth, duplicate → 200 + `duplicate: true`), `LocalFileAdapter`
+  (sha256 fingerprints, per-path checkpoints, `allowed_root` sandbox that
+  resolves symlinks). A webhook **never waits** for the work it causes.
+- **Checkpoint ≠ Continuation.** A Continuation is where *our* process resumes;
+  a Checkpoint is how much of the *world* we have looked at. Separate tables,
+  separate meanings; losing a checkpoint costs a re-observation, not lost work.
+- **Adapters do not interpret.** `LocalFileAdapter` reports that bytes changed;
+  parsing the file is a downstream Process's job. An adapter that quietly parsed
+  spreadsheets would be an unreviewable back door into World State.
+- Delivery semantics: **at-least-once acquisition + dedup at ingress**. No
+  distributed exactly-once, no 2PC.
+- `Event` gained one nullable field, `ingress_receipt_id` (`None` ⇒ the event
+  originated inside NEXUS SEED). `Runtime` gained `deliver_event()` — the half
+  of `submit_event` after the append — plus ingress read queries and
+  `get_ingress_trace()` / `get_ingress_trace_by_source_key()`.
+- New tables: `ingress_receipts`, `adapter_checkpoints`. `Database.init_schema`
+  now also adds columns introduced after a table shipped (`ADDED_COLUMNS`), so a
+  database written by an earlier phase stays readable.
+- The four idempotency mechanisms stay **separate** (Event.id / work_key /
+  action idempotency_key / source_event_key). They are not merged into one
+  general mechanism; `test_ingress_duplicate_closed_loop.py` proves they agree.
+
+## Runtime invariants (added in Phase 3D — keep them)
+
+- **28.** External input becomes an Event only through the ingress boundary.
+- **29.** An adapter never changes World State.
+- **30.** External identity (`source_event_key`) is separate from `Event.id`.
+- **31.** A redelivered external occurrence never produces a second Event.
+- **32.** Pull/watch observation position is persisted as a Checkpoint.
+- **33.** A Checkpoint is not a Continuation.
+- **34.** An adapter never interprets the meaning of external data.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 3C+ — external observation adapters (file/webhook/CLI → Raw Event),
-  ExecutionBackend adapters (Claude Code / OpenClaw / MCP), dynamic organization,
-  self extension. Do NOT build until instructed.
+- Phase 3E+ — Artifact / Resource layer (Excel / PPT / PDF content extraction);
+  further adapters (mail, Slack, GitHub, browser); further ExecutionBackends
+  (Shell / Claude Code / OpenClaw / MCP); dynamic organization; capability
+  registry; self extension. Do NOT build until instructed.
+- Carried over, still open: generic sandbox contract shared by ingress and
+  action boundaries; hierarchical permissions; compensating actions; external
+  action exactly-once; adapter daemonisation; `adapter_errors` journal.
 - Context compiler extensions: semantic retrieval, token budget, priority,
   summarization, artifact loading (don't over-abstract yet).
 - Richer `waiting_for` matching; pluggable graph state backend; work dependency

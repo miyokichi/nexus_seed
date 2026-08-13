@@ -14,8 +14,11 @@ Decisions:
   ``interpretation_reviewed`` event (Invariant 18).
 * **REJECT** — record the proposal, change nothing, complete.
 
-Backend failure or invalid structured output raise ``RetryableError`` so the
-Phase 2A retry mechanism applies (no bespoke retry loop; spec §38–§39).
+Backend failure or invalid structured output returns a retryable result so the
+Phase 2A retry mechanism applies (no bespoke retry loop; spec §38–§39).  Every
+call is recorded as an :class:`LLMInvocation` first — success *or* failure — so
+a proposal that never existed still leaves a trace of having been attempted
+(Phase 3C spec §69).
 """
 
 from __future__ import annotations
@@ -24,12 +27,7 @@ import uuid
 
 from ..backends.base import BackendRequest, LLMInvocation
 from ..context.requirements import ContextRequirements, EventsReq
-from ..core.process import (
-    ProcessContext,
-    ProcessDefinition,
-    ProcessResult,
-    RetryableError,
-)
+from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
 from ..intelligence.policy import InterpretationPolicy
 from ..intelligence.proposal import InterpretationProposal, ProposalDecision
 from ..intelligence.validation import validate_proposal
@@ -114,25 +112,9 @@ async def _handle_fresh(ctx: ProcessContext) -> ProcessResult:
     )
     result = await backend.execute(request)
 
-    # Backend failure -> retry (Phase 2A). No partial anything is persisted.
-    if not result.success:
-        raise RetryableError(f"backend failure: {result.error}")
-
-    proposal = InterpretationProposal.from_output(
-        result.parsed_output,
-        source_event_id=ctx.event.id if ctx.event else None,
-        created_by_process_id=ctx.instance.id,
-    )
-    if proposal is None:
-        raise RetryableError("backend returned unparseable structured output")
-
-    validation = validate_proposal(proposal, current_value=_current_value(ctx))
-    if not validation.schema_ok:
-        # Schema failure is retryable; nothing is committed (spec §39).
-        raise RetryableError("schema validation failed: " + "; ".join(validation.reasons))
-
-    decision = DEFAULT_POLICY.decide(proposal.confidence, validation.consistency_ok)
-
+    # Record the attempt before judging it.  Invocations are an audit journal,
+    # so they survive the rollback a retry causes (spec §69) — otherwise every
+    # failed call would be invisible in the very log meant to explain failures.
     invocation = LLMInvocation(
         process_instance_id=ctx.instance.id,
         backend=BACKEND_NAME,
@@ -141,9 +123,33 @@ async def _handle_fresh(ctx: ProcessContext) -> ProcessResult:
         request_metadata={"trigger_event_type": request.metadata.get("trigger_event_type")},
         response_metadata={"usage": result.usage, "latency_ms": result.latency_ms},
         context_snapshot_id=ctx.context_snapshot_id,
-        success=True,
+        success=result.success,
+        error=result.error,
     )
     ctx.record_llm_invocation(invocation)
+
+    # Backend failure -> retry (Phase 2A). No partial anything is persisted.
+    if not result.success:
+        return ctx.retry(f"backend failure: {result.error}")
+
+    proposal = InterpretationProposal.from_output(
+        result.parsed_output,
+        source_event_id=ctx.event.id if ctx.event else None,
+        created_by_process_id=ctx.instance.id,
+    )
+    if proposal is None:
+        invocation.success = False
+        invocation.error = "unparseable structured output"
+        return ctx.retry("backend returned unparseable structured output")
+
+    validation = validate_proposal(proposal, current_value=_current_value(ctx))
+    if not validation.schema_ok:
+        # Schema failure is retryable; nothing but the journal is committed.
+        invocation.success = False
+        invocation.error = "schema validation failed: " + "; ".join(validation.reasons)
+        return ctx.retry(invocation.error)
+
+    decision = DEFAULT_POLICY.decide(proposal.confidence, validation.consistency_ok)
     proposal.llm_invocation_id = invocation.id
     proposal.context_snapshot_id = ctx.context_snapshot_id
     proposal.decision = decision

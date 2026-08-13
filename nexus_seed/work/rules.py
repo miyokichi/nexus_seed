@@ -14,11 +14,13 @@ from __future__ import annotations
 #: Which ProcessDefinition (name, version) performs each work type.
 WORK_PROCESS_REGISTRY: dict[str, tuple[str, str]] = {
     "resistance_check": ("resistance_check", "1"),
+    "write_analysis_result": ("write_analysis_result", "1"),
 }
 
 #: Default priority per work type.
 WORK_PRIORITY: dict[str, int] = {
     "resistance_check": 80,
+    "write_analysis_result": 60,
 }
 
 
@@ -26,11 +28,15 @@ def expected_work_types(entity: str, attribute: str) -> list[str]:
     """Return the work types a change to ``entity.attribute`` requires.
 
     Phase 2C rule: a change to a ``target`` attribute requires a
-    ``resistance_check``.  (Additional checks such as ``layout_margin_check``
-    could be added here without touching the Runtime.)
+    ``resistance_check``.  Phase 3C adds a second rule whose work happens to
+    reach *outside* the system — a recorded ``analysis_result`` must be written
+    out — to show that acting on the world is just another kind of work, not a
+    new mechanism.
     """
     if attribute == "target":
         return ["resistance_check"]
+    if attribute == "analysis_result":
+        return ["write_analysis_result"]
     return []
 
 

@@ -69,6 +69,9 @@ class Executor:
         llm_invocation_store=None,
         backends: dict | None = None,
         services: object | None = None,
+        action_proposal_store=None,
+        action_execution_store=None,
+        action_decision_store=None,
     ) -> None:
         self.db = db
         self.registry = registry
@@ -89,6 +92,9 @@ class Executor:
         self.llm_invocation_store = llm_invocation_store
         self.backends = backends if backends is not None else {}
         self.services = services
+        self.action_proposal_store = action_proposal_store
+        self.action_execution_store = action_execution_store
+        self.action_decision_store = action_decision_store
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
         """Run one activation of ``instance`` and return its result."""
@@ -208,14 +214,20 @@ class Executor:
                     self.work_requirement_store.save(requirement)
                 for requirement_id, status in result.work_requirement_updates:
                     self.work_requirement_store.update_status(requirement_id, status)
-                if self.llm_invocation_store is not None:
-                    for invocation in result.llm_invocations:
-                        self.llm_invocation_store.save(invocation)
+                self._persist_journals(result)
                 if self.proposal_store is not None:
                     for proposal in result.proposals:
                         self.proposal_store.save(proposal)
                     for proposal_id, decision in result.proposal_updates:
                         self.proposal_store.update_decision(proposal_id, decision)
+                if self.action_proposal_store is not None:
+                    for action_proposal in result.action_proposals:
+                        self.action_proposal_store.save(action_proposal)
+                    for proposal_id, status in result.action_proposal_updates:
+                        self.action_proposal_store.update_status(proposal_id, status)
+                if self.action_decision_store is not None:
+                    for decision_record in result.action_decisions:
+                        self.action_decision_store.save(decision_record)
 
                 for change in result.state_changes:
                     self.state_store.set(
@@ -262,6 +274,20 @@ class Executor:
 
         logger.info("instance %s -> %s", instance.id, instance.status.value)
         return result
+
+    def _persist_journals(self, result: ProcessResult) -> None:
+        """Write the attempt journals (LLM invocations, action executions).
+
+        Called from *both* the success and failure paths: a backend call that
+        was made and failed is exactly the thing an audit needs to see
+        (Invariant 26).  Must run inside the caller's transaction.
+        """
+        if self.llm_invocation_store is not None:
+            for invocation in result.llm_invocations:
+                self.llm_invocation_store.save(invocation)
+        if self.action_execution_store is not None:
+            for execution in result.action_executions:
+                self.action_execution_store.save(execution)
 
     def _apply_spawns_and_join(
         self, instance: ProcessInstance, result: ProcessResult
@@ -333,6 +359,7 @@ class Executor:
                 else float(2 ** (instance.retry_count - 1))
             )
             with self.db.atomic():
+                self._persist_journals(result)
                 instance.status = ProcessStatus.RETRY_WAIT
                 instance.next_retry_at = self.clock.now() + timedelta(seconds=delay)
                 instance.last_error = error
@@ -346,12 +373,19 @@ class Executor:
                 delay,
             )
             return result
-        return self._fail(instance, error, key=key)
+        return self._fail(instance, error, key=key, audit=result)
 
     def _fail(
-        self, instance: ProcessInstance, error: object, *, key: str | None = None
+        self,
+        instance: ProcessInstance,
+        error: object,
+        *,
+        key: str | None = None,
+        audit: ProcessResult | None = None,
     ) -> ProcessResult:
         with self.db.atomic():
+            if audit is not None:
+                self._persist_journals(audit)
             instance.status = ProcessStatus.FAILED
             instance.last_error = str(error)
             instance.local_state["error"] = str(error)

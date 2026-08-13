@@ -24,8 +24,9 @@ class EventStore:
         self.db.execute(
             """
             INSERT INTO events
-                (id, type, source, payload, occurred_at, correlation_id, causation_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, type, source, payload, occurred_at, correlation_id, causation_id,
+                 ingress_receipt_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(event.id),
@@ -35,6 +36,7 @@ class EventStore:
                 event.occurred_at.isoformat(),
                 str(event.correlation_id) if event.correlation_id else None,
                 str(event.causation_id) if event.causation_id else None,
+                str(event.ingress_receipt_id) if event.ingress_receipt_id else None,
             ),
         )
         return event
@@ -90,4 +92,5 @@ class EventStore:
             occurred_at=datetime.fromisoformat(row["occurred_at"]),
             correlation_id=_uuid(row["correlation_id"]),
             causation_id=_uuid(row["causation_id"]),
+            ingress_receipt_id=_uuid(row["ingress_receipt_id"]),
         )
