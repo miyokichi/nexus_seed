@@ -59,16 +59,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _bootstrap(runtime: Runtime, action_root: str | None) -> None:
     """Register the standard stack so an ingested event actually goes somewhere."""
-    from .backends import FakeLLMBackend, LocalFileActionBackend
+    from .backends import LocalFileActionBackend
+    from .llm_config import configure_llm
     from .processes.actions import bootstrap_actions
-    from .processes.llm_interpret import bootstrap_llm_interpreter
     from .processes.semantic import bootstrap_semantic
     from .processes.work_intelligence import bootstrap_work_intelligence
 
     bootstrap_semantic(runtime)
     bootstrap_work_intelligence(runtime)
     bootstrap_actions(runtime)
-    bootstrap_llm_interpreter(runtime, FakeLLMBackend())
+    configure_llm(runtime)
     if action_root:
         runtime.register_backend("local_file", LocalFileActionBackend(action_root))
 

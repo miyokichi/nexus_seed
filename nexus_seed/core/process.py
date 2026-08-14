@@ -273,6 +273,47 @@ class ProcessResult:
     replan_attempts: list = field(default_factory=list)
     #: ``(work_requirement_id, attempt_number)``
     replan_counts: list[tuple] = field(default_factory=list)
+    #: Phase 5A self-extension.  Held apart from ``work`` on purpose: a
+    #: CapabilityGap is a deficiency of ours, not a change to the need
+    #: (Invariant 85).
+    capability_gaps: list = field(default_factory=list)
+    #: ``(capability_gap_id, status)``
+    capability_gap_updates: list[tuple] = field(default_factory=list)
+    extension_proposals: list = field(default_factory=list)
+    #: ``(proposal_id, status, reasons)``
+    extension_proposal_updates: list[tuple] = field(default_factory=list)
+    extension_decisions: list = field(default_factory=list)
+    #: Phase 5B sandboxed construction effects.
+    construction_plans: list = field(default_factory=list)
+    construction_plan_updates: list[tuple] = field(default_factory=list)
+    construction_step_updates: list[tuple] = field(default_factory=list)
+    sandbox_workspaces: list = field(default_factory=list)
+    sandbox_workspace_updates: list[tuple] = field(default_factory=list)
+    construction_grants: list = field(default_factory=list)
+    construction_grant_updates: list[tuple] = field(default_factory=list)
+    verification_checks: list = field(default_factory=list)
+    construction_results: list = field(default_factory=list)
+    #: Phase 5C installation/activation effects.
+    installation_plans: list = field(default_factory=list)
+    #: ``(plan_id, status, reasons)``
+    installation_plan_updates: list[tuple] = field(default_factory=list)
+    installation_step_updates: list[tuple] = field(default_factory=list)
+    installation_grants: list = field(default_factory=list)
+    #: ``(grant_id, status, revoked_at)``
+    installation_grant_updates: list[tuple] = field(default_factory=list)
+    installation_checks: list = field(default_factory=list)
+    installation_results: list = field(default_factory=list)
+    installation_decisions: list = field(default_factory=list)
+    #: ``(ActivationRecord, ProcessDefinition, list[Capability])``
+    installation_activations: list = field(default_factory=list)
+    rollback_records: list = field(default_factory=list)
+    #: Phase 5D bounded capability-acquisition coordination.
+    acquisition_sessions: list = field(default_factory=list)
+    acquisition_subscribers: list = field(default_factory=list)
+    autonomy_decisions: list = field(default_factory=list)
+    acquisition_attempts: list = field(default_factory=list)
+    #: Explicit closure of another suspended instance whose continuation ended.
+    process_instance_updates: list[tuple] = field(default_factory=list)
     join: JoinRequest | None = None
     retryable: bool = False
     retry_delay: float | None = None
@@ -302,8 +343,12 @@ class ProcessResult:
         """Everything this activation wrote, grouped by owning layer."""
         from .effects import (
             ActionEffects,
+            AutonomyEffects,
+            ConstructionEffects,
             DecisionEffects,
+            ExtensionEffects,
             IntelligenceEffects,
+            InstallationEffects,
             PlanningEffects,
             ProcessEffects,
             ResourceEffects,
@@ -355,6 +400,42 @@ class ProcessResult:
                 selections=self.plan_selections,
                 replan_attempts=self.replan_attempts,
                 replan_counts=self.replan_counts,
+            ),
+            extension=ExtensionEffects(
+                gaps=self.capability_gaps,
+                gap_updates=self.capability_gap_updates,
+                proposals=self.extension_proposals,
+                proposal_updates=self.extension_proposal_updates,
+                decisions=self.extension_decisions,
+            ),
+            construction=ConstructionEffects(
+                plans=self.construction_plans,
+                plan_updates=self.construction_plan_updates,
+                step_updates=self.construction_step_updates,
+                workspaces=self.sandbox_workspaces,
+                workspace_updates=self.sandbox_workspace_updates,
+                grants=self.construction_grants,
+                grant_updates=self.construction_grant_updates,
+                verification_checks=self.verification_checks,
+                results=self.construction_results,
+            ),
+            installation=InstallationEffects(
+                plans=self.installation_plans,
+                plan_updates=self.installation_plan_updates,
+                step_updates=self.installation_step_updates,
+                grants=self.installation_grants,
+                grant_updates=self.installation_grant_updates,
+                checks=self.installation_checks,
+                results=self.installation_results,
+                decisions=self.installation_decisions,
+                activations=self.installation_activations,
+                rollbacks=self.rollback_records,
+            ),
+            autonomy=AutonomyEffects(
+                sessions=self.acquisition_sessions,
+                subscribers=self.acquisition_subscribers,
+                decisions=self.autonomy_decisions,
+                attempts=self.acquisition_attempts,
             ),
         )
 
@@ -413,6 +494,36 @@ class ProcessContext:
     _plan_selections: list = field(default_factory=list)
     _replan_attempts: list = field(default_factory=list)
     _replan_counts: list[tuple] = field(default_factory=list)
+    _capability_gaps: list = field(default_factory=list)
+    _capability_gap_updates: list[tuple] = field(default_factory=list)
+    _extension_proposals: list = field(default_factory=list)
+    _extension_proposal_updates: list[tuple] = field(default_factory=list)
+    _extension_decisions: list = field(default_factory=list)
+    _construction_plans: list = field(default_factory=list)
+    _construction_plan_updates: list[tuple] = field(default_factory=list)
+    _construction_step_updates: list[tuple] = field(default_factory=list)
+    _sandbox_workspaces: list = field(default_factory=list)
+    _sandbox_workspace_updates: list[tuple] = field(default_factory=list)
+    _construction_grants: list = field(default_factory=list)
+    _construction_grant_updates: list[tuple] = field(default_factory=list)
+    _verification_checks: list = field(default_factory=list)
+    _construction_results: list = field(default_factory=list)
+    _installation_plans: list = field(default_factory=list)
+    _installation_plan_updates: list[tuple] = field(default_factory=list)
+    _installation_step_updates: list[tuple] = field(default_factory=list)
+    _installation_grants: list = field(default_factory=list)
+    _installation_grant_updates: list[tuple] = field(default_factory=list)
+    _installation_checks: list = field(default_factory=list)
+    _installation_results: list = field(default_factory=list)
+    _installation_decisions: list = field(default_factory=list)
+    _installation_activations: list = field(default_factory=list)
+    _rollback_records: list = field(default_factory=list)
+    _acquisition_sessions: list = field(default_factory=list)
+    _acquisition_subscribers: list = field(default_factory=list)
+    _autonomy_decisions: list = field(default_factory=list)
+    _acquisition_attempts: list = field(default_factory=list)
+    _continuations_to_delete: list[uuid.UUID] = field(default_factory=list)
+    _process_instance_updates: list[tuple] = field(default_factory=list)
 
     @property
     def correlation_id(self) -> uuid.UUID | None:
@@ -734,6 +845,164 @@ class ProcessContext:
         """Stage the need's replan counter, which bounds further attempts."""
         self._replan_counts.append((work_requirement_id, attempt_number))
 
+    # --- self-extension layer (Phase 5A) -----------------------------------
+
+    def open_capability_gap(self, gap):
+        """Stage a CapabilityGap — *we* are missing something (Invariant 85).
+
+        Deliberately not a work update: the need is unchanged and keeps its
+        status, its provenance and its id.  What is being recorded is a
+        deficiency on our side of the boundary, and recording it grants no
+        authority to do anything about it (Invariant 84).
+        """
+        self._capability_gaps.append(gap)
+        return gap
+
+    def update_capability_gap(self, gap_id: uuid.UUID, status) -> None:
+        """Stage a CapabilityGap transition (applied atomically)."""
+        self._capability_gap_updates.append((gap_id, getattr(status, "value", status)))
+
+    def record_extension_proposal(self, proposal):
+        """Stage a proposal about how a gap might be closed.
+
+        A *description*, never an applied change: staging this registers no
+        capability, writes no file and installs nothing (Invariant 90).
+        """
+        self._extension_proposals.append(proposal)
+        return proposal
+
+    def update_extension_proposal(self, proposal_id: uuid.UUID, status, *, reasons=None) -> None:
+        """Stage an extension-proposal transition, with the reason for it."""
+        self._extension_proposal_updates.append(
+            (proposal_id, getattr(status, "value", status), list(reasons or []))
+        )
+
+    def record_extension_decision(self, decision):
+        """Stage why an extension proposal was approved, reviewed or refused.
+
+        Append-only (Invariant 92): a second decision is a second row, never an
+        edit of the first.
+        """
+        self._extension_decisions.append(decision)
+        return decision
+
+    # --- sandboxed construction (Phase 5B) --------------------------------
+
+    def record_construction_plan(self, plan):
+        """Stage a validated HOW without executing or activating it."""
+        self._construction_plans.append(plan)
+        return plan
+
+    def update_construction_plan(self, plan_id, status) -> None:
+        self._construction_plan_updates.append((plan_id, getattr(status, "value", status)))
+
+    def update_construction_step(self, step_id, status) -> None:
+        self._construction_step_updates.append((step_id, getattr(status, "value", status)))
+
+    def record_sandbox_workspace(self, workspace):
+        self._sandbox_workspaces.append(workspace)
+        return workspace
+
+    def update_sandbox_workspace(self, workspace_id, status, *, closed_at=None) -> None:
+        self._sandbox_workspace_updates.append(
+            (workspace_id, getattr(status, "value", status), closed_at)
+        )
+
+    def record_construction_grant(self, grant):
+        self._construction_grants.append(grant)
+        return grant
+
+    def update_construction_grant(self, grant_id, status) -> None:
+        self._construction_grant_updates.append((grant_id, getattr(status, "value", status)))
+
+    def record_verification_check(self, check):
+        self._verification_checks.append(check)
+        return check
+
+    def record_construction_result(self, result):
+        self._construction_results.append(result)
+        return result
+
+    # --- production installation / activation (Phase 5C) -----------------
+
+    def record_installation_plan(self, plan):
+        self._installation_plans.append(plan)
+        return plan
+
+    def update_installation_plan(self, plan_id, status, *, reasons=None) -> None:
+        self._installation_plan_updates.append(
+            (plan_id, getattr(status, "value", status), list(reasons or []))
+        )
+
+    def update_installation_step(self, step_id, status) -> None:
+        self._installation_step_updates.append((step_id, getattr(status, "value", status)))
+
+    def record_installation_grant(self, grant):
+        self._installation_grants.append(grant)
+        return grant
+
+    def update_installation_grant(self, grant_id, status, *, revoked_at=None) -> None:
+        self._installation_grant_updates.append(
+            (grant_id, getattr(status, "value", status), revoked_at)
+        )
+
+    def record_installation_check(self, check):
+        self._installation_checks.append(check)
+        return check
+
+    def record_installation_result(self, result):
+        self._installation_results.append(result)
+        return result
+
+    def record_installation_decision(self, decision):
+        self._installation_decisions.append(decision)
+        return decision
+
+    def activate_installation(self, record, definition, capabilities):
+        """Stage component + definition + capability publication atomically."""
+        self._installation_activations.append((record, definition, list(capabilities)))
+        return record
+
+    def record_rollback(self, record):
+        self._rollback_records.append(record)
+        return record
+
+    # --- bounded capability acquisition (Phase 5D) -----------------------
+
+    def record_acquisition_session(self, session):
+        """Stage a durable coordinator record; no phase boundary is bypassed."""
+        self._acquisition_sessions.append(session)
+        return session
+
+    def record_acquisition_subscriber(self, subscriber):
+        """Attach one WorkRequirement to a shared logical acquisition."""
+        self._acquisition_subscribers.append(subscriber)
+        return subscriber
+
+    def record_autonomy_decision(self, decision):
+        """Append why a stage was automatic, reviewable, or forbidden."""
+        self._autonomy_decisions.append(decision)
+        return decision
+
+    def record_acquisition_attempt(self, attempt):
+        """Stage one bounded logical construction/installation attempt."""
+        self._acquisition_attempts.append(attempt)
+        return attempt
+
+    def close_continuation(
+        self,
+        continuation_id: uuid.UUID,
+        *,
+        process_instance_id: uuid.UUID | None = None,
+        reason: str = "continuation closed",
+    ) -> None:
+        """Stage closure of another logical waiter in the same transaction."""
+        self._continuations_to_delete.append(continuation_id)
+        if process_instance_id is not None:
+            self._process_instance_updates.append(
+                (process_instance_id, ProcessStatus.COMPLETED.value, {"reason": reason})
+            )
+
     def satisfy_work(self) -> None:
         """Mark this process's WorkRequirement (if any) SATISFIED."""
         if self.instance.work_requirement_id is not None:
@@ -769,6 +1038,36 @@ class ProcessContext:
             "plan_selections": list(self._plan_selections),
             "replan_attempts": list(self._replan_attempts),
             "replan_counts": list(self._replan_counts),
+            "capability_gaps": list(self._capability_gaps),
+            "capability_gap_updates": list(self._capability_gap_updates),
+            "extension_proposals": list(self._extension_proposals),
+            "extension_proposal_updates": list(self._extension_proposal_updates),
+            "extension_decisions": list(self._extension_decisions),
+            "construction_plans": list(self._construction_plans),
+            "construction_plan_updates": list(self._construction_plan_updates),
+            "construction_step_updates": list(self._construction_step_updates),
+            "sandbox_workspaces": list(self._sandbox_workspaces),
+            "sandbox_workspace_updates": list(self._sandbox_workspace_updates),
+            "construction_grants": list(self._construction_grants),
+            "construction_grant_updates": list(self._construction_grant_updates),
+            "verification_checks": list(self._verification_checks),
+            "construction_results": list(self._construction_results),
+            "installation_plans": list(self._installation_plans),
+            "installation_plan_updates": list(self._installation_plan_updates),
+            "installation_step_updates": list(self._installation_step_updates),
+            "installation_grants": list(self._installation_grants),
+            "installation_grant_updates": list(self._installation_grant_updates),
+            "installation_checks": list(self._installation_checks),
+            "installation_results": list(self._installation_results),
+            "installation_decisions": list(self._installation_decisions),
+            "installation_activations": list(self._installation_activations),
+            "rollback_records": list(self._rollback_records),
+            "acquisition_sessions": list(self._acquisition_sessions),
+            "acquisition_subscribers": list(self._acquisition_subscribers),
+            "autonomy_decisions": list(self._autonomy_decisions),
+            "acquisition_attempts": list(self._acquisition_attempts),
+            "continuations_to_delete": list(self._continuations_to_delete),
+            "process_instance_updates": list(self._process_instance_updates),
         }
 
     def _staged_journals(self) -> dict:

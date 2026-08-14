@@ -165,6 +165,16 @@ def _authorize(
         capabilities=capabilities_of(backend),
         granted_permissions=granted,
     )
+    # A backend may publish a pure, side-effect-free scope preflight.  This is
+    # especially important for construction: an outside-workspace write is a
+    # validation refusal, not a risk that human review can waive (Invariant
+    # 103).  The actual backend repeats the check at execution time.
+    preflight = getattr(backend, "validate_proposal", None)
+    if validation.ok and callable(preflight):
+        scope_reasons = list(preflight(proposal) or [])
+        if scope_reasons:
+            validation.capability_ok = False
+            validation.reasons.extend(scope_reasons)
 
     policy = _policy_for(ctx)
     if not validation.ok:

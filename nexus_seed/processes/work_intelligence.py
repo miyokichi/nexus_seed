@@ -304,7 +304,16 @@ async def work_spawner(ctx: ProcessContext) -> ProcessResult:
     if target is None:
         ctx.mark_work(requirement_id, WorkStatus.CANCELLED)
         return ctx.complete(
-            output={"spawned": False, "reason": "no process for work_type"}
+            output={"spawned": False, "reason": "no process for work_type"},
+            emitted_events=[
+                ctx.new_event(
+                    "work_cancelled",
+                    {
+                        "work_requirement_id": str(requirement_id),
+                        "reason": "no process for work_type",
+                    },
+                )
+            ],
         )
 
     name, version = target

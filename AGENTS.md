@@ -585,11 +585,266 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **82.** Replanning is bounded by `max_replans`.
 - **83.** Plan approval never substitutes for Action approval.
 
+## Done in Phase 5A (Self Extension Foundation / Capability Acquisition Proposal)
+
+- Takes 4A's `BLOCKED_CAPABILITY` — which was true and completely inert — and
+  makes it the start of a question. `CapabilityGap` / `ExtensionProposal` /
+  `ProposedComponent` / `AcquisitionCandidate` / `ExtensionDecisionRecord` are
+  domain data under `extension/` (NOT core types); the pipeline is two ordinary
+  Processes in `processes/extension.py` (`analyze_capability_gap`,
+  `reconcile_capability_gaps`).
+- **A need is not a deficiency** (Invariant 85). A `WorkRequirement` is what the
+  world asks of us; a `CapabilityGap` is what we lack in ourselves. Separate
+  tables, separate lifecycles — the need keeps its id, status and provenance.
+- **A deficiency is not a permission** (Invariant 84). Phase 5A generates no
+  code, writes no repository, runs no shell, installs no plugin, registers no
+  capability or definition and grants no permission (Invariant 90).
+  `test_extension_no_activation.py` pins that boundary as a set of zeroes.
+- **APPROVED ≠ acquired** (Invariant 89). An approved proposal moves the gap to
+  `PROPOSAL_APPROVED`, never `RESOLVED`: the work stays BLOCKED_CAPABILITY,
+  because deciding how to acquire a competence is not acquiring it. Only a
+  capability actually becoming available RESOLVES a gap.
+- **Reuse before construction** (Invariant 88), as arithmetic rather than
+  advice: `STRATEGY_ORDER` ranks REGISTER → CONFIGURE → CONNECT_BACKEND →
+  ADD_ADAPTER/EXTRACTOR → ADD_PROCESS_DEFINITION → PLUGIN → CODE_EXTENSION, and
+  candidates sort by that rank. The analyzer looks at disabled providers,
+  configurable definitions, registered backends, the extractor registry and a
+  static plugin catalog *before* anything proposes new code.
+- `CapabilityMatcher.provides()` was added because `registry.is_provided()`
+  answers a narrower question: a capability whose only provider is a **disabled
+  definition** has a provider on paper and none in practice. Self-extension has
+  to ask the practical question — otherwise the cheapest extension there is
+  (re-enable what we already wrote) is invisible.
+- **Deterministic analysis first** (spec §25). `CapabilityAcquisitionAnalyzer`
+  produces `AcquisitionCandidate`s with no model involved; acquisition hints
+  (`resource_type`, `backend_actions`, `ingress_source`, `plugin`) are
+  *declared* on a CapabilityRequirement or Capability — no name-similarity, no
+  aliasing (spec §75).
+- **The LLM elaborates a route; it never invents one** (Invariant 87).
+  `LLMExtensionProposer` is shown the gap and the candidate strategies only
+  (never the whole registry), and is asked for a title, a description and a
+  component decomposition — **no shell commands, no patches, no source code**
+  (spec §32–§33). Targets come from the gap, not the answer. An unknown
+  strategy, an out-of-candidate strategy, an unknown component type, a widened
+  target or an under-declared permission is INVALID. With no proposer, or a
+  failing one, the deterministic builder writes the proposal (spec §82).
+- **Risk is computed, not claimed** (spec §40–§41). `classify_risk` maps
+  strategy → LOW/MEDIUM/HIGH, and only ever raises the floor: unknown strategy
+  or component ⇒ CRITICAL, `repository.modify`/`process.execute`/
+  `plugin.install`/`network.unrestricted` ⇒ ≥ HIGH, `runtime.modify`/
+  `permission.modify` or a declared core/policy change ⇒ CRITICAL.
+- **`ExtensionPolicy` is conservative by default** (spec §42–§43):
+  LOW/MEDIUM/HIGH → REVIEW, CRITICAL → REJECT, `require_human_approval=True`.
+  It lives on the analyzer's definition metadata (like `ActionPolicy`), and a
+  bootstrap with no policy argument now *keeps* the recorded one rather than
+  resetting it on restart. Human `approve` re-validates against the current
+  world and then skips the risk gate; `modify` creates a **new** proposal with
+  `root_proposal_id` / `replaces_proposal_id` and never overwrites the original
+  (Invariant 92).
+- Idempotency by two logical keys, enforced in the schema: `capability_gaps
+  (work_requirement_id, missing_key)` and `extension_proposals(fingerprint)`
+  (gap + strategy + targets + components). A redelivered `capability_missing`
+  finds the gap and the proposal it already made.
+- **Reconciliation, not replay** (as in 4A): `capability_available` /
+  `backend_available` / `extension_environment_changed` resolve gaps whose
+  capabilities became available, or ask for re-analysis of the ones that did
+  not — same gap row, same id, same provenance. An approved proposal is never
+  silently superseded by a re-analysis.
+- `UNSUPPORTED` is a real answer (spec §65–§66): with no route this architecture
+  can express, no proposal is invented — the gap is kept and
+  `capability_acquisition_unavailable` is emitted.
+- New tables `capability_gaps` / `extension_proposals` / `extension_decisions`;
+  new `ProcessResult` fields (`capability_gaps`, `capability_gap_updates`,
+  `extension_proposals`, `extension_proposal_updates`, `extension_decisions`)
+  grouped as `result.effects.extension`, with conflict checking for both update
+  kinds. New `ctx.open_capability_gap` / `update_capability_gap` /
+  `record_extension_proposal` / `update_extension_proposal` /
+  `record_extension_decision`. Queries: `get_capability_gap(s)`,
+  `get_open_capability_gaps`, `get_extension_proposal(s)`,
+  `get_extension_decisions`, `get_capability_gap_trace`, `get_extension_trace`,
+  `get_extension_health` (whose `approved_not_constructed` only grows in this
+  phase, and whose `capabilities_acquired` is always 0).
+
+## Runtime invariants (added in Phase 5A — keep them)
+
+- **84.** A missing capability is not permission to modify the system.
+- **85.** A CapabilityGap is a deficiency of ours, kept apart from the need.
+- **86.** Self-extension happens only through an ExtensionProposal.
+- **87.** LLM output never constructs or activates an extension.
+- **88.** Reuse of existing capability / process / backend precedes new code.
+- **89.** An APPROVED ExtensionProposal is not an acquired capability.
+- **90.** Phase 5A changes no repository, runtime or permission.
+- **91.** A critical extension is never approved automatically.
+- **92.** Extension and review history is append-only.
+
+## Done in Phase 5B (Sandboxed Capability Construction)
+
+- An `APPROVED` `ExtensionProposal` is consumed by three ordinary Processes:
+  `plan_extension_construction` -> `execute_extension_construction` ->
+  `verify_extension_construction`. They stop at a durable
+  `ConstructionResult.VERIFIED`; no installer consumes the verified event.
+- `ConstructionPlan` is HOW, kept apart from the proposal's WHAT/WHY.
+  Deterministic templates cover `ADD_EXTRACTOR`, `ADD_PROCESS_DEFINITION` and
+  `REGISTER_EXISTING_PROCESS`. Proposal/attempt and plan/step logical keys make
+  re-delivery, bounded drain and restart converge without repeated writes.
+- `ConstructionValidator` runs before workspace creation and refuses a
+  non-APPROVED source, target drift, unknown/production-changing steps,
+  absolute or traversing paths, incomplete artifact/verification declarations,
+  network access, and permissions outside the Proposal ceiling.
+- Each plan gets a dedicated non-production `SandboxWorkspace` and a separate
+  `ConstructionGrant`. The grant only carries `sandbox.read`, `sandbox.write`
+  and `sandbox.test`, defaults network to DENY, and is revoked after checking.
+  It never changes global or ProcessDefinition permissions.
+- Artifact writes reuse Phase 3C. The Process creates `ActionProposal`s; the
+  normal validator applies permissions/risk; `ConstructionActionBackend`
+  rechecks plan/workspace/grant/path/size at authorization and execution. An
+  escape is rejected before human review and permanently refused by the backend.
+- Optional LLM code generation shares `ExecutionBackend`. Its JSON is checked
+  for exact relative paths, known roles, count, per-file bytes and total bytes
+  before any action exists. No generated shell/install command, patch
+  application or automatic repair loop exists.
+- Generated files reuse the artifact layer: `Resource` -> immutable
+  `ResourceVersion` -> `generated_source` Representation, with plan, proposal,
+  workspace, Process and artifact-role provenance.
+- Verification is a separate Process with three required layers: structural,
+  syntax/import plus structured sandbox tests, and structured
+  `CapabilityContract` behavior. Missing dependencies BLOCK without host
+  installation. Passing tests without behavior evidence cannot produce VERIFIED.
+- VERIFIED seals the workspace and revokes the grant. Gap and Work remain
+  blocked; Capability Registry, production definitions and repository stay
+  unchanged. `get_construction_trace` joins the whole evidence chain.
+- 5A lifecycle cleanup is closed: superseded/cancelled review continuations are
+  removed and their suspended instances complete; cancelled Work cancels its
+  Gap/live Proposals and prevents unstarted construction.
+- New tables: `construction_plans`, `construction_steps`,
+  `sandbox_workspaces`, `construction_grants`, `verification_checks`, and
+  `construction_results`. Writes are typed as `result.effects.construction`.
+
+## Runtime invariants (added in Phase 5B — keep them)
+
+- **93.** Extension approval is not construction action permission.
+- **94.** Construction always goes through a ConstructionPlan.
+- **95.** Construction side effects are confined to its SandboxWorkspace.
+- **96.** A ConstructionGrant is scoped and changes no global permission.
+- **97.** LLM-generated artifacts are never written directly to production.
+- **98.** Generated artifacts are Resource / ResourceVersion records.
+- **99.** Construction and verification are separate Processes.
+- **100.** Passing tests alone never proves a Capability.
+- **101.** VERIFIED never means INSTALLED or ACTIVE.
+- **102.** Phase 5B changes no Capability Registry or production definition.
+- **103.** Extension approval never bypasses Action permission or risk policy.
+
+## Done in Phase 5C (Installation / Activation / Production Promotion)
+
+- A `VERIFIED` ConstructionResult is consumed by ordinary Processes:
+  `plan_extension_installation` -> human `installation_reviewed` ->
+  `install_extension` -> `verify_installed_extension` ->
+  `activate_installed_extension`. `VERIFIED`, `INSTALLED` and `ACTIVE` are
+  separate durable states; an installed-but-unsmoked component is invisible to
+  capability matching.
+- `InstallationPlan` binds immutable `ResourceVersion` ids plus their explicit
+  `sha256-...` content hashes to allowlisted, versioned paths under the
+  dedicated `installed_extensions/<component>/<version>/` root. Source bytes
+  are rehashed before review approval, before copy and again before activation.
+- Production authority is a separate one-plan `InstallationGrant`, scoped to
+  exact artifact hashes, destinations, registry mutations and permissions.
+  A ConstructionGrant is never consulted. Core/policy mutation, unrestricted
+  shell/network, arbitrary package installation and arbitrary destinations are
+  validation failures.
+- Production copies and rollback reuse Phase 3C `ActionProposal` validation,
+  permission/risk decisions, execution journal and idempotency keys.
+  `InstallationActionBackend` repeats Grant/hash/path checks both before review
+  and at execution; approving a plan cannot authorize another Action.
+- Installation is version-coexistent rather than overwrite-based. Post-install
+  checks separately record hash, module/load, expected interface,
+  manifest/metadata, permission declaration and a side-effect-free smoke
+  fixture. Failure requests an installation-specific, idempotent rollback;
+  the prior active version is never disabled.
+- Activation is a typed atomic effect: active component provenance,
+  ProcessDefinition/provider linkage, Capability rows, plan/result activation
+  and `capability_available` events commit together. Generated Process roles
+  run through one generic installed handler; installed extractors are rebuilt
+  from durable ACTIVE records after restart.
+- `capability_available` reuses the Phase 4A blocked-work reconciliation. The
+  original WorkRequirement keeps its id and runs through normal matching. Its
+  CapabilityGap becomes RESOLVED only after that Work reaches SATISFIED.
+- New tables: `installation_plans`, `installation_steps`,
+  `installation_grants`, `installation_checks`, `installation_results`,
+  `installation_decisions`, `activation_records`, and `rollback_records`.
+  Writes are grouped as `result.effects.installation`, with normal conflict
+  detection. `get_installation_trace` joins approval, exact artifacts,
+  production Actions, checks, rollback/activation and reconciliation.
+
+## Runtime invariants (added in Phase 5C — keep them)
+
+- **104.** VERIFIED / INSTALLED / ACTIVE are distinct.
+- **105.** Installation identity is verified ResourceVersion + content hash.
+- **106.** A ConstructionGrant is never production authority.
+- **107.** Production changes require InstallationPlan + InstallationGrant.
+- **108.** Installation approval does not grant arbitrary Action permission.
+- **109.** Install completion alone never publishes a Capability.
+- **110.** Activation requires successful post-install verification.
+- **111.** Component availability and Capability Registry activation converge atomically.
+- **112.** Installation/activation failure does not break an existing active capability.
+- **113.** An active Capability traces to its exact verified artifacts.
+
+## Done in Phase 5D (Autonomous Capability Acquisition Loop)
+
+- `CapabilityAcquisitionSession` is the durable coordinator above 5A/5B/5C;
+  it does not replace `CapabilityGap`, `ExtensionProposal`,
+  `ConstructionPlan/Result`, `InstallationPlan/Grant`, or activation evidence.
+- `advance_capability_acquisition` is an ordinary Process. It advances one
+  event boundary at a time and survives restart through SQLite state and normal
+  durable Event delivery.
+- `AutonomyPolicy` is deterministic and yields exactly `AUTO`,
+  `REVIEW_REQUIRED`, or `FORBIDDEN`. The conservative default automatically
+  handles only LOW-risk exact reuse of an existing ProcessDefinition. New
+  ProcessDefinitions/extractors require review. Runtime/core/permission/policy
+  mutation, unrestricted shell/network, and out-of-scope code/plugin routes are
+  forbidden and cannot be human-overridden.
+- AUTO is an approval source, not a bypass: it emits the existing 5A/5C review
+  Events and still passes revalidation, scoped Grants, ActionPolicy, exact-hash
+  checks, layered verification, production smoke and rollback boundaries.
+- `AutonomyBudget` is snapshotted on each Session. Extension depth,
+  acquisitions per Work, construction attempts and installation attempts are
+  finite; optional risk/cost/time ceilings fail closed. A logical redesign
+  attempt is separate from Phase 2A transient retry, and every old plan/result
+  remains in the audit trail.
+- Recursive dependencies become ordinary WorkRequirements with parent Session
+  and depth metadata. Capability availability wakes the parent; an ancestral
+  logical requirement stops with `ACQUISITION_CYCLE`.
+- `acquisition_key` is order-independent and version-aware. Identical gaps
+  share one Session through durable subscribers; capability activation uses
+  the existing reconciliation path to satisfy every subscribing Work.
+- Cancelling the last subscriber closes pending autonomy review and stops
+  future stages. Capability arrival by another route does the same without
+  deleting or rolling back an already-active capability.
+- New tables: `capability_acquisition_sessions`, `acquisition_subscribers`,
+  `autonomy_decisions`, `acquisition_attempts`. Writes are typed as
+  `result.effects.autonomy` and participate in normal effect-conflict checks.
+  Queries include session/active/blocked/decision/attempt/health and
+  `get_acquisition_trace`.
+
+## Runtime invariants (added in Phase 5D — keep them)
+
+- **114.** Autonomous acquisition never bypasses existing validators or policies.
+- **115.** AUTO is a policy decision, not an absence of review evidence.
+- **116.** REVIEW_REQUIRED is a normal Event + Continuation boundary.
+- **117.** FORBIDDEN cannot be overridden by a human approval Event.
+- **118.** Every acquisition is bounded by a durable budget snapshot.
+- **119.** Recursive acquisition carries parent identity and finite depth.
+- **120.** An acquisition cycle stops; it never expands recursively forever.
+- **121.** Identical logical gaps share acquisition work without losing Work provenance.
+- **122.** Construction redesign attempts and transient Runtime retries stay distinct.
+- **123.** Activation returns through capability reconciliation; acquisition never satisfies Work directly.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 5+ — self extension, automatic capability acquisition, code generation,
-  role/team ontologies and richer dynamic organization. Do NOT build until
-  instructed.
+- Phase 6+ is intentionally not started. Plugin/package discovery and install,
+  production source-tree patching, permission escalation, Runtime/Core/Policy
+  self-update, learning/RL policy changes, long-horizon compensation,
+  multi-machine coordination, role/team ontologies and richer dynamic
+  organization remain unbuilt.
 - Capability `description` becomes usable for LLM planning; `tags` for search.
   Both are stored already and deliberately unused by matching.
 - Compensating actions (undoing a completed node's side effects) remain

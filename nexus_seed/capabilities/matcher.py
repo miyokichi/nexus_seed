@@ -125,6 +125,18 @@ class CapabilityMatcher:
             ],
         )
 
+    def provides(self, requirement: CapabilityRequirement, definitions: list) -> bool:
+        """Whether some *currently usable* definition provides ``requirement``.
+
+        Deliberately not :meth:`CapabilityRegistry.is_provided`, which answers a
+        narrower question: whether a capability row has a provider at all.  A
+        capability whose only provider is a **disabled definition** is provided
+        in that sense and not in this one — and this one is what "can we do
+        this right now?" means, so it is what self-extension has to ask
+        (spec §71).
+        """
+        return self.match([requirement], definitions).eligible
+
     # --- per-candidate evaluation -----------------------------------------
 
     def _evaluate(

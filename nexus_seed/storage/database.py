@@ -524,6 +524,379 @@ CREATE TABLE IF NOT EXISTS replan_attempts (
 CREATE INDEX IF NOT EXISTS idx_replan_work
     ON replan_attempts(work_requirement_id, created_at);
 
+-- Phase 5A: what the system cannot do, as distinct from what the world needs.
+-- The UNIQUE key is the *logical* identity of a deficiency (spec §127), so a
+-- redelivered capability_missing finds the gap it already opened.
+CREATE TABLE IF NOT EXISTS capability_gaps (
+    id                             TEXT PRIMARY KEY,
+    work_requirement_id            TEXT NOT NULL,
+    missing_key                    TEXT NOT NULL,
+    required_capabilities_json     TEXT NOT NULL DEFAULT '[]',
+    missing_capabilities_json      TEXT NOT NULL DEFAULT '[]',
+    current_partial_providers_json TEXT NOT NULL DEFAULT '[]',
+    reason                         TEXT,
+    source_match_id                TEXT,
+    status                         TEXT NOT NULL,
+    created_at                     TEXT NOT NULL,
+    updated_at                     TEXT NOT NULL,
+    UNIQUE (work_requirement_id, missing_key)
+);
+CREATE INDEX IF NOT EXISTS idx_capgap_status ON capability_gaps(status);
+CREATE INDEX IF NOT EXISTS idx_capgap_work ON capability_gaps(work_requirement_id);
+
+-- How a gap might be closed.  A description, never an applied change
+-- (Invariant 90).  UNIQUE on the content fingerprint so a re-run of the same
+-- analysis is the same proposal rather than a second one (spec §68).
+CREATE TABLE IF NOT EXISTS extension_proposals (
+    id                        TEXT PRIMARY KEY,
+    capability_gap_id         TEXT NOT NULL,
+    work_requirement_id       TEXT,
+    fingerprint               TEXT NOT NULL UNIQUE,
+    strategy                  TEXT,
+    declared_strategy         TEXT,
+    title                     TEXT NOT NULL DEFAULT '',
+    description               TEXT NOT NULL DEFAULT '',
+    target_capabilities_json  TEXT NOT NULL DEFAULT '[]',
+    proposed_components_json  TEXT NOT NULL DEFAULT '[]',
+    reusable_components_json  TEXT NOT NULL DEFAULT '[]',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    candidate_strategies_json TEXT NOT NULL DEFAULT '[]',
+    analysis_json             TEXT NOT NULL DEFAULT '{}',
+    estimated_risk            TEXT NOT NULL,
+    estimated_cost            REAL,
+    feasibility               TEXT NOT NULL DEFAULT 'UNKNOWN',
+    human_approval_required   INTEGER NOT NULL DEFAULT 1,
+    rationale                 TEXT,
+    source                    TEXT NOT NULL DEFAULT 'deterministic',
+    status                    TEXT NOT NULL,
+    reasons_json              TEXT NOT NULL DEFAULT '[]',
+    context_snapshot_id       TEXT,
+    llm_invocation_id         TEXT,
+    created_by_process_id     TEXT,
+    root_proposal_id          TEXT,
+    replaces_proposal_id      TEXT,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_extprop_gap
+    ON extension_proposals(capability_gap_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_extprop_status ON extension_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_extprop_root ON extension_proposals(root_proposal_id);
+
+-- Why an extension proposal was approved, reviewed or refused.  Append-only
+-- (Invariant 92): a proposal reviewed twice keeps both records.
+CREATE TABLE IF NOT EXISTS extension_decisions (
+    id                        TEXT PRIMARY KEY,
+    extension_proposal_id     TEXT NOT NULL,
+    capability_gap_id         TEXT,
+    decision                  TEXT NOT NULL,
+    estimated_risk            TEXT NOT NULL,
+    decided_by_process_id     TEXT,
+    validation_ok             INTEGER NOT NULL DEFAULT 1,
+    reasons_json              TEXT NOT NULL DEFAULT '[]',
+    policy_json               TEXT NOT NULL DEFAULT '{}',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    granted_permissions_json  TEXT NOT NULL DEFAULT '[]',
+    reviewed_by_event_id      TEXT,
+    created_at                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_extdec_proposal
+    ON extension_decisions(extension_proposal_id, created_at);
+
+-- Phase 5D: the durable, bounded coordinator above 5A/5B/5C.  A session is
+-- shareable by logical acquisition_key; it never replaces the records owned by
+-- the individual phases.
+CREATE TABLE IF NOT EXISTS capability_acquisition_sessions (
+    id                         TEXT PRIMARY KEY,
+    capability_gap_id          TEXT NOT NULL,
+    source_work_requirement_id TEXT NOT NULL,
+    acquisition_key            TEXT NOT NULL UNIQUE,
+    target_capabilities_json   TEXT NOT NULL DEFAULT '[]',
+    status                     TEXT NOT NULL,
+    current_stage              TEXT NOT NULL,
+    extension_proposal_id      TEXT,
+    construction_plan_id       TEXT,
+    construction_result_id     TEXT,
+    installation_plan_id       TEXT,
+    parent_session_id          TEXT,
+    extension_depth            INTEGER NOT NULL DEFAULT 0,
+    construction_attempts      INTEGER NOT NULL DEFAULT 0,
+    installation_attempts      INTEGER NOT NULL DEFAULT 0,
+    autonomy_budget_json       TEXT NOT NULL DEFAULT '{}',
+    blocked_reason             TEXT,
+    review_summary_json        TEXT NOT NULL DEFAULT '{}',
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL,
+    completed_at               TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_acquisition_session_status
+    ON capability_acquisition_sessions(status, current_stage);
+CREATE INDEX IF NOT EXISTS idx_acquisition_session_parent
+    ON capability_acquisition_sessions(parent_session_id);
+
+CREATE TABLE IF NOT EXISTS acquisition_subscribers (
+    id                     TEXT PRIMARY KEY,
+    acquisition_session_id TEXT NOT NULL,
+    work_requirement_id    TEXT NOT NULL,
+    status                 TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL,
+    UNIQUE(acquisition_session_id, work_requirement_id)
+);
+CREATE INDEX IF NOT EXISTS idx_acquisition_subscriber_work
+    ON acquisition_subscribers(work_requirement_id, status);
+
+-- Append-only.  decision_key supplies activation idempotency without turning
+-- a later-stage decision into an overwrite of an earlier explanation.
+CREATE TABLE IF NOT EXISTS autonomy_decisions (
+    id                     TEXT PRIMARY KEY,
+    acquisition_session_id TEXT NOT NULL,
+    stage                  TEXT NOT NULL,
+    decision               TEXT NOT NULL,
+    evaluated_risk         TEXT NOT NULL,
+    permissions_json       TEXT NOT NULL DEFAULT '[]',
+    production_impact      INTEGER NOT NULL DEFAULT 0,
+    rollback_available     INTEGER NOT NULL DEFAULT 0,
+    reasons_json           TEXT NOT NULL DEFAULT '[]',
+    policy_name            TEXT NOT NULL,
+    policy_version         TEXT NOT NULL,
+    budget_snapshot_json   TEXT NOT NULL DEFAULT '{}',
+    decision_key           TEXT NOT NULL,
+    decided_by_process_id  TEXT,
+    reviewed_by_event_id   TEXT,
+    created_at             TEXT NOT NULL,
+    UNIQUE(acquisition_session_id, decision_key)
+);
+CREATE INDEX IF NOT EXISTS idx_autonomy_decision_session
+    ON autonomy_decisions(acquisition_session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS acquisition_attempts (
+    id                     TEXT PRIMARY KEY,
+    acquisition_session_id TEXT NOT NULL,
+    attempt_type           TEXT NOT NULL,
+    attempt_number         INTEGER NOT NULL,
+    plan_id                TEXT,
+    result_id              TEXT,
+    status                 TEXT NOT NULL,
+    failure_reason         TEXT,
+    created_at             TEXT NOT NULL,
+    completed_at           TEXT,
+    UNIQUE(acquisition_session_id, attempt_type, attempt_number)
+);
+CREATE INDEX IF NOT EXISTS idx_acquisition_attempt_session
+    ON acquisition_attempts(acquisition_session_id, attempt_type, attempt_number);
+
+-- Phase 5B: approved extension proposals become isolated, verifiable builds.
+CREATE TABLE IF NOT EXISTS construction_plans (
+    id TEXT PRIMARY KEY,
+    extension_proposal_id TEXT NOT NULL,
+    capability_gap_id TEXT NOT NULL,
+    work_requirement_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    target_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    expected_artifacts_json TEXT NOT NULL DEFAULT '[]',
+    verification_requirements_json TEXT NOT NULL DEFAULT '[]',
+    sandbox_requirements_json TEXT NOT NULL DEFAULT '{}',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    context_snapshot_id TEXT,
+    llm_invocation_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(extension_proposal_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS idx_construction_plan_status ON construction_plans(status);
+
+CREATE TABLE IF NOT EXISTS construction_steps (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    step_type TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    inputs_json TEXT NOT NULL DEFAULT '{}',
+    expected_outputs_json TEXT NOT NULL DEFAULT '[]',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(plan_id, step_index)
+);
+CREATE INDEX IF NOT EXISTS idx_construction_step_plan ON construction_steps(plan_id, step_index);
+
+CREATE TABLE IF NOT EXISTS sandbox_workspaces (
+    id TEXT PRIMARY KEY,
+    construction_plan_id TEXT NOT NULL UNIQUE,
+    root_locator TEXT NOT NULL,
+    status TEXT NOT NULL,
+    max_files INTEGER NOT NULL,
+    max_file_bytes INTEGER NOT NULL,
+    max_total_bytes INTEGER NOT NULL,
+    timeout_seconds REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS construction_grants (
+    id TEXT PRIMARY KEY,
+    construction_plan_id TEXT NOT NULL UNIQUE,
+    workspace_id TEXT NOT NULL,
+    allowed_permissions_json TEXT NOT NULL DEFAULT '[]',
+    allowed_root TEXT NOT NULL,
+    network_policy TEXT NOT NULL,
+    process_policy_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS verification_checks (
+    id TEXT PRIMARY KEY,
+    construction_plan_id TEXT NOT NULL,
+    layer TEXT NOT NULL,
+    check_type TEXT NOT NULL,
+    check_key TEXT NOT NULL,
+    required INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(construction_plan_id, check_key)
+);
+CREATE INDEX IF NOT EXISTS idx_verification_plan ON verification_checks(construction_plan_id);
+
+CREATE TABLE IF NOT EXISTS construction_results (
+    id TEXT PRIMARY KEY,
+    construction_plan_id TEXT NOT NULL UNIQUE,
+    extension_proposal_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    artifact_resource_ids_json TEXT NOT NULL DEFAULT '[]',
+    verification_check_ids_json TEXT NOT NULL DEFAULT '[]',
+    provided_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    failure_reason TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- Phase 5C: exact verified artifacts promoted through a separate production
+-- grant, smoke verification, activation and rollback boundary.
+CREATE TABLE IF NOT EXISTS installation_plans (
+    id TEXT PRIMARY KEY,
+    construction_result_id TEXT NOT NULL UNIQUE,
+    extension_proposal_id TEXT NOT NULL,
+    capability_gap_id TEXT NOT NULL,
+    work_requirement_id TEXT NOT NULL,
+    artifact_versions_json TEXT NOT NULL DEFAULT '[]',
+    target_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    production_destinations_json TEXT NOT NULL DEFAULT '[]',
+    registry_changes_json TEXT NOT NULL DEFAULT '[]',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    rollback_spec_json TEXT NOT NULL DEFAULT '{}',
+    component_name TEXT NOT NULL,
+    component_version TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    status TEXT NOT NULL,
+    validation_reasons_json TEXT NOT NULL DEFAULT '[]',
+    context_snapshot_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_installation_plan_status ON installation_plans(status);
+
+CREATE TABLE IF NOT EXISTS installation_steps (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    step_type TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    inputs_json TEXT NOT NULL DEFAULT '{}',
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(installation_plan_id, step_index)
+);
+
+CREATE TABLE IF NOT EXISTS installation_grants (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL UNIQUE,
+    allowed_artifact_hashes_json TEXT NOT NULL DEFAULT '[]',
+    allowed_destinations_json TEXT NOT NULL DEFAULT '[]',
+    allowed_registry_changes_json TEXT NOT NULL DEFAULT '[]',
+    allowed_permissions_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS installation_checks (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL,
+    check_key TEXT NOT NULL,
+    check_type TEXT NOT NULL,
+    required INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(installation_plan_id, check_key)
+);
+
+CREATE TABLE IF NOT EXISTS installation_results (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    installed_artifact_versions_json TEXT NOT NULL DEFAULT '[]',
+    activated_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS installation_decisions (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    decided_by_process_id TEXT,
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    reviewed_by_event_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS activation_records (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL UNIQUE,
+    component_name TEXT NOT NULL,
+    component_version TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    definition_name TEXT NOT NULL,
+    definition_version TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    artifact_versions_json TEXT NOT NULL DEFAULT '[]',
+    artifact_hashes_json TEXT NOT NULL DEFAULT '[]',
+    installed_root TEXT NOT NULL,
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(component_name, component_version)
+);
+CREATE INDEX IF NOT EXISTS idx_activation_definition
+    ON activation_records(definition_name, definition_version, status);
+
+CREATE TABLE IF NOT EXISTS rollback_records (
+    id TEXT PRIMARY KEY,
+    installation_plan_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    restored_state_json TEXT NOT NULL DEFAULT '{}',
+    removed_destinations_json TEXT NOT NULL DEFAULT '[]',
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS resources (
     id                 TEXT PRIMARY KEY,
     uri                TEXT NOT NULL UNIQUE,

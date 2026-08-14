@@ -52,8 +52,40 @@ class RuntimeServices:
         plan_selector=None,
         selection_validator=None,
         selection_policy=None,
+        extension_store=None,
+        acquisition_analyzer=None,
+        extension_validator=None,
+        construction_store=None,
+        construction_planner=None,
+        construction_validator=None,
+        workspace_manager=None,
+        installation_store=None,
+        installation_planner=None,
+        installation_validator=None,
+        installation_policy=None,
+        installation_manager=None,
+        autonomy_store=None,
+        autonomy_policy=None,
+        autonomy_budget=None,
+        continuation_store=None,
         runtime=None,
     ) -> None:
+        self._construction_store = construction_store
+        self._construction_planner = construction_planner
+        self._construction_validator = construction_validator
+        self._workspace_manager = workspace_manager
+        self._installation_store = installation_store
+        self._installation_planner = installation_planner
+        self._installation_validator = installation_validator
+        self._installation_policy = installation_policy
+        self._installation_manager = installation_manager
+        self._autonomy_store = autonomy_store
+        self._autonomy_policy = autonomy_policy
+        self._autonomy_budget = autonomy_budget
+        self._continuation_store = continuation_store
+        self._extension_store = extension_store
+        self._acquisition_analyzer = acquisition_analyzer
+        self._extension_validator = extension_validator
         self._capabilities = capability_registry
         self._capability_matcher = capability_matcher
         self._capability_store = capability_store
@@ -237,6 +269,208 @@ class RuntimeServices:
         if self._plans is None:
             return []
         return self._plans.failed_fingerprints(work_requirement_id)
+
+    # --- self-extension (Phase 5A) -----------------------------------------
+
+    def get_extension_store(self):
+        """Return the store of gaps, extension proposals and their decisions."""
+        return self._extension_store
+
+    def get_acquisition_analyzer(self):
+        """Return the deterministic acquisition analyzer (never an LLM)."""
+        return self._acquisition_analyzer
+
+    def get_extension_validator(self):
+        """Return the validator an extension proposal must pass."""
+        return self._extension_validator
+
+    def get_llm_extension_proposer(self):
+        """Return the optional LLM proposer, or ``None`` if none is configured."""
+        return getattr(self._runtime, "llm_extension_proposer", None)
+
+    def get_acquisition_environment(self):
+        """What the analyzer may look at: definitions, backends, extractors, …"""
+        if self._runtime is None:
+            return None
+        return self._runtime.acquisition_environment()
+
+    def get_capability_gap(self, gap_id: uuid.UUID):
+        """Return one recorded deficiency (or ``None``)."""
+        if self._extension_store is None:
+            return None
+        return self._extension_store.get_gap(gap_id)
+
+    def find_capability_gap(self, work_requirement_id: uuid.UUID, missing_key: str):
+        """The gap for this need and this exact missing set (spec §11)."""
+        if self._extension_store is None:
+            return None
+        return self._extension_store.find_gap(work_requirement_id, missing_key)
+
+    def get_open_capability_gaps(self) -> list:
+        """Every deficiency that still stands."""
+        if self._extension_store is None:
+            return []
+        return self._extension_store.open_gaps()
+
+    def get_extension_proposal(self, proposal_id: uuid.UUID):
+        """Return one extension proposal (or ``None``)."""
+        if self._extension_store is None:
+            return None
+        return self._extension_store.get_proposal(proposal_id)
+
+    def get_extension_proposals_for_gap(self, gap_id: uuid.UUID) -> list:
+        """Every proposal made about a gap, oldest first."""
+        if self._extension_store is None:
+            return []
+        return self._extension_store.proposals_for_gap(gap_id)
+
+    def find_extension_proposal_by_fingerprint(self, fingerprint: str):
+        """The proposal with this content, if one was already made (spec §68)."""
+        if self._extension_store is None:
+            return None
+        return self._extension_store.get_proposal_by_fingerprint(fingerprint)
+
+    # --- sandboxed construction (Phase 5B) --------------------------------
+
+    def get_construction_store(self):
+        """Return the read side of durable construction records."""
+        return self._construction_store
+
+    def get_construction_planner(self):
+        """Return the deterministic construction template builder."""
+        return self._construction_planner
+
+    def get_construction_validator(self):
+        """Return the validator guarding workspace creation."""
+        return self._construction_validator
+
+    def get_workspace_manager(self):
+        """Return the dedicated-root workspace manager."""
+        return self._workspace_manager
+
+    def get_llm_construction_generator(self):
+        """Return the optional sandbox-artifact generator."""
+        return getattr(self._runtime, "llm_construction_generator", None)
+
+    def get_construction_plan(self, plan_id):
+        """Read one ConstructionPlan by id."""
+        return self._construction_store.get_plan(plan_id) if self._construction_store else None
+
+    def get_active_construction_plan(self, proposal_id):
+        """Read the nonterminal plan for an ExtensionProposal, if any."""
+        return self._construction_store.active_for_proposal(proposal_id) if self._construction_store else None
+
+    def get_construction_plans_for_proposal(self, proposal_id) -> list:
+        """Read every durable attempt for an ExtensionProposal."""
+        return self._construction_store.plans_for_proposal(proposal_id) if self._construction_store else []
+
+    def get_sandbox_workspace_for_plan(self, plan_id):
+        """Read the workspace belonging to a construction plan."""
+        return self._construction_store.get_workspace_for_plan(plan_id) if self._construction_store else None
+
+    def get_construction_grant_for_plan(self, plan_id):
+        """Read the plan's construction-scoped grant."""
+        return self._construction_store.get_grant_for_plan(plan_id) if self._construction_store else None
+
+    def get_verification_checks_for_plan(self, plan_id):
+        """Read all three layers of verification evidence."""
+        return self._construction_store.checks_for_plan(plan_id) if self._construction_store else []
+
+    def get_construction_result(self, plan_id):
+        """Read a plan's terminal construction result."""
+        return self._construction_store.result_for_plan(plan_id) if self._construction_store else None
+
+    def get_construction_result_by_id(self, result_id):
+        """Read a terminal construction result by its own id."""
+        return self._construction_store.get_result(result_id) if self._construction_store else None
+
+    # --- production installation (Phase 5C) ------------------------------
+
+    def get_installation_store(self):
+        return self._installation_store
+
+    def get_installation_planner(self):
+        return self._installation_planner
+
+    def get_installation_validator(self):
+        return self._installation_validator
+
+    def get_installation_policy(self):
+        return getattr(self._runtime, "installation_policy", self._installation_policy)
+
+    def get_installation_manager(self):
+        return self._installation_manager
+
+    def get_installation_plan(self, plan_id):
+        return self._installation_store.get_plan(plan_id) if self._installation_store else None
+
+    def get_installation_plan_for_result(self, result_id):
+        return self._installation_store.for_construction_result(result_id) if self._installation_store else None
+
+    def get_installation_grant_for_plan(self, plan_id):
+        return self._installation_store.grant_for_plan(plan_id) if self._installation_store else None
+
+    def get_installation_result(self, plan_id):
+        return self._installation_store.result_for_plan(plan_id) if self._installation_store else None
+
+    # --- autonomous capability acquisition (Phase 5D) --------------------
+
+    def get_autonomy_store(self):
+        """Return the read/query store used by the acquisition Process."""
+        return self._autonomy_store
+
+    def get_autonomy_policy(self):
+        """Return deployment policy; handlers never mutate it."""
+        return getattr(self._runtime, "autonomy_policy", self._autonomy_policy)
+
+    def get_default_autonomy_budget(self):
+        """Return the default immutable budget for newly opened sessions."""
+        return getattr(self._runtime, "default_autonomy_budget", self._autonomy_budget)
+
+    def get_acquisition_session(self, session_id):
+        return self._autonomy_store.get_session(session_id) if self._autonomy_store else None
+
+    def find_acquisition_by_key(self, acquisition_key):
+        return self._autonomy_store.find_by_key(acquisition_key) if self._autonomy_store else None
+
+    def find_acquisition_by_proposal(self, proposal_id):
+        return self._autonomy_store.find_by_proposal(proposal_id) if self._autonomy_store else None
+
+    def find_acquisition_by_construction_plan(self, plan_id):
+        return self._autonomy_store.find_by_construction_plan(plan_id) if self._autonomy_store else None
+
+    def find_acquisition_by_installation_plan(self, plan_id):
+        return self._autonomy_store.find_by_installation_plan(plan_id) if self._autonomy_store else None
+
+    def get_activation_for_definition(self, name, version):
+        return self._installation_store.activation_for_definition(name, version) if self._installation_store else None
+
+    def get_resource_store(self):
+        """Read-only store access for exact immutable ResourceVersion identity."""
+        return self._resources.store if self._resources is not None else None
+
+    def find_extension_review_continuations(self, proposal_id) -> list:
+        """Read-only lookup used to close superseded/cancelled reviews."""
+        if self._continuation_store is None:
+            return []
+        target = str(proposal_id)
+        return [
+            c for c in self._continuation_store.all()
+            if c.resume_point == "await_extension_review"
+            and str(c.saved_process_state.get("extension_proposal_id")) == target
+        ]
+
+    def find_autonomy_review_continuations(self, session_id) -> list:
+        """Find durable Phase 5D review waiters for cancellation cleanup."""
+        if self._continuation_store is None:
+            return []
+        return [
+            continuation
+            for continuation in self._continuation_store.all()
+            if continuation.resume_point == "await_autonomy_review"
+            and str(continuation.waiting_for.get("acquisition_session_id"))
+            == str(session_id)
+        ]
 
     # --- resources ---------------------------------------------------------
 

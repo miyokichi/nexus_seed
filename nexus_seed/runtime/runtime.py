@@ -70,8 +70,54 @@ from ..decision.selector import DeterministicPlanSelector
 from ..decision.trace import DecisionTrace, get_decision_trace
 from ..decision.validation import SelectionValidator
 from ..storage.decision_store import DecisionStore
+from ..storage.extension_store import ExtensionStore
+from ..storage.construction_store import ConstructionStore
+from ..storage.installation_store import InstallationStore
+from ..storage.autonomy_store import AutonomyStore
+from ..construction.generator import LLMConstructionGenerator
+from ..construction.planner import ConstructionPlanner
+from ..construction.validator import ConstructionValidator
+from ..construction.workspace import (
+    BACKEND_NAME as CONSTRUCTION_BACKEND_NAME,
+    ConstructionActionBackend,
+    SandboxWorkspaceManager,
+)
+from ..construction.trace import ConstructionTrace, get_construction_trace
+from ..installation.planner import InstallationPlanner
+from ..installation.policy import InstallationPolicy
+from ..installation.validator import InstallationValidator
+from ..installation.workspace import (
+    BACKEND_NAME as INSTALLATION_BACKEND_NAME,
+    InstallationActionBackend,
+    ProductionInstallationManager,
+)
+from ..installation.trace import InstallationTrace, get_installation_trace
+from ..autonomy.models import AcquisitionStatus, AutonomyBudget
+from ..autonomy.policy import AutonomyPolicy
+from ..autonomy.trace import AcquisitionTrace, get_acquisition_trace
+from ..extension.analyzer import (
+    AcquisitionEnvironment,
+    CapabilityAcquisitionAnalyzer,
+    PluginCatalog,
+)
+from ..extension.models import (
+    CapabilityGap,
+    CapabilityGapStatus,
+    ExtensionDecisionRecord,
+    ExtensionProposal,
+    ExtensionProposalStatus,
+)
+from ..extension.policy import ExtensionPolicy
+from ..extension.trace import (
+    CapabilityGapTrace,
+    ExtensionTrace,
+    get_capability_gap_trace,
+    get_extension_trace,
+)
+from ..extension.validator import ExtensionValidator
 from ..context.compiler import ContextCompiler
 from ..context.models import ContextSnapshot
+from ..backends.action import capabilities_of
 from ..backends.base import ExecutionBackend, LLMInvocation
 from ..intelligence.proposal import InterpretationProposal
 from ..actions.models import (
@@ -129,6 +175,8 @@ class Runtime:
         *,
         registry: HandlerRegistry | None = None,
         clock: Clock | None = None,
+        construction_root: str | Path | None = None,
+        installation_root: str | Path | None = None,
     ) -> None:
         self.db = Database(db_path)
         self.clock = clock or Clock()
@@ -186,6 +234,50 @@ class Runtime:
         self.llm_plan_selector = None
         #: How many times a need may be replanned when its work does not say.
         self.default_max_replans = 3
+        # Phase 5A: what the system *cannot* do, and what it proposes about it.
+        # Kept beside the capability registry rather than inside it — the
+        # registry is the self-model, these are its acknowledged holes.
+        self.extension_store = ExtensionStore(self.db)
+        self.acquisition_analyzer = CapabilityAcquisitionAnalyzer(self.capabilities)
+        self.extension_validator = ExtensionValidator(
+            self.capabilities, matcher=self.capability_matcher
+        )
+        self.extension_policy = ExtensionPolicy()
+        #: Known external plugins, as static data — never a marketplace client.
+        self.plugin_catalog = PluginCatalog()
+        #: Optional model that elaborates an analyzed route.  ``None`` means the
+        #: deterministic builder alone, which must always be enough (spec §82).
+        self.llm_extension_proposer = None
+        # Phase 5B construction is durable data plus an isolated file boundary.
+        self.construction_store = ConstructionStore(self.db)
+        self.construction_planner = ConstructionPlanner()
+        self.construction_validator = ConstructionValidator()
+        self.workspace_manager = SandboxWorkspaceManager(construction_root)
+        repository_root = Path.cwd().resolve()
+        if repository_root == self.workspace_manager.base_root or repository_root in self.workspace_manager.base_root.parents:
+            raise ValueError("construction_root must not be the production repository")
+        self.llm_construction_generator: LLMConstructionGenerator | None = None
+        self.backends[CONSTRUCTION_BACKEND_NAME] = ConstructionActionBackend(
+            self.workspace_manager, self.construction_store
+        )
+        # Phase 5C production data has a separate versioned root and authority.
+        self.installation_store = InstallationStore(self.db)
+        self.installation_planner = InstallationPlanner()
+        self.installation_validator = InstallationValidator()
+        self.installation_policy = InstallationPolicy()
+        if installation_root is None and str(db_path) != ":memory:":
+            installation_root = Path(db_path).resolve().parent / "installed_extensions"
+        self.installation_manager = ProductionInstallationManager(installation_root)
+        if repository_root == self.installation_manager.root or repository_root in self.installation_manager.root.parents:
+            raise ValueError("installation_root must not be the production repository source tree")
+        self.backends[INSTALLATION_BACKEND_NAME] = InstallationActionBackend(
+            self.installation_manager, self.installation_store, self.resource_store
+        )
+        # Phase 5D coordinates the existing extension/construction/installation
+        # boundaries.  The policy is deterministic and cannot edit itself.
+        self.autonomy_store = AutonomyStore(self.db)
+        self.autonomy_policy = AutonomyPolicy()
+        self.default_autonomy_budget = AutonomyBudget()
 
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)
@@ -211,6 +303,22 @@ class Runtime:
             plan_selector=self.plan_selector,
             selection_validator=self.selection_validator,
             selection_policy=self.selection_policy,
+            extension_store=self.extension_store,
+            acquisition_analyzer=self.acquisition_analyzer,
+            extension_validator=self.extension_validator,
+            construction_store=self.construction_store,
+            construction_planner=self.construction_planner,
+            construction_validator=self.construction_validator,
+            workspace_manager=self.workspace_manager,
+            installation_store=self.installation_store,
+            installation_planner=self.installation_planner,
+            installation_validator=self.installation_validator,
+            installation_policy=self.installation_policy,
+            installation_manager=self.installation_manager,
+            autonomy_store=self.autonomy_store,
+            autonomy_policy=self.autonomy_policy,
+            autonomy_budget=self.default_autonomy_budget,
+            continuation_store=self.continuation_store,
             runtime=self,
             extractor_registry=self.extractors,
             ingress_receipt_store=self.ingress_receipt_store,
@@ -254,6 +362,11 @@ class Runtime:
             capability_store=self.capability_store,
             plan_store=self.plan_store,
             decision_store=self.decision_store,
+            extension_store=self.extension_store,
+            construction_store=self.construction_store,
+            installation_store=self.installation_store,
+            installation_manager=self.installation_manager,
+            autonomy_store=self.autonomy_store,
         )
         #: How much one drain call may do.  Unlimited by default, so callers
         #: written before Phase 4B.1 behave exactly as they did.
@@ -539,6 +652,297 @@ class Runtime:
         deterministic selector decides and the system runs unchanged.
         """
         self.llm_plan_selector = selector
+
+    # --- self-extension queries (Phase 5A) ---------------------------------
+
+    def get_capability_gap(self, gap_id) -> CapabilityGap | None:
+        """Return one recorded deficiency by id."""
+        return self.extension_store.get_gap(gap_id)
+
+    def get_capability_gaps(
+        self, status: CapabilityGapStatus | str | None = None
+    ) -> list[CapabilityGap]:
+        """Return every gap, optionally filtered by status."""
+        if status is None:
+            return self.extension_store.all_gaps()
+        return self.extension_store.gaps_by_status(status)
+
+    def get_open_capability_gaps(self) -> list[CapabilityGap]:
+        """Return the deficiencies that still stand (spec §133)."""
+        return self.extension_store.open_gaps()
+
+    def get_capability_gaps_for_work(self, work_requirement_id) -> list[CapabilityGap]:
+        """Return every gap ever opened for one need."""
+        return self.extension_store.gaps_for_work(work_requirement_id)
+
+    def get_extension_proposal(self, proposal_id) -> ExtensionProposal | None:
+        """Return one extension proposal by id."""
+        return self.extension_store.get_proposal(proposal_id)
+
+    def get_extension_proposals(
+        self, status: ExtensionProposalStatus | str | None = None
+    ) -> list[ExtensionProposal]:
+        """Return extension proposals, optionally filtered by status."""
+        if status is None:
+            return self.extension_store.all_proposals()
+        return self.extension_store.proposals_by_status(status)
+
+    def get_extension_proposals_for_gap(self, gap_id) -> list[ExtensionProposal]:
+        """Return every proposal made about a gap, oldest first."""
+        return self.extension_store.proposals_for_gap(gap_id)
+
+    def get_extension_decisions(self, proposal_id) -> list[ExtensionDecisionRecord]:
+        """Return the decisions recorded for a proposal (append-only)."""
+        return self.extension_store.decisions_for_proposal(proposal_id)
+
+    def get_capability_gap_trace(self, gap_id) -> CapabilityGapTrace | None:
+        """Trace a deficiency back to the need and the match that found it."""
+        return get_capability_gap_trace(
+            gap_id,
+            extension_store=self.extension_store,
+            work_requirement_store=self.work_requirement_store,
+            capability_store=self.capability_store,
+        )
+
+    def get_extension_trace(self, proposal_id) -> ExtensionTrace | None:
+        """Trace a proposed self-extension back to the event that caused it."""
+        return get_extension_trace(
+            proposal_id,
+            extension_store=self.extension_store,
+            work_requirement_store=self.work_requirement_store,
+            capability_store=self.capability_store,
+            state_delta_store=self.state_delta_store,
+            observation_store=self.observation_store,
+            event_store=self.event_store,
+            llm_invocation_store=self.llm_invocation_store,
+            context_snapshot_store=self.context_snapshot_store,
+        )
+
+    def get_extension_health(self) -> dict:
+        """A small operational snapshot of the self-extension layer (spec §134).
+
+        ``approved_not_constructed`` now distinguishes approvals still waiting
+        for Phase 5B from plans already built or terminally checked.
+        """
+        gaps = self.extension_store.all_gaps()
+        open_gaps = [g for g in gaps if not g.status.terminal]
+        proposals = self.extension_store.all_proposals()
+        by_status: dict[str, int] = {}
+        for proposal in proposals:
+            by_status[proposal.status.value] = by_status.get(proposal.status.value, 0) + 1
+        oldest = min((g.created_at for g in open_gaps), default=None)
+        construction_plans = self.construction_store.all_plans()
+        installation_plans = self.installation_store.all_plans()
+        planned_proposals = {p.extension_proposal_id for p in construction_plans}
+        return {
+            "open_gaps": len(open_gaps),
+            "resolved_gaps": sum(
+                1 for g in gaps if g.status is CapabilityGapStatus.RESOLVED
+            ),
+            "proposals": len(proposals),
+            "proposals_by_status": by_status,
+            "awaiting_review": by_status.get(ExtensionProposalStatus.REVIEW.value, 0),
+            "approved_not_constructed": sum(
+                1 for p in proposals
+                if p.status is ExtensionProposalStatus.APPROVED
+                and p.id not in planned_proposals
+            ),
+            "construction_verified": sum(
+                1 for p in construction_plans if p.status.value == "VERIFIED"
+            ),
+            "construction_failed_or_blocked": sum(
+                1 for p in construction_plans if p.status.value in {"FAILED", "BLOCKED"}
+            ),
+            "rejected": by_status.get(ExtensionProposalStatus.REJECTED.value, 0)
+            + by_status.get(ExtensionProposalStatus.INVALID.value, 0),
+            "critical_proposals": sum(
+                1 for p in proposals if p.estimated_risk.value == "CRITICAL"
+            ),
+            "oldest_open_gap_at": oldest.isoformat() if oldest else None,
+            "installation_awaiting_review": sum(
+                1 for p in installation_plans if p.status.value == "REVIEW"
+            ),
+            "installation_rolled_back": sum(
+                1 for p in installation_plans if p.status.value == "ROLLED_BACK"
+            ),
+            "capabilities_acquired": len(self.installation_store.active_activations()),
+        }
+
+    def set_llm_extension_proposer(self, proposer) -> None:
+        """Install (or remove, with ``None``) the optional LLM proposer.
+
+        Optional in the strong sense (spec §81–§82): with none installed the
+        deterministic builder writes the proposal and the whole loop still runs.
+        """
+        self.llm_extension_proposer = proposer
+
+    def set_extension_policy(self, policy: ExtensionPolicy) -> ExtensionPolicy:
+        """Set the risk appetite used when a runtime-level default is wanted.
+
+        The analyzing process still reads its *own* definition metadata
+        (spec §42) — this is the default a bootstrap copies onto it.
+        """
+        self.extension_policy = policy
+        return policy
+
+    # --- sandboxed construction queries (Phase 5B) ------------------------
+
+    def get_construction_plan(self, plan_id):
+        """Return one durable construction plan, including its steps."""
+        return self.construction_store.get_plan(plan_id)
+
+    def get_construction_plans(self, proposal_id=None) -> list:
+        """Return construction plans globally or for one ExtensionProposal."""
+        if proposal_id is None:
+            return self.construction_store.all_plans()
+        return self.construction_store.plans_for_proposal(proposal_id)
+
+    def get_sandbox_workspace(self, workspace_id):
+        """Return one isolated construction workspace record."""
+        return self.construction_store.get_workspace(workspace_id)
+
+    def get_construction_grant(self, plan_id):
+        """Return the construction-scoped grant for a plan."""
+        return self.construction_store.get_grant_for_plan(plan_id)
+
+    def get_verification_checks(self, plan_id) -> list:
+        """Return a plan's structural, static and behavior checks."""
+        return self.construction_store.checks_for_plan(plan_id)
+
+    def get_construction_result(self, plan_id):
+        """Return a plan's terminal VERIFIED/FAILED/BLOCKED result."""
+        return self.construction_store.result_for_plan(plan_id)
+
+    # --- production installation queries (Phase 5C) ----------------------
+
+    def get_installation_plan(self, plan_id):
+        return self.installation_store.get_plan(plan_id)
+
+    def get_installation_plans(self) -> list:
+        return self.installation_store.all_plans()
+
+    def get_installation_grant(self, plan_id):
+        return self.installation_store.grant_for_plan(plan_id)
+
+    def get_installation_checks(self, plan_id) -> list:
+        return self.installation_store.checks_for_plan(plan_id)
+
+    def get_installation_result(self, plan_id):
+        return self.installation_store.result_for_plan(plan_id)
+
+    def get_activation_record(self, plan_id):
+        return self.installation_store.activation_for_plan(plan_id)
+
+    def get_installation_trace(self, plan_id) -> InstallationTrace | None:
+        return get_installation_trace(
+            plan_id,
+            installation_store=self.installation_store,
+            construction_store=self.construction_store,
+            extension_store=self.extension_store,
+            work_requirement_store=self.work_requirement_store,
+            resource_store=self.resource_store,
+            action_proposal_store=self.action_proposal_store,
+            action_execution_store=self.action_execution_store,
+            capability_store=self.capability_store,
+            event_store=self.event_store,
+        )
+
+    def set_installation_policy(self, policy: InstallationPolicy) -> InstallationPolicy:
+        """Narrow reviewable installation strategies; never enable auto-approval."""
+        self.installation_policy = policy
+        return policy
+
+    def get_construction_trace(self, plan_id) -> ConstructionTrace | None:
+        """Join Work -> Gap -> approval -> sandbox -> evidence."""
+        return get_construction_trace(
+            plan_id,
+            construction_store=self.construction_store,
+            extension_store=self.extension_store,
+            work_requirement_store=self.work_requirement_store,
+            action_proposal_store=self.action_proposal_store,
+            action_execution_store=self.action_execution_store,
+            resource_store=self.resource_store,
+            context_snapshot_store=self.context_snapshot_store,
+            llm_invocation_store=self.llm_invocation_store,
+        )
+
+    # --- bounded autonomous acquisition queries (Phase 5D) ---------------
+
+    def get_acquisition_session(self, session_id):
+        """Return one durable acquisition session."""
+        return self.autonomy_store.get_session(session_id)
+
+    def get_acquisition_sessions(self, *, status=None) -> list:
+        """List sessions, optionally filtered by lifecycle status."""
+        return self.autonomy_store.sessions(status=status)
+
+    def get_active_acquisitions(self) -> list:
+        """Return every acquisition that still has a possible next step."""
+        return [session for session in self.autonomy_store.sessions() if not session.status.terminal]
+
+    def get_blocked_acquisitions(self) -> list:
+        """Return policy/budget/cycle blocked acquisitions."""
+        return self.autonomy_store.sessions(status=AcquisitionStatus.BLOCKED)
+
+    def get_autonomy_decisions(self, session_id) -> list:
+        return self.autonomy_store.decisions(session_id)
+
+    def get_acquisition_attempts(self, session_id, attempt_type=None) -> list:
+        return self.autonomy_store.attempts(session_id, attempt_type)
+
+    def get_acquisition_trace(self, session_id) -> AcquisitionTrace | None:
+        return get_acquisition_trace(
+            session_id, autonomy_store=self.autonomy_store,
+            extension_store=self.extension_store,
+            construction_store=self.construction_store,
+            installation_store=self.installation_store,
+            work_requirement_store=self.work_requirement_store,
+            event_store=self.event_store,
+            installation_trace_getter=self.get_installation_trace,
+        )
+
+    def get_autonomy_health(self) -> dict:
+        sessions = self.autonomy_store.sessions()
+        return {
+            "active": sum(not session.status.terminal for session in sessions),
+            "waiting_review": sum(session.status is AcquisitionStatus.WAITING_REVIEW for session in sessions),
+            "blocked": sum(session.status is AcquisitionStatus.BLOCKED for session in sessions),
+            "completed": sum(session.status is AcquisitionStatus.COMPLETED for session in sessions),
+            "failed": sum(session.status is AcquisitionStatus.FAILED for session in sessions),
+            "cancelled": sum(session.status is AcquisitionStatus.CANCELLED for session in sessions),
+        }
+
+    def set_autonomy_policy(self, policy: AutonomyPolicy) -> AutonomyPolicy:
+        """Set deployment configuration; acquisition Processes only read it."""
+        self.autonomy_policy = policy
+        return policy
+
+    def set_default_autonomy_budget(self, budget: AutonomyBudget) -> AutonomyBudget:
+        """Set the immutable snapshot used for newly opened sessions."""
+        self.default_autonomy_budget = budget
+        return budget
+
+    def set_llm_construction_generator(self, generator) -> None:
+        """Install/remove the optional generator; output remains sandbox-only."""
+        self.llm_construction_generator = generator
+
+    def acquisition_environment(self) -> AcquisitionEnvironment:
+        """What the analyzer is allowed to look at, as it currently stands.
+
+        Assembled here because the Runtime is what holds the registrations —
+        but it holds no opinion about them (Invariant 4, spec §51): the
+        reasoning lives in the analyzer, this is only the inventory.
+        """
+        return AcquisitionEnvironment(
+            definitions=self.process_store.all_definitions(),
+            backends={
+                name: capabilities_of(backend)
+                for name, backend in self.backends.items()
+            },
+            extractors=self.extractors,
+            adapters=self.adapters,
+            plugins=self.plugin_catalog,
+        )
 
     # --- event delivery queries -------------------------------------------
 

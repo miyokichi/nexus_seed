@@ -71,6 +71,10 @@ class ProcessEffects:
     resources: "ResourceEffects" = None
     planning: "PlanningEffects" = None
     decision: "DecisionEffects" = None
+    extension: "ExtensionEffects" = None
+    construction: "ConstructionEffects" = None
+    installation: "InstallationEffects" = None
+    autonomy: "AutonomyEffects" = None
 
     @property
     def is_empty(self) -> bool:
@@ -90,6 +94,10 @@ class ProcessEffects:
                 self.resources.any,
                 self.planning.any,
                 self.decision is not None and self.decision.any,
+                self.extension is not None and self.extension.any,
+                self.construction is not None and self.construction.any,
+                self.installation is not None and self.installation.any,
+                self.autonomy is not None and self.autonomy.any,
             )
         )
 
@@ -205,6 +213,94 @@ class DecisionEffects:
         )
 
 
+@dataclass(frozen=True)
+class ExtensionEffects:
+    """Phase 5A writes: what we lack, what we proposed, and what was decided.
+
+    Grouped apart from :class:`WorkEffects` because they are about different
+    subjects (Invariant 85).  A WorkRequirement is something the world asks of
+    us; a CapabilityGap is something we are missing, and writing one must never
+    look like editing the other.
+    """
+
+    gaps: list = field(default_factory=list)
+    gap_updates: list = field(default_factory=list)
+    proposals: list = field(default_factory=list)
+    proposal_updates: list = field(default_factory=list)
+    decisions: list = field(default_factory=list)
+
+    @property
+    def any(self) -> bool:
+        return bool(
+            self.gaps
+            or self.gap_updates
+            or self.proposals
+            or self.proposal_updates
+            or self.decisions
+        )
+
+
+@dataclass(frozen=True)
+class ConstructionEffects:
+    """Phase 5B writes: isolated build intent, progress and evidence."""
+
+    plans: list = field(default_factory=list)
+    plan_updates: list = field(default_factory=list)
+    step_updates: list = field(default_factory=list)
+    workspaces: list = field(default_factory=list)
+    workspace_updates: list = field(default_factory=list)
+    grants: list = field(default_factory=list)
+    grant_updates: list = field(default_factory=list)
+    verification_checks: list = field(default_factory=list)
+    results: list = field(default_factory=list)
+
+    @property
+    def any(self) -> bool:
+        return bool(
+            self.plans or self.plan_updates or self.step_updates or self.workspaces
+            or self.workspace_updates or self.grants or self.grant_updates
+            or self.verification_checks or self.results
+        )
+
+
+@dataclass(frozen=True)
+class InstallationEffects:
+    """Phase 5C writes: production promotion, evidence and activation."""
+
+    plans: list = field(default_factory=list)
+    plan_updates: list = field(default_factory=list)
+    step_updates: list = field(default_factory=list)
+    grants: list = field(default_factory=list)
+    grant_updates: list = field(default_factory=list)
+    checks: list = field(default_factory=list)
+    results: list = field(default_factory=list)
+    decisions: list = field(default_factory=list)
+    activations: list = field(default_factory=list)
+    rollbacks: list = field(default_factory=list)
+
+    @property
+    def any(self) -> bool:
+        return bool(
+            self.plans or self.plan_updates or self.step_updates or self.grants
+            or self.grant_updates or self.checks or self.results or self.decisions
+            or self.activations or self.rollbacks
+        )
+
+
+@dataclass(frozen=True)
+class AutonomyEffects:
+    """Phase 5D writes: coordination, subscribers, decisions, and attempts."""
+
+    sessions: list = field(default_factory=list)
+    subscribers: list = field(default_factory=list)
+    decisions: list = field(default_factory=list)
+    attempts: list = field(default_factory=list)
+
+    @property
+    def any(self) -> bool:
+        return bool(self.sessions or self.subscribers or self.decisions or self.attempts)
+
+
 # --- normalization / conflict detection ------------------------------------
 
 
@@ -254,7 +350,134 @@ def check_conflicts(result) -> None:
         result.plan_updates, label="plan"
     )
     result.plan_node_updates = _normalize_node_updates(result.plan_node_updates)
+    result.capability_gap_updates = normalize_status_updates(
+        result.capability_gap_updates, label="capability gap"
+    )
+    result.extension_proposal_updates = _normalize_reasoned_updates(
+        result.extension_proposal_updates, label="extension proposal"
+    )
+    result.construction_plan_updates = normalize_status_updates(
+        result.construction_plan_updates, label="construction plan"
+    )
+    result.construction_step_updates = normalize_status_updates(
+        result.construction_step_updates, label="construction step"
+    )
+    result.sandbox_workspace_updates = _normalize_timed_updates(
+        result.sandbox_workspace_updates, label="sandbox workspace"
+    )
+    result.construction_grant_updates = normalize_status_updates(
+        result.construction_grant_updates, label="construction grant"
+    )
+    result.installation_plan_updates = _normalize_reasoned_updates(
+        result.installation_plan_updates, label="installation plan"
+    )
+    result.installation_step_updates = normalize_status_updates(
+        result.installation_step_updates, label="installation step"
+    )
+    result.installation_grant_updates = _normalize_timed_updates(
+        result.installation_grant_updates, label="installation grant"
+    )
+    result.acquisition_sessions = _normalize_domain_records(
+        result.acquisition_sessions,
+        label="acquisition session",
+        signature=lambda value: (
+            getattr(value.status, "value", value.status),
+            getattr(value.current_stage, "value", value.current_stage),
+            value.blocked_reason,
+        ),
+    )
+    result.acquisition_subscribers = _normalize_domain_records(
+        result.acquisition_subscribers,
+        label="acquisition subscriber",
+        signature=lambda value: value.status,
+    )
+    result.acquisition_attempts = _normalize_domain_records(
+        result.acquisition_attempts,
+        label="acquisition attempt",
+        signature=lambda value: (value.status, value.plan_id, value.result_id),
+    )
+    result.process_instance_updates = _normalize_process_instance_updates(
+        result.process_instance_updates
+    )
     _check_work_match_conflicts(result)
+
+
+def _normalize_domain_records(records: list, *, label: str, signature) -> list:
+    """Deduplicate identical domain writes and refuse contradictory ones."""
+
+    seen: dict[Any, Any] = {}
+    normalized: list = []
+    for record in records:
+        record_id = record.id
+        value = signature(record)
+        if record_id in seen:
+            if seen[record_id] == value:
+                continue
+            raise EffectConflictError(
+                f"conflicting {label} writes for {record_id}: "
+                f"{seen[record_id]!r} then {value!r} in one activation"
+            )
+        seen[record_id] = value
+        normalized.append(record)
+    return normalized
+
+
+def _normalize_reasoned_updates(updates: list[tuple], *, label: str) -> list[tuple]:
+    """Collapse duplicate ``(id, status, reasons)`` updates, refusing conflicts.
+
+    The same rule as :func:`normalize_status_updates` for the effects that
+    carry their reasons with them (spec §131): saying the same thing twice is
+    one intention, and saying two different things about one record in one
+    activation is an ambiguity the runtime must not resolve by list order.
+    """
+    seen: dict[Any, tuple] = {}
+    normalized: list[tuple] = []
+    for record_id, status, reasons in updates:
+        if record_id in seen:
+            previous_status, previous_reasons = seen[record_id]
+            if previous_status == status and previous_reasons == list(reasons or []):
+                continue
+            raise EffectConflictError(
+                f"conflicting {label} updates for {record_id}: "
+                f"{previous_status!r} then {status!r} in one activation"
+            )
+        seen[record_id] = (status, list(reasons or []))
+        normalized.append((record_id, status, reasons))
+    return normalized
+
+
+def _normalize_timed_updates(updates: list[tuple], *, label: str) -> list[tuple]:
+    seen: dict[Any, tuple] = {}
+    normalized: list[tuple] = []
+    for record_id, status, timestamp in updates:
+        value = (status, timestamp)
+        if record_id in seen:
+            if seen[record_id] == value:
+                continue
+            raise EffectConflictError(
+                f"conflicting {label} updates for {record_id}: "
+                f"{seen[record_id]!r} then {value!r} in one activation"
+            )
+        seen[record_id] = value
+        normalized.append((record_id, status, timestamp))
+    return normalized
+
+
+def _normalize_process_instance_updates(updates: list[tuple]) -> list[tuple]:
+    seen: dict[Any, tuple] = {}
+    normalized: list[tuple] = []
+    for instance_id, status, output in updates:
+        value = (status, output)
+        if instance_id in seen:
+            if seen[instance_id] == value:
+                continue
+            raise EffectConflictError(
+                f"conflicting process instance updates for {instance_id}: "
+                f"{seen[instance_id]!r} then {value!r}"
+            )
+        seen[instance_id] = value
+        normalized.append((instance_id, status, output))
+    return normalized
 
 
 def _normalize_node_updates(updates: list[tuple]) -> list[tuple]:

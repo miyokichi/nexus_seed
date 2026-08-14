@@ -79,10 +79,20 @@ class Executor:
         capability_store=None,
         plan_store=None,
         decision_store=None,
+        extension_store=None,
+        construction_store=None,
+        installation_store=None,
+        installation_manager=None,
+        autonomy_store=None,
     ) -> None:
         self.capability_store = capability_store
         self.plan_store = plan_store
         self.decision_store = decision_store
+        self.extension_store = extension_store
+        self.construction_store = construction_store
+        self.installation_store = installation_store
+        self.installation_manager = installation_manager
+        self.autonomy_store = autonomy_store
         self.db = db
         self.registry = registry
         self.process_store = process_store
@@ -286,6 +296,89 @@ class Executor:
                     self.work_requirement_store.record_replan(
                         requirement_id, attempt_number
                     )
+                if self.extension_store is not None:
+                    # Gaps before proposals: a proposal references the gap it
+                    # closes, and the two must land in one transaction so a
+                    # crash cannot leave a proposal about nothing (spec §132).
+                    for gap in result.capability_gaps:
+                        self.extension_store.save_gap(gap)
+                    for gap_id, status in result.capability_gap_updates:
+                        self.extension_store.update_gap_status(gap_id, status)
+                    for extension_proposal in result.extension_proposals:
+                        self.extension_store.save_proposal(extension_proposal)
+                    for proposal_id, status, reasons in result.extension_proposal_updates:
+                        self.extension_store.update_proposal_status(
+                            proposal_id, status, reasons=reasons or None
+                        )
+                    for extension_decision in result.extension_decisions:
+                        self.extension_store.save_decision(extension_decision)
+                if self.construction_store is not None:
+                    for plan in result.construction_plans:
+                        self.construction_store.save_plan(plan)
+                    for plan_id, status in result.construction_plan_updates:
+                        self.construction_store.update_plan_status(plan_id, status)
+                    for step_id, status in result.construction_step_updates:
+                        self.construction_store.update_step_status(step_id, status)
+                    for workspace in result.sandbox_workspaces:
+                        self.construction_store.save_workspace(workspace)
+                    for workspace_id, status, closed_at in result.sandbox_workspace_updates:
+                        self.construction_store.update_workspace_status(
+                            workspace_id, status, closed_at=closed_at
+                        )
+                    for grant in result.construction_grants:
+                        self.construction_store.save_grant(grant)
+                    for grant_id, status in result.construction_grant_updates:
+                        self.construction_store.update_grant_status(grant_id, status)
+                    for check in result.verification_checks:
+                        self.construction_store.save_check(check)
+                    for construction_result in result.construction_results:
+                        self.construction_store.save_result(construction_result)
+                if self.installation_store is not None:
+                    for plan in result.installation_plans:
+                        self.installation_store.save_plan(plan)
+                    for plan_id, status, reasons in result.installation_plan_updates:
+                        self.installation_store.update_plan_status(
+                            plan_id, status, reasons=reasons or None
+                        )
+                    for step_id, status in result.installation_step_updates:
+                        self.installation_store.update_step_status(step_id, status)
+                    for grant in result.installation_grants:
+                        self.installation_store.save_grant(grant)
+                    for grant_id, status, revoked_at in result.installation_grant_updates:
+                        self.installation_store.update_grant_status(
+                            grant_id, status, revoked_at=revoked_at
+                        )
+                    for check in result.installation_checks:
+                        self.installation_store.save_check(check)
+                    for installation_result in result.installation_results:
+                        self.installation_store.save_result(installation_result)
+                    for decision in result.installation_decisions:
+                        self.installation_store.save_decision(decision)
+                    for rollback in result.rollback_records:
+                        self.installation_store.save_rollback(rollback)
+                    for activation, definition, capabilities in result.installation_activations:
+                        # Component identity, runnable definition and provider
+                        # links are one atomic transition (Invariant 111).
+                        self.process_store.upsert_definition(definition)
+                        for capability in capabilities:
+                            persisted = self.capability_store.save(capability)
+                            self.capability_store.link(
+                                definition.name, definition.version, persisted.id
+                            )
+                        self.installation_store.save_activation(activation)
+                        if self.installation_manager is not None and self.services is not None:
+                            self.installation_manager.register_memory_component(
+                                activation, self.services.get_extractors()
+                            )
+                if self.autonomy_store is not None:
+                    for session in result.acquisition_sessions:
+                        self.autonomy_store.save_session(session)
+                    for subscriber in result.acquisition_subscribers:
+                        self.autonomy_store.subscribe(subscriber)
+                    for autonomy_decision in result.autonomy_decisions:
+                        self.autonomy_store.save_decision(autonomy_decision)
+                    for attempt in result.acquisition_attempts:
+                        self.autonomy_store.save_attempt(attempt)
                 self._persist_journals(result)
                 if self.proposal_store is not None:
                     for proposal in result.proposals:
@@ -324,6 +417,15 @@ class Executor:
                     self.continuation_store.delete(active_continuation.id)
                 for cont_id in result.continuations_to_delete:
                     self.continuation_store.delete(cont_id)
+                for process_id, status, output in result.process_instance_updates:
+                    other = self.process_store.get_instance(process_id)
+                    if other is not None and other.status is ProcessStatus.SUSPENDED:
+                        other.status = ProcessStatus(status)
+                        other.pending_event_id = None
+                        if output is not None:
+                            other.local_state["output"] = output
+                        other.updated_at = self.clock.now()
+                        self.process_store.save_instance(other)
 
                 for timer_spec in result.timers_to_create:
                     self.timer_store.save(self._timer_record(timer_spec))

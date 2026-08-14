@@ -22,6 +22,37 @@ from .llm_interpret import (
     bootstrap_llm_interpreter,
     interpret_event_llm,
 )
+from .extension import (
+    ANALYZE_CAPABILITY_GAP,
+    RECONCILE_CAPABILITY_GAPS,
+    analyze_capability_gap,
+    bootstrap_extension,
+    reconcile_capability_gaps,
+)
+from .construction import (
+    CLEANUP_EXTENSION_LIFECYCLE,
+    EXECUTE_EXTENSION_CONSTRUCTION,
+    PLAN_EXTENSION_CONSTRUCTION,
+    VERIFY_EXTENSION_CONSTRUCTION,
+    bootstrap_construction,
+    cleanup_extension_lifecycle,
+    execute_extension_construction,
+    plan_extension_construction,
+    verify_extension_construction,
+)
+from .installation import (
+    ACTIVATE_INSTALLED_EXTENSION,
+    INSTALL_EXTENSION,
+    PLAN_EXTENSION_INSTALLATION,
+    ROLLBACK_INSTALLATION,
+    VERIFY_INSTALLED_EXTENSION,
+    bootstrap_installation,
+)
+from .autonomy import (
+    ADVANCE_CAPABILITY_ACQUISITION,
+    advance_capability_acquisition,
+    bootstrap_autonomy,
+)
 
 __all__ = [
     "RESISTANCE_ANALYSIS",
@@ -41,4 +72,27 @@ __all__ = [
     "INTERPRET_LLM",
     "interpret_event_llm",
     "bootstrap_llm_interpreter",
+    "ANALYZE_CAPABILITY_GAP",
+    "RECONCILE_CAPABILITY_GAPS",
+    "analyze_capability_gap",
+    "reconcile_capability_gaps",
+    "bootstrap_extension",
+    "PLAN_EXTENSION_CONSTRUCTION",
+    "EXECUTE_EXTENSION_CONSTRUCTION",
+    "VERIFY_EXTENSION_CONSTRUCTION",
+    "CLEANUP_EXTENSION_LIFECYCLE",
+    "plan_extension_construction",
+    "execute_extension_construction",
+    "verify_extension_construction",
+    "cleanup_extension_lifecycle",
+    "bootstrap_construction",
+    "PLAN_EXTENSION_INSTALLATION",
+    "INSTALL_EXTENSION",
+    "VERIFY_INSTALLED_EXTENSION",
+    "ACTIVATE_INSTALLED_EXTENSION",
+    "ROLLBACK_INSTALLATION",
+    "bootstrap_installation",
+    "ADVANCE_CAPABILITY_ACQUISITION",
+    "advance_capability_acquisition",
+    "bootstrap_autonomy",
 ]
