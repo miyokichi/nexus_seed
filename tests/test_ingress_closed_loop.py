@@ -229,27 +229,39 @@ async def test_the_loop_survives_a_restart_during_action_review(tmp_path):
 
 
 async def test_the_loop_survives_a_restart_right_after_ingress(tmp_path):
-    """The event is durable before anything acts on it, so nothing is lost."""
+    """The event is durable *and owed a routing attempt* before anything runs.
+
+    Phase 3F: the crash happens after the event committed but before it was
+    routed.  The restart finds the outstanding delivery and completes the loop
+    — no re-ingest, and no reliance on the source redelivering.
+    """
     db_path = tmp_path / "early_restart.db"
     root = tmp_path / "sandbox"
 
     runtime = Runtime(db_path)
-    # No processes registered: the event lands and nothing consumes it.
+    # deliver=False: persisted, obligation recorded, nothing routed yet.
     result = await ingress(runtime).ingest(
-        manual_envelope(source_event_key="msg-001", payload={"text": ANALYSIS_MESSAGE})
+        manual_envelope(source_event_key="msg-001", payload={"text": ANALYSIS_MESSAGE}),
+        deliver=False,
     )
     assert runtime.process_store.all_instances() == []
+    assert runtime.get_event_delivery(result.event.id).status.value == "PENDING"
     runtime.close()
 
     runtime2 = Runtime(db_path)
     backend2 = full_stack(
         runtime2, root, llm_script=[proposal_response(analysis_proposal(0.95))]
     )
-    # Re-delivering the *stored* event runs the pipeline without a new ingest.
-    await runtime2.deliver_event(runtime2.event_store.get(result.event.id))
+    # The outstanding delivery is still owed, and the sweep pays it.  (The
+    # rebuilt runtime also announces the capabilities it introduces, so the
+    # ingress event is not the only thing outstanding.)
+    assert runtime2.get_event_delivery(result.event.id).status.value == "PENDING"
+    await runtime2.run_pending()
 
+    assert runtime2.get_event_delivery(result.event.id).status.value == "DELIVERED"
     assert runtime2.state_store.get("D1_CD", "analysis_result") == "within spec"
     assert (root / "D1_CD_analysis.txt").exists()
     assert len(backend2.calls) == 1
     assert len(runtime2.event_store.by_type("human_message")) == 1
+    assert runtime2.get_pending_event_delivery_count() == 0
     runtime2.close()

@@ -25,6 +25,34 @@ from ..core.state import StateEntry
 from ..world.observation import Observation
 from ..world.state_delta import StateDelta
 from ..work.work_requirement import WorkRequirement
+from ..resources.models import Resource, ResourceRepresentation, ResourceVersion
+
+
+@dataclass(frozen=True)
+class ResourceContextItem:
+    """One document, as this activation sees it (Phase 3E).
+
+    Carries all three levels so provenance is never lost: which thing, which
+    version of it, and which rendering was actually read.  A ContextSnapshot
+    stores those three ids, which is what makes "what was the AI looking at?"
+    answerable after the file has moved on (Invariant 39).
+    """
+
+    resource: Resource
+    version: ResourceVersion
+    representation: ResourceRepresentation | None = None
+    content: Any = None
+    truncated: bool = False
+
+    @property
+    def uri(self) -> str:
+        """The Resource's stable URI."""
+        return self.resource.uri
+
+    @property
+    def version_number(self) -> int:
+        """Which version of the Resource this is."""
+        return self.version.version
 
 
 @dataclass(frozen=True)
@@ -62,10 +90,24 @@ class ProcessContextView:
     child_processes: list[ProcessInstance] = field(default_factory=list)
     child_results: list[dict] = field(default_factory=list)
     continuation: Continuation | None = None
+    resources: list[ResourceContextItem] = field(default_factory=list)
     metadata: ContextMetadata = field(default_factory=ContextMetadata)
     compiled_at: datetime = field(default_factory=utcnow)
 
     # --- read helpers ------------------------------------------------------
+
+    def get_resource(self, uri_or_id) -> ResourceContextItem | None:
+        """Return a document in this view by URI or Resource id."""
+        needle = str(uri_or_id)
+        for item in self.resources:
+            if item.resource.uri == needle or str(item.resource.id) == needle:
+                return item
+        return None
+
+    def resource_content(self, uri_or_id, default: Any = None) -> Any:
+        """Return the rendered content of a document in this view."""
+        item = self.get_resource(uri_or_id)
+        return item.content if item is not None else default
 
     def get_state(self, entity: str, attribute: str, default: Any = None) -> Any:
         """Return a world-state value present in this view, or ``default``."""
@@ -125,6 +167,26 @@ class ProcessContextView:
             "child_process_ids": [str(c.id) for c in self.child_processes],
             "child_results": self.child_results,
             "continuation_id": str(self.continuation.id) if self.continuation else None,
+            # Phase 3E: record *which version of which document* was read, and
+            # by which rendering — never the content itself, which can be large
+            # and is already durable under its representation id.
+            "resources": [
+                {
+                    "resource_id": str(item.resource.id),
+                    "uri": item.resource.uri,
+                    "resource_version_id": str(item.version.id),
+                    "version": item.version.version,
+                    "content_hash": item.version.content_hash,
+                    "representation_id": str(item.representation.id)
+                    if item.representation
+                    else None,
+                    "representation_type": item.representation.representation_type
+                    if item.representation
+                    else None,
+                    "truncated": item.truncated,
+                }
+                for item in self.resources
+            ],
             "metadata": {
                 "item_counts": self.metadata.item_counts,
                 "approx_size_bytes": self.metadata.approx_size_bytes,

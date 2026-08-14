@@ -81,6 +81,45 @@ class ContinuationReq:
 
 
 @dataclass
+class ResourcesReq:
+    """Which documents to compile into the context, and how (Phase 3E).
+
+    Selection is **deterministic** (spec §28): explicit ids, explicit URIs, or
+    ids named by this process's input / WorkRequirement metadata.  No semantic
+    retrieval, no embeddings, no relevance ranking — those would make what a
+    process saw unreproducible, which is exactly what the ContextSnapshot audit
+    exists to prevent.
+
+    Attributes:
+        ids: Resource ids (as strings) to include.
+        uris: Resource URIs to include.
+        from_process_input: Also take ids/URIs from the instance input keys
+            ``resource_ids`` / ``resource_uris``.
+        from_work_metadata: Also take them from the WorkRequirement's metadata.
+        representations: Which representation types to attach, in preference
+            order — the first one present is used.
+        latest_only: Use each Resource's current version.  ``False`` pins to the
+            version recorded in the process input (``resource_versions``), so a
+            process can deliberately keep reading what it started with.
+        max_items: Cap on how many resources enter the context.
+        max_bytes: Cap on one representation's serialized size.
+        on_oversize: ``"truncate"`` (keep a prefix, flag it) or ``"exclude"``
+            (drop the item).  Never summarisation — that would be interpretation
+            hidden inside the compiler.
+    """
+
+    ids: list[str] = field(default_factory=list)
+    uris: list[str] = field(default_factory=list)
+    from_process_input: bool = True
+    from_work_metadata: bool = False
+    representations: list[str] = field(default_factory=lambda: ["text"])
+    latest_only: bool = True
+    max_items: int = 5
+    max_bytes: int | None = None
+    on_oversize: str = "truncate"
+
+
+@dataclass
 class ContextRequirements:
     """A process's full, explicit declaration of its context needs."""
 
@@ -92,6 +131,7 @@ class ContextRequirements:
     work: WorkReq | None = None
     process_tree: ProcessTreeReq | None = None
     continuation: ContinuationReq | None = None
+    resources: ResourcesReq | None = None
 
     # --- serialization (for JSON persistence on ProcessDefinition) ---------
 
@@ -131,6 +171,18 @@ class ContextRequirements:
             }
         if self.continuation is not None:
             out["continuation"] = {"include": self.continuation.include}
+        if self.resources is not None:
+            out["resources"] = {
+                "ids": list(self.resources.ids),
+                "uris": list(self.resources.uris),
+                "from_process_input": self.resources.from_process_input,
+                "from_work_metadata": self.resources.from_work_metadata,
+                "representations": list(self.resources.representations),
+                "latest_only": self.resources.latest_only,
+                "max_items": self.resources.max_items,
+                "max_bytes": self.resources.max_bytes,
+                "on_oversize": self.resources.on_oversize,
+            }
         return out
 
     @classmethod
@@ -145,6 +197,7 @@ class ContextRequirements:
         work = data.get("work")
         tree = data.get("process_tree")
         cont = data.get("continuation")
+        res = data.get("resources")
         return cls(
             include_trigger_event=data.get("include_trigger_event", True),
             world_state=WorldStateReq(
@@ -185,5 +238,18 @@ class ContextRequirements:
             else None,
             continuation=ContinuationReq(include=cont.get("include", False))
             if cont is not None
+            else None,
+            resources=ResourcesReq(
+                ids=list(res.get("ids", [])),
+                uris=list(res.get("uris", [])),
+                from_process_input=res.get("from_process_input", True),
+                from_work_metadata=res.get("from_work_metadata", False),
+                representations=list(res.get("representations", ["text"])),
+                latest_only=res.get("latest_only", True),
+                max_items=res.get("max_items", 5),
+                max_bytes=res.get("max_bytes"),
+                on_oversize=res.get("on_oversize", "truncate"),
+            )
+            if res is not None
             else None,
         )

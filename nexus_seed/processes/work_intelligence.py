@@ -31,10 +31,17 @@ from ..core.process import (
     ProcessResult,
     SpawnSpec,
 )
+from ..capabilities.models import (
+    CapabilityMatchStatus,
+    CapabilityRef,
+    CapabilityWorkMatch,
+)
 from ..work.rules import (
     WORK_PRIORITY,
     build_work_key,
+    capabilities_for_work_type,
     expected_work_types,
+    io_types_for_work_type,
     process_for_work_type,
 )
 from ..work.work_match import WorkMatchStatus
@@ -86,6 +93,10 @@ RESISTANCE_CHECK = ProcessDefinition(
     version="1",
     handler="resistance_check",
     metadata={"role": "work"},
+    # What this process can accomplish, rather than what it is called.  Work
+    # needing `analyze_resistance` finds it through the registry now; the
+    # legacy work_type table still resolves to the same process (spec §55).
+    provides_capabilities=(CapabilityRef("analyze_resistance"),),
     # This process's standard inputs come from the compiled Context, not from
     # direct store reads: the entities named by its WorkRequirement, that
     # requirement itself, the trigger event, and (on resume) the continuation.
@@ -113,6 +124,7 @@ async def impact_analysis(ctx: ProcessContext) -> ProcessResult:
     created = []
     for work_type in expected_work_types(entity, attribute):
         work_key = build_work_key(work_type, entity, version)
+        inputs, outputs = io_types_for_work_type(work_type)
         # Idempotency: never derive the same work twice for the same version.
         if (
             ctx.services is not None
@@ -126,6 +138,11 @@ async def impact_analysis(ctx: ProcessContext) -> ProcessResult:
             reason=f"{entity}.{attribute} changed to v{version}",
             source_state_delta_id=state_delta_id,
             priority=WORK_PRIORITY.get(work_type, 0),
+            # What doing this work *takes*, rather than what to call it.
+            required_capabilities=capabilities_for_work_type(work_type),
+            # What a composed plan may start from and must end with (Phase 4B).
+            available_input_types=inputs,
+            required_output_types=outputs,
         )
         created.append(work_key)
         emitted.append(
@@ -136,12 +153,22 @@ async def impact_analysis(ctx: ProcessContext) -> ProcessResult:
 
 
 async def work_matcher(ctx: ProcessContext) -> ProcessResult:
-    """Decide whether a requirement is already covered by existing work."""
+    """Decide whether a requirement is doable, and whether it is already covered.
+
+    Two questions in order (spec §28).  *Can we do this at all* comes first —
+    asking "is someone already doing it?" about work the system has no
+    competence for would answer the wrong question.
+    """
     assert ctx.event is not None and ctx.services is not None
     requirement_id = _uuid(ctx.event.payload["work_requirement_id"])
     requirement = ctx.services.get_work_requirement(requirement_id)
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
+
+    if requirement.needs_capabilities:
+        blocked = _match_capabilities(ctx, requirement)
+        if blocked is not None:
+            return blocked
 
     active = ctx.services.active_processes_for_work_key(requirement.work_key)
     completed = ctx.services.completed_processes_for_work_key(requirement.work_key)
@@ -166,6 +193,84 @@ async def work_matcher(ctx: ProcessContext) -> ProcessResult:
     return ctx.complete(output={"match_status": status.value}, emitted_events=[matched])
 
 
+def _match_capabilities(ctx: ProcessContext, requirement) -> ProcessResult | None:
+    """Run capability matching; return a result if the work cannot proceed.
+
+    ``None`` means "a capable process exists, carry on with the normal
+    already-running / already-completed checks".
+    """
+    matcher = ctx.services.get_capability_matcher()
+    if matcher is None:  # capability layer not wired: fall back to legacy
+        return None
+
+    result = matcher.match(
+        list(requirement.required_capabilities), ctx.services.get_all_definitions()
+    )
+    ctx.record_capability_match(
+        CapabilityWorkMatch.from_result(
+            requirement.id, list(requirement.required_capabilities), result
+        )
+    )
+
+    if result.eligible:
+        # Record the choice only.  Where the work *stands* is decided just
+        # below by the ordinary already-running / already-completed checks.
+        ctx.match_work(requirement.id, selected_definition=result.selected.key)
+        ctx.logger.info(
+            "work %s matched capability-wise to %s v%s",
+            requirement.work_key,
+            *result.selected.key,
+        )
+        return None
+
+    # The need stands; we simply cannot do it right now (Invariant 51).
+    ctx.match_work(
+        requirement.id,
+        status=WorkStatus.BLOCKED_CAPABILITY,
+        missing_capabilities=result.missing_capabilities,
+    )
+    ctx.logger.info(
+        "work %s BLOCKED_CAPABILITY (%s): %s",
+        requirement.work_key,
+        result.status.value,
+        result.reasons,
+    )
+    emitted = [
+        ctx.new_event(
+            "capability_missing",
+            {
+                "work_requirement_id": str(requirement.id),
+                "work_type": requirement.work_type,
+                "match_status": result.status.value,
+                "required_capabilities": [
+                    r.name for r in requirement.required_capabilities
+                ],
+                "missing_capabilities": list(result.missing_capabilities),
+                "reasons": list(result.reasons),
+            },
+        )
+    ]
+    if result.status is CapabilityMatchStatus.COMPOSITION_REQUIRED:
+        # Every competence exists, just not in one process.  That is a
+        # composition problem, not a gap — hand it to the planner (spec §29).
+        emitted.append(
+            ctx.new_event(
+                "composition_required",
+                {
+                    "work_requirement_id": str(requirement.id),
+                    "work_type": requirement.work_type,
+                    "required_capabilities": [
+                        r.name for r in requirement.required_capabilities
+                    ],
+                },
+            )
+        )
+    return ctx.complete(
+        output={"match_status": result.status.value, "blocked": True},
+        emitted_events=emitted,
+    )
+
+
 async def missing_work_detector(ctx: ProcessContext) -> ProcessResult:
     """Decide whether a spawn is required for a matched requirement."""
     assert ctx.event is not None
@@ -185,7 +290,17 @@ async def work_spawner(ctx: ProcessContext) -> ProcessResult:
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
 
-    target = process_for_work_type(requirement.work_type)
+    # Capability matching already decided; spawning does not re-decide.
+    # Falling back to the legacy name table keeps Phase 2C work running
+    # unchanged (spec §16) — the two paths coexist during the migration.
+    target = None
+    if requirement.selected_definition_name:
+        target = (
+            requirement.selected_definition_name,
+            requirement.selected_definition_version,
+        )
+    if target is None:
+        target = process_for_work_type(requirement.work_type)
     if target is None:
         ctx.mark_work(requirement_id, WorkStatus.CANCELLED)
         return ctx.complete(
@@ -286,10 +401,60 @@ def _finish(ctx: ProcessContext, entity, wafer, resistance, observed_target) -> 
     )
 
 
+async def reconcile_blocked_work(ctx: ProcessContext) -> ProcessResult:
+    """Re-offer work that was blocked, now that a new competence exists.
+
+    This is **not** event replay (Invariant 52 / spec §98).  Nothing is
+    re-interpreted and no new WorkRequirement is created: the existing
+    requirements are still there, still holding their ids and their provenance.
+    All that changed is that the system can now do them, so they are handed
+    back to the matcher.
+    """
+    assert ctx.event is not None and ctx.services is not None
+    capability_name = ctx.event.payload.get("capability_name")
+
+    blocked = ctx.services.get_work_by_status(WorkStatus.BLOCKED_CAPABILITY)
+    reopened = []
+    emitted = []
+    for requirement in blocked:
+        # Narrow to work this capability could plausibly unblock; a requirement
+        # blocked on something else is left alone (spec §87).
+        wanted = {r.name for r in requirement.required_capabilities}
+        if capability_name is not None and capability_name not in wanted:
+            continue
+        ctx.mark_work(requirement.id, WorkStatus.EXPECTED)
+        emitted.append(
+            ctx.new_event("work_required", {"work_requirement_id": str(requirement.id)})
+        )
+        reopened.append(requirement.work_key)
+
+    if reopened:
+        ctx.logger.info(
+            "capability %s unblocked %d work requirement(s): %s",
+            capability_name,
+            len(reopened),
+            reopened,
+        )
+    return ctx.complete(
+        output={"reopened": reopened, "capability": capability_name},
+        emitted_events=emitted,
+    )
+
+
+RECONCILE_BLOCKED_WORK = ProcessDefinition(
+    name="reconcile_blocked_work",
+    version="1",
+    handler="reconcile_blocked_work",
+    trigger_event_types=("capability_available",),
+    metadata={"role": "capability_reconciler"},
+)
+
+
 def bootstrap_work_intelligence(runtime) -> None:
     """Register all work-intelligence processes on ``runtime`` (idempotent)."""
     runtime.register_process(IMPACT_ANALYSIS, impact_analysis)
     runtime.register_process(WORK_MATCHER, work_matcher)
     runtime.register_process(MISSING_WORK_DETECTOR, missing_work_detector)
     runtime.register_process(WORK_SPAWNER, work_spawner)
+    runtime.register_process(RECONCILE_BLOCKED_WORK, reconcile_blocked_work)
     runtime.register_process(RESISTANCE_CHECK, resistance_check)

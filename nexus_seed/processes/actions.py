@@ -39,6 +39,7 @@ from ..actions.permissions import granted_permissions
 from ..actions.policy import ActionPolicy
 from ..actions.validation import validate_action_proposal
 from ..backends.action import ActionRequest, capabilities_of, summarize
+from ..capabilities.models import CapabilityRef
 from ..context.requirements import (
     ContextRequirements,
     ContinuationReq,
@@ -551,6 +552,7 @@ WRITE_ANALYSIS_RESULT = ProcessDefinition(
         # files and nothing else.
         "permissions": ["filesystem.write"],
     },
+    provides_capabilities=(CapabilityRef("generate_analysis_report"),),
     context_requirements=ContextRequirements(
         include_trigger_event=True,
         world_state=WorldStateReq(include_work_entities=True),

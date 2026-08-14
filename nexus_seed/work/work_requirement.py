@@ -29,7 +29,20 @@ class WorkStatus(str, Enum):
     MATCHED = "MATCHED"  # already covered by existing work
     SPAWNED = "SPAWNED"  # a process was spawned to do it
     SATISFIED = "SATISFIED"  # the work completed
-    CANCELLED = "CANCELLED"  # no longer needed / unspawnable
+    CANCELLED = "CANCELLED"  # no longer needed
+    #: Phase 4B: a composed multi-process plan was built for this need.
+    PLANNED = "PLANNED"
+    #: Phase 4A: the need stands, but nothing here can currently do it.
+    #: Deliberately *not* CANCELLED (Invariant 51) — cancelling would throw
+    #: away a real need because of a temporary limitation of our own, and
+    #: acquiring the capability later could never revive it.
+    BLOCKED_CAPABILITY = "BLOCKED_CAPABILITY"
+    #: Phase 4C: the competence exists, but no plan we can currently build and
+    #: run satisfies the need — every candidate failed, or replanning hit its
+    #: limit.  A narrower statement than BLOCKED_CAPABILITY and, for the same
+    #: reason as it, still not CANCELLED (Invariant 79): the need is real; only
+    #: our current arrangements for meeting it have run out.
+    BLOCKED_PLAN = "BLOCKED_PLAN"
 
 
 @dataclass
@@ -46,6 +59,13 @@ class WorkRequirement:
         priority: Scheduling priority for the spawned process.
         status: Current :class:`WorkStatus`.
         metadata: Free-form extras (room for ``depends_on`` etc. later).
+        required_capabilities: What doing this work *takes* (Phase 4A).  When
+            present this is what finds an implementation; ``work_type`` remains
+            the logical name and the legacy lookup path.
+        missing_capabilities: What was unavailable at the last matching attempt
+            — the record of a gap in the system's own competence.
+        selected_definition_name / selected_definition_version: The process
+            capability matching chose, so spawning does not re-decide.
         id: Unique identifier.
         created_at / updated_at: Timestamps (UTC).
     """
@@ -59,6 +79,33 @@ class WorkRequirement:
     priority: int = 0
     status: WorkStatus = WorkStatus.EXPECTED
     metadata: dict = field(default_factory=dict)
+    required_capabilities: list = field(default_factory=list)
+    missing_capabilities: list[str] = field(default_factory=list)
+    selected_definition_name: str | None = None
+    selected_definition_version: str | None = None
+    #: Phase 4B: what a composed plan may start from, and what it must produce.
+    available_input_types: list[str] = field(default_factory=list)
+    required_output_types: list[str] = field(default_factory=list)
+    selected_plan_id: uuid.UUID | None = None
+    #: Phase 4C: what this need is optimising for and what it will not accept.
+    #: ``None`` means no preference was expressed, which is the ordinary case
+    #: and must keep working exactly as before (spec §139).
+    decision_preference: "DecisionPreference | None" = None
+    #: How many times this need may be replanned after a terminal plan failure.
+    #: ``None`` falls back to the policy default; replanning is always finite
+    #: (Invariant 82).
+    max_replans: int | None = None
+    replan_count: int = 0
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
+
+    @property
+    def needs_capabilities(self) -> bool:
+        """Whether this work declares capability requirements (vs. legacy)."""
+        return bool(self.required_capabilities)
+
+    @property
+    def resolved(self) -> bool:
+        """Whether this need has been met and must not be replanned (spec §91)."""
+        return self.status in (WorkStatus.SATISFIED, WorkStatus.CANCELLED)

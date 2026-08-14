@@ -23,6 +23,35 @@ WORK_PRIORITY: dict[str, int] = {
     "write_analysis_result": 60,
 }
 
+#: What each work type *takes* to do, as capability names (Phase 4A).
+#:
+#: This is the replacement for :data:`WORK_PROCESS_REGISTRY` as the primary
+#: mechanism: work now says what competence it needs, and the capability
+#: registry finds a process that has it.  The name table stays for legacy
+#: compatibility, and as the fallback when work declares no capabilities.
+WORK_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "resistance_check": ("analyze_resistance",),
+    "write_analysis_result": ("generate_analysis_report",),
+}
+
+
+def capabilities_for_work_type(work_type: str) -> list[str]:
+    """Return the capability names a work type requires."""
+    return list(WORK_CAPABILITIES.get(work_type, ()))
+
+
+#: What a work type may start from, and what it must produce (Phase 4B).
+#:
+#: Only needed when the work might take several processes: composition uses
+#: these to decide what can feed what, and when the job is actually done.
+WORK_IO_TYPES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+
+
+def io_types_for_work_type(work_type: str) -> tuple[list[str], list[str]]:
+    """Return ``(available_input_types, required_output_types)`` for a work type."""
+    inputs, outputs = WORK_IO_TYPES.get(work_type, ((), ()))
+    return list(inputs), list(outputs)
+
 
 def expected_work_types(entity: str, attribute: str) -> list[str]:
     """Return the work types a change to ``entity.attribute`` requires.

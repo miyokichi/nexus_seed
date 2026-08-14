@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ..resources.scope import ResourceScope, ScopeViolation
+
 
 @dataclass
 class ActionRequest:
@@ -236,8 +238,10 @@ class LocalFileActionBackend:
     """
 
     def __init__(self, allowed_root: str | Path, *, name: str = "local_file") -> None:
-        self.allowed_root = Path(allowed_root).resolve()
-        self.allowed_root.mkdir(parents=True, exist_ok=True)
+        # Phase 3E: the path boundary is a shared ResourceScope rather than a
+        # private check, so the action and observation boundaries cannot drift.
+        self.scope = ResourceScope.for_root(allowed_root)
+        self.allowed_root = self.scope.write_roots[0]
         self.name = name
         self._capabilities = BackendCapabilities(
             backend=name, actions=dict(LOCAL_FILE_CAPABILITIES.actions)
@@ -254,21 +258,13 @@ class LocalFileActionBackend:
         """Resolve ``target`` inside the sandbox.
 
         Raises:
-            ValueError: If ``target`` is empty or escapes ``allowed_root``.
+            ScopeViolation: If ``target`` is empty or escapes ``allowed_root``.
+                (A ``ValueError`` subclass, so callers catching ``ValueError``
+                still work.)
         """
-        if not target:
-            raise ValueError("target is required")
-        candidate = Path(target)
-        if not candidate.is_absolute():
-            candidate = self.allowed_root / candidate
-        resolved = candidate.resolve()
-        # Strictly *inside* the root: the root itself is not a valid target.
-        if self.allowed_root not in resolved.parents:
-            raise ValueError(
-                f"target {target!r} escapes allowed_root {self.allowed_root}"
-            )
+        resolved = self.scope.resolve(target, write=True)
         if resolved.name == JOURNAL_NAME:
-            raise ValueError("the idempotency journal is not a writable target")
+            raise ScopeViolation("the idempotency journal is not a writable target")
         return resolved
 
     # --- idempotency journal ----------------------------------------------
@@ -313,7 +309,7 @@ class LocalFileActionBackend:
 
         try:
             path = self.resolve(request.target)
-        except ValueError as exc:
+        except ScopeViolation as exc:
             # A sandbox violation is permanent: refuse, never retry.
             return ActionResult(success=False, error=str(exc), retryable=False)
 

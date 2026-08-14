@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ingress.models import AdapterCheckpoint, IngressEnvelope
+from ..resources.scope import ResourceScope
 from .base import AdapterError
 
 logger = logging.getLogger("nexus_seed.adapters.file")
@@ -68,8 +69,10 @@ class LocalFileAdapter:
         patterns: tuple[str, ...] = ("**/*",),
         detect_deletions: bool = True,
     ) -> None:
-        self.allowed_root = Path(allowed_root).resolve()
-        self.allowed_root.mkdir(parents=True, exist_ok=True)
+        # Phase 3E: read-only scope.  A watcher observes; it has no business
+        # writing into what it watches, and the type now says so.
+        self.scope = ResourceScope.read_only(allowed_root)
+        self.allowed_root = self.scope.read_roots[0]
         self._adapter_id = adapter_id
         self.patterns = patterns
         self.detect_deletions = detect_deletions
@@ -90,14 +93,11 @@ class LocalFileAdapter:
     def within_sandbox(self, path: Path) -> bool:
         """Whether ``path`` really lives under ``allowed_root``.
 
-        Resolved, so a symlink pointing outside the tree is caught rather than
-        followed (spec §38).
+        Delegates to the shared :class:`ResourceScope`, which resolves first so
+        a symlink pointing outside the tree is caught rather than followed
+        (spec §38).
         """
-        try:
-            resolved = path.resolve()
-        except OSError:
-            return False
-        return self.allowed_root in resolved.parents
+        return self.scope.can_read(path)
 
     # --- observation -------------------------------------------------------
 
@@ -117,7 +117,7 @@ class LocalFileAdapter:
 
     def stream_key(self, path: Path) -> str:
         """The normalized, root-relative identity of a file."""
-        return path.resolve().relative_to(self.allowed_root).as_posix()
+        return self.scope.relative_key(path)
 
     async def poll(self) -> list[IngressEnvelope]:
         """Return an envelope for every file version not yet observed.

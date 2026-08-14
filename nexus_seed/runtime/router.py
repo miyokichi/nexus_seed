@@ -58,12 +58,26 @@ class Router:
     def _trigger_new(self, event: Event) -> list[ProcessInstance]:
         activated: list[ProcessInstance] = []
         for definition in self.process_store.definitions_for_trigger(event.type):
+            # Routing idempotency (Phase 3F): a re-dispatched event must not
+            # start the same process twice.  The atomic route+acknowledge
+            # transaction should already prevent it; this makes the guarantee
+            # independent of that, and cheap to check.
+            if self.process_store.find_by_trigger(
+                event.id, definition.name, definition.version
+            ):
+                logger.info(
+                    "event %s already triggered %s; not re-triggering",
+                    event.id,
+                    definition.name,
+                )
+                continue
             instance = ProcessInstance(
                 definition_name=definition.name,
                 definition_version=definition.version,
                 status=ProcessStatus.RUNNABLE,
                 input={"trigger_event_id": str(event.id), "payload": event.payload},
                 pending_event_id=event.id,
+                trigger_event_id=event.id,
                 max_retries=definition.max_retries,
             )
             self.process_store.save_instance(instance)

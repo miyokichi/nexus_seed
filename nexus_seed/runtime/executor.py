@@ -19,6 +19,7 @@ from datetime import timedelta
 
 from ..context.models import ContextSnapshot
 from ..core.continuation import Continuation
+from ..core.effects import EffectConflictError, check_conflicts
 from ..core.process import (
     HandlerRegistry,
     ProcessContext,
@@ -72,7 +73,16 @@ class Executor:
         action_proposal_store=None,
         action_execution_store=None,
         action_decision_store=None,
+        resource_store=None,
+        adapters=None,
+        ingress=None,
+        capability_store=None,
+        plan_store=None,
+        decision_store=None,
     ) -> None:
+        self.capability_store = capability_store
+        self.plan_store = plan_store
+        self.decision_store = decision_store
         self.db = db
         self.registry = registry
         self.process_store = process_store
@@ -95,6 +105,9 @@ class Executor:
         self.action_proposal_store = action_proposal_store
         self.action_execution_store = action_execution_store
         self.action_decision_store = action_decision_store
+        self.resource_store = resource_store
+        self.adapters = adapters
+        self.ingress = ingress
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
         """Run one activation of ``instance`` and return its result."""
@@ -156,6 +169,8 @@ class Executor:
             saved_process_state=saved_state,
             services=self.services,
             backends=self.backends,
+            adapters=self.adapters,
+            ingress=self.ingress,
             context_snapshot_id=snapshot_id,
             activation_id=key,
             logger=logging.getLogger(f"nexus_seed.process.{definition.name}"),
@@ -176,6 +191,16 @@ class Executor:
 
         if result.status is ProcessStatus.FAILED:
             return self._handle_failure(instance, key, result)
+
+        # Validate the batch *before* opening the transaction: two staged
+        # writes disagreeing about one record must fail the activation, not be
+        # resolved by whichever happened to be last in a list (Invariant 65).
+        try:
+            check_conflicts(result)
+        except EffectConflictError as exc:
+            logger.error("effect conflict in %s: %s", definition.name, exc)
+            return self._fail(instance, f"effect conflict: {exc}", key=key, audit=result)
+
         return self._commit(instance, key, original_event_id, active_continuation, result)
 
     def _save_snapshot(self, instance, event, view, key):
@@ -214,6 +239,53 @@ class Executor:
                     self.work_requirement_store.save(requirement)
                 for requirement_id, status in result.work_requirement_updates:
                     self.work_requirement_store.update_status(requirement_id, status)
+                for requirement_id, status, missing, selected in result.work_matches:
+                    self.work_requirement_store.record_match(
+                        requirement_id,
+                        status=status,
+                        missing_capabilities=missing,
+                        selected_definition=selected,
+                    )
+                if self.capability_store is not None:
+                    for match in result.capability_matches:
+                        self.capability_store.save_match(match)
+                if self.plan_store is not None:
+                    for plan, nodes, edges in result.plans_to_create:
+                        self.plan_store.create(plan, nodes, edges)
+                    for plan_id, status in result.plan_updates:
+                        self.plan_store.update_status(plan_id, status)
+                    for node_id, status, instance_id in result.plan_node_updates:
+                        self.plan_store.update_node(
+                            node_id, status, process_instance_id=instance_id
+                        )
+                if self.decision_store is not None:
+                    for evaluation in result.plan_evaluations:
+                        self.decision_store.save_evaluation(evaluation)
+                    for proposal in result.plan_selection_proposals:
+                        self.decision_store.save_proposal(proposal)
+                    for proposal_id, status, reasons in (
+                        result.plan_selection_proposal_updates
+                    ):
+                        self.decision_store.update_proposal_status(
+                            proposal_id, status, reasons=reasons or None
+                        )
+                    for selection in result.plan_selections:
+                        self.decision_store.save_selection(selection)
+                        if selection.selected_plan_id is not None:
+                            # The decision, the selected plan pointer and the
+                            # plan/event transitions are one atomic activation
+                            # (spec §72).  A crash cannot leave a selection
+                            # whose WorkRequirement points somewhere else.
+                            self.work_requirement_store.set_selected_plan(
+                                selection.work_requirement_id,
+                                selection.selected_plan_id,
+                            )
+                    for attempt in result.replan_attempts:
+                        self.decision_store.save_replan_attempt(attempt)
+                for requirement_id, attempt_number in result.replan_counts:
+                    self.work_requirement_store.record_replan(
+                        requirement_id, attempt_number
+                    )
                 self._persist_journals(result)
                 if self.proposal_store is not None:
                     for proposal in result.proposals:
@@ -228,6 +300,13 @@ class Executor:
                 if self.action_decision_store is not None:
                     for decision_record in result.action_decisions:
                         self.action_decision_store.save(decision_record)
+                if self.resource_store is not None:
+                    for resource in result.resources:
+                        self.resource_store.save_resource(resource)
+                    for version in result.resource_versions:
+                        self.resource_store.save_version(version)
+                    for representation in result.resource_representations:
+                        self.resource_store.save_representation(representation)
 
                 for change in result.state_changes:
                     self.state_store.set(
@@ -304,6 +383,8 @@ class Executor:
                 priority=spec.priority,
                 work_key=spec.work_key,
                 work_requirement_id=spec.work_requirement_id,
+                plan_id=spec.plan_id,
+                plan_node_id=spec.plan_node_id,
             )
             child_def = self.process_store.get_definition(
                 spec.definition_name, spec.definition_version
@@ -312,6 +393,15 @@ class Executor:
                 child.max_retries = child_def.max_retries
             self.process_store.save_instance(child)
             child_ids.append(child.id)
+            # Bind the plan position to the instance now filling it, in the
+            # same transaction that created it — so a crash cannot leave a node
+            # believing nothing was spawned when something was.
+            if spec.plan_node_id is not None and self.plan_store is not None:
+                self.plan_store.update_node(
+                    spec.plan_node_id,
+                    "RUNNING",
+                    process_instance_id=child.id,
+                )
 
         if result.join is not None:
             join = JoinRecord(

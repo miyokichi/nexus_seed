@@ -48,6 +48,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         ActionExecution,
         ActionProposal,
     )
+    from ..resources.models import (
+        Resource,
+        ResourceRepresentation,
+        ResourceVersion,
+    )
 
 
 class ProcessStatus(str, Enum):
@@ -79,6 +84,11 @@ class ProcessDefinition:
             core type — just annotations on a Process.
         context_requirements: What context this process needs compiled at run
             time (``None`` = minimal context).
+        provides_capabilities: What this process can *accomplish*, as
+            capability references (Phase 4A).  Declaring a competence here is
+            how work finds an implementation without anyone maintaining a
+            name→process table.  The relation itself is persisted in
+            ``process_capabilities``; this field is the declaration.
     """
 
     name: str
@@ -88,6 +98,7 @@ class ProcessDefinition:
     max_retries: int = 0
     metadata: dict = field(default_factory=dict)
     context_requirements: ContextRequirements | None = None
+    provides_capabilities: tuple = ()
 
 
 @dataclass
@@ -127,6 +138,13 @@ class ProcessInstance:
     pending_event_id: uuid.UUID | None = None
     work_key: str | None = None
     work_requirement_id: uuid.UUID | None = None
+    #: The event that *created* this instance.  Unlike ``pending_event_id``
+    #: (which is cleared once an activation commits) this is permanent, so
+    #: re-dispatching an event can tell it already triggered this process.
+    trigger_event_id: uuid.UUID | None = None
+    #: The composed plan and position this instance is filling, if any.
+    plan_id: uuid.UUID | None = None
+    plan_node_id: uuid.UUID | None = None
     retry_count: int = 0
     max_retries: int = 0
     next_retry_at: datetime | None = None
@@ -146,6 +164,11 @@ class SpawnSpec:
     correlation_id: uuid.UUID | None = None
     work_key: str | None = None
     work_requirement_id: uuid.UUID | None = None
+    #: The plan position this child fills, if it is part of a composed plan.
+    #: The runtime links the created instance back to the node — mechanism, not
+    #: planning knowledge.
+    plan_id: uuid.UUID | None = None
+    plan_node_id: uuid.UUID | None = None
 
 
 @dataclass
@@ -197,6 +220,9 @@ class ProcessResult:
         action_proposal_updates: ``(proposal_id, new_status)`` transitions.
         action_executions: Attempt records for the external-effect journal.
         action_decisions: Authorization decisions (permission provenance).
+        resources: Resources to persist (upsert by id).
+        resource_versions: Immutable ResourceVersions to append.
+        resource_representations: Extraction results to persist.
         join: Optional join request (suspend until children finish).
         retryable: If FAILED, whether the failure may be retried.
         retry_delay: Optional explicit backoff (seconds) for a retry.
@@ -227,9 +253,110 @@ class ProcessResult:
     action_proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     action_executions: list["ActionExecution"] = field(default_factory=list)
     action_decisions: list["ActionDecisionRecord"] = field(default_factory=list)
+    resources: list["Resource"] = field(default_factory=list)
+    resource_versions: list["ResourceVersion"] = field(default_factory=list)
+    resource_representations: list["ResourceRepresentation"] = field(default_factory=list)
+    #: ``(requirement_id, status, missing_capabilities, selected_definition)``
+    work_matches: list[tuple] = field(default_factory=list)
+    capability_matches: list = field(default_factory=list)
+    plans_to_create: list = field(default_factory=list)
+    #: ``(plan_id, status)``
+    plan_updates: list[tuple] = field(default_factory=list)
+    #: ``(node_id, status, process_instance_id)``
+    plan_node_updates: list[tuple] = field(default_factory=list)
+    #: Phase 4C decision layer.
+    plan_evaluations: list = field(default_factory=list)
+    plan_selection_proposals: list = field(default_factory=list)
+    #: ``(proposal_id, status, reasons)``
+    plan_selection_proposal_updates: list[tuple] = field(default_factory=list)
+    plan_selections: list = field(default_factory=list)
+    replan_attempts: list = field(default_factory=list)
+    #: ``(work_requirement_id, attempt_number)``
+    replan_counts: list[tuple] = field(default_factory=list)
     join: JoinRequest | None = None
     retryable: bool = False
     retry_delay: float | None = None
+
+    # --- structured views (Phase 4B) --------------------------------------
+    #
+    # The lists above stay flat so every existing handler and test keeps
+    # working (spec §77).  These views group them by the layer that owns each,
+    # so the whole batch can be read and reasoned about as a shape rather than
+    # as twenty-odd unrelated attributes.
+
+    @property
+    def lifecycle(self) -> "ProcessLifecycleResult":
+        """What happens to the instance, separate from what it wrote."""
+        from .effects import ProcessLifecycleResult
+
+        return ProcessLifecycleResult(
+            status=self.status,
+            output=self.output,
+            retryable=self.retryable,
+            retry_delay=self.retry_delay,
+            join=self.join,
+        )
+
+    @property
+    def effects(self) -> "ProcessEffects":
+        """Everything this activation wrote, grouped by owning layer."""
+        from .effects import (
+            ActionEffects,
+            DecisionEffects,
+            IntelligenceEffects,
+            PlanningEffects,
+            ProcessEffects,
+            ResourceEffects,
+            SemanticEffects,
+            WorkEffects,
+        )
+
+        return ProcessEffects(
+            events=self.emitted_events,
+            state=self.state_changes,
+            continuations_to_create=self.continuations_to_create,
+            continuations_to_delete=self.continuations_to_delete,
+            processes=self.spawned_processes,
+            timers=self.timers_to_create,
+            semantic=SemanticEffects(
+                observations=self.observations, state_deltas=self.state_deltas
+            ),
+            work=WorkEffects(
+                requirements=self.work_requirements,
+                status_updates=self.work_requirement_updates,
+                matches=self.work_matches,
+                capability_matches=self.capability_matches,
+            ),
+            intelligence=IntelligenceEffects(
+                proposals=self.proposals,
+                proposal_updates=self.proposal_updates,
+                llm_invocations=self.llm_invocations,
+            ),
+            actions=ActionEffects(
+                proposals=self.action_proposals,
+                proposal_updates=self.action_proposal_updates,
+                executions=self.action_executions,
+                decisions=self.action_decisions,
+            ),
+            resources=ResourceEffects(
+                resources=self.resources,
+                versions=self.resource_versions,
+                representations=self.resource_representations,
+            ),
+            planning=PlanningEffects(
+                plans_to_create=self.plans_to_create,
+                plan_updates=self.plan_updates,
+                node_updates=self.plan_node_updates,
+            ),
+            decision=DecisionEffects(
+                evaluations=self.plan_evaluations,
+                selection_proposals=self.plan_selection_proposals,
+                selection_proposal_updates=self.plan_selection_proposal_updates,
+                selections=self.plan_selections,
+                replan_attempts=self.replan_attempts,
+                replan_counts=self.replan_counts,
+            ),
+        )
 
 
 @dataclass
@@ -252,6 +379,10 @@ class ProcessContext:
     saved_process_state: dict = field(default_factory=dict)
     services: object | None = None
     backends: dict = field(default_factory=dict)
+    #: Registered external adapters, for an observer process to poll.
+    adapters: object | None = None
+    #: The ingress boundary, so an observer can take what it polled *in*.
+    ingress: object | None = None
     context_snapshot_id: uuid.UUID | None = None
     activation_id: str | None = None
     logger: logging.Logger = field(
@@ -268,6 +399,20 @@ class ProcessContext:
     _action_proposal_updates: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     _action_executions: list["ActionExecution"] = field(default_factory=list)
     _action_decisions: list["ActionDecisionRecord"] = field(default_factory=list)
+    _resources: list["Resource"] = field(default_factory=list)
+    _resource_versions: list["ResourceVersion"] = field(default_factory=list)
+    _resource_representations: list["ResourceRepresentation"] = field(default_factory=list)
+    _work_matches: list[tuple] = field(default_factory=list)
+    _capability_matches: list = field(default_factory=list)
+    _plans_to_create: list = field(default_factory=list)
+    _plan_updates: list[tuple] = field(default_factory=list)
+    _plan_node_updates: list[tuple] = field(default_factory=list)
+    _plan_evaluations: list = field(default_factory=list)
+    _plan_selection_proposals: list = field(default_factory=list)
+    _plan_selection_proposal_updates: list[tuple] = field(default_factory=list)
+    _plan_selections: list = field(default_factory=list)
+    _replan_attempts: list = field(default_factory=list)
+    _replan_counts: list[tuple] = field(default_factory=list)
 
     @property
     def correlation_id(self) -> uuid.UUID | None:
@@ -413,6 +558,29 @@ class ProcessContext:
         self._action_decisions.append(decision)
         return decision
 
+    def add_resource(self, resource):
+        """Stage a Resource for persistence (upsert by id)."""
+        self._resources.append(resource)
+        return resource
+
+    def add_resource_version(self, version):
+        """Stage an immutable ResourceVersion for persistence."""
+        self._resource_versions.append(version)
+        return version
+
+    def add_representation(self, representation):
+        """Stage an extraction result for persistence.
+
+        Extraction is a Process, so its output travels the same declarative
+        route as every other effect (Invariant 38) — the handler never writes
+        to the database itself.
+        """
+        if representation.created_by_process_id is None:
+            representation.created_by_process_id = self.instance.id
+        self._resource_representations.append(representation)
+        return representation
+
+
     def propose_delta(
         self,
         *,
@@ -449,8 +617,17 @@ class ProcessContext:
         source_state_delta_id: uuid.UUID | None = None,
         priority: int = 0,
         metadata: dict | None = None,
+        required_capabilities: list | None = None,
+        available_input_types: list[str] | None = None,
+        required_output_types: list[str] | None = None,
     ) -> WorkRequirement:
-        """Declare that a unit of work is required (staged on the result)."""
+        """Declare that a unit of work is required (staged on the result).
+
+        ``required_capabilities`` says what doing the work *takes*; leaving it
+        empty falls back to the legacy ``work_type`` lookup.
+        """
+        from ..capabilities.models import CapabilityRequirement
+
         requirement = WorkRequirement(
             work_type=work_type,
             work_key=work_key,
@@ -460,6 +637,11 @@ class ProcessContext:
             source_state_delta_id=source_state_delta_id,
             priority=priority,
             metadata=dict(metadata or {}),
+            required_capabilities=[
+                CapabilityRequirement.coerce(r) for r in (required_capabilities or [])
+            ],
+            available_input_types=list(available_input_types or []),
+            required_output_types=list(required_output_types or []),
         )
         self._work_requirements.append(requirement)
         return requirement
@@ -468,6 +650,89 @@ class ProcessContext:
         """Stage a WorkRequirement status transition (applied atomically)."""
         value = status.value if isinstance(status, WorkStatus) else status
         self._work_requirement_updates.append((requirement_id, value))
+
+    def match_work(
+        self,
+        requirement_id: uuid.UUID,
+        *,
+        status=None,
+        missing_capabilities: list[str] | None = None,
+        selected_definition: tuple[str, str] | None = None,
+    ) -> None:
+        """Stage the outcome of capability matching on a WorkRequirement.
+
+        ``status=None`` records the selection without touching the lifecycle.
+        """
+        self._work_matches.append(
+            (
+                requirement_id,
+                getattr(status, "value", status) if status is not None else None,
+                list(missing_capabilities or []),
+                selected_definition,
+            )
+        )
+
+    def record_capability_match(self, match):
+        """Stage a capability matching attempt for the audit history."""
+        self._capability_matches.append(match)
+        return match
+
+    def create_plan(self, plan, nodes, edges):
+        """Stage a composed ProcessPlan with its nodes and edges (Phase 4B).
+
+        The three land in one transaction, so a partially-written plan cannot
+        exist (spec §11).
+        """
+        self._plans_to_create.append((plan, list(nodes), list(edges)))
+        return plan
+
+    def update_plan(self, plan_id: uuid.UUID, status) -> None:
+        """Stage a plan status transition."""
+        self._plan_updates.append((plan_id, getattr(status, "value", status)))
+
+    def update_plan_node(
+        self, node_id: uuid.UUID, status, *, process_instance_id: uuid.UUID | None = None
+    ) -> None:
+        """Stage a plan node transition, optionally binding its instance."""
+        self._plan_node_updates.append(
+            (node_id, getattr(status, "value", status), process_instance_id)
+        )
+
+    # --- decision layer (Phase 4C) -----------------------------------------
+
+    def record_plan_evaluation(self, evaluation):
+        """Stage what one candidate plan is estimated to cost, take and risk."""
+        self._plan_evaluations.append(evaluation)
+        return evaluation
+
+    def record_selection_proposal(self, proposal):
+        """Stage an LLM's *suggestion* about which plan to run."""
+        self._plan_selection_proposals.append(proposal)
+        return proposal
+
+    def update_selection_proposal(self, proposal_id, status, *, reasons=None) -> None:
+        """Stage a transition of a selection proposal, with the reason for it."""
+        self._plan_selection_proposal_updates.append(
+            (proposal_id, getattr(status, "value", status), list(reasons or []))
+        )
+
+    def record_plan_selection(self, selection):
+        """Stage the decision itself — this plan, for this need (spec §36).
+
+        Append-only: a later selection is a new row, never an edit of this one
+        (Invariant 78).
+        """
+        self._plan_selections.append(selection)
+        return selection
+
+    def record_replan_attempt(self, attempt):
+        """Stage one attempt to find another way after a plan failed."""
+        self._replan_attempts.append(attempt)
+        return attempt
+
+    def count_replan(self, work_requirement_id, attempt_number: int) -> None:
+        """Stage the need's replan counter, which bounds further attempts."""
+        self._replan_counts.append((work_requirement_id, attempt_number))
 
     def satisfy_work(self) -> None:
         """Mark this process's WorkRequirement (if any) SATISFIED."""
@@ -488,6 +753,22 @@ class ProcessContext:
             "action_proposal_updates": list(self._action_proposal_updates),
             "action_executions": list(self._action_executions),
             "action_decisions": list(self._action_decisions),
+            "resources": list(self._resources),
+            "resource_versions": list(self._resource_versions),
+            "resource_representations": list(self._resource_representations),
+            "work_matches": list(self._work_matches),
+            "capability_matches": list(self._capability_matches),
+            "plans_to_create": list(self._plans_to_create),
+            "plan_updates": list(self._plan_updates),
+            "plan_node_updates": list(self._plan_node_updates),
+            "plan_evaluations": list(self._plan_evaluations),
+            "plan_selection_proposals": list(self._plan_selection_proposals),
+            "plan_selection_proposal_updates": list(
+                self._plan_selection_proposal_updates
+            ),
+            "plan_selections": list(self._plan_selections),
+            "replan_attempts": list(self._replan_attempts),
+            "replan_counts": list(self._replan_counts),
         }
 
     def _staged_journals(self) -> dict:
@@ -546,21 +827,34 @@ class ProcessContext:
         delay: float | None = None,
         fire_at: datetime | None = None,
         saved_process_state: dict | None = None,
+        also_waiting_for: list[dict] | None = None,
+        emitted_events: list[Event] | None = None,
     ) -> ProcessResult:
-        """Suspend until a timer fires (``delay`` seconds from now, or ``fire_at``)."""
+        """Suspend until a timer fires (``delay`` seconds from now, or ``fire_at``).
+
+        ``also_waiting_for`` adds alternative wake-up conditions alongside the
+        timer — the basis of a long-lived observer that ticks on a schedule but
+        can also be stopped by an event (spec §39, §48).
+        """
         timer = TimerSpec(delay=delay, fire_at=fire_at)
         timer.payload = {"timer_id": str(timer.id)}
+        on_timer = {"event_type": "timer_fired", "timer_id": str(timer.id)}
+        waiting_for = (
+            {"any": [on_timer, *also_waiting_for]} if also_waiting_for else on_timer
+        )
         continuation = Continuation(
             process_instance_id=self.instance.id,
             resume_point=resume_point,
-            waiting_for={"event_type": "timer_fired", "timer_id": str(timer.id)},
+            waiting_for=waiting_for,
             saved_process_state=dict(saved_process_state or {}),
         )
         return ProcessResult(
             status=ProcessStatus.SUSPENDED,
             state_changes=list(self.state.changes),
+            emitted_events=list(emitted_events or []),
             continuations_to_create=[continuation],
             timers_to_create=[timer],
+            **self._staged(),
         )
 
     def spawn_and_join(
@@ -583,6 +877,7 @@ class ProcessContext:
                 resume_point=resume_point,
                 saved_process_state=dict(saved_process_state or {}),
             ),
+            **self._staged(),
         )
 
     def retry(self, error: object, *, delay: float | None = None) -> ProcessResult:

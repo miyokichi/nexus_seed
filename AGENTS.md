@@ -244,16 +244,367 @@ Python application.
 - **33.** A Checkpoint is not a Continuation.
 - **34.** An adapter never interprets the meaning of external data.
 
+## Done in Phase 3E (Artifact / Resource Layer + Long-lived Observer)
+
+- Three levels kept strictly apart, as domain data under `resources/` (NOT core
+  types): `Resource` (what a thing IS, unique by `uri`) → `ResourceVersion`
+  (what it CONTAINED, immutable, numbered, content-hashed) →
+  `ResourceRepresentation` (what we MADE of it). Collapsing any two loses
+  something real — a content-keyed Resource has no history; a Representation on
+  the Resource cannot answer "what did the AI read?" after the file changed.
+- Pipeline is four ordinary Processes (`processes/resources.py`):
+  `resource_indexer` (file events → Resource/Version) → `extract_resource`
+  (→ Representations) → `interpret_resource` (→ Observation + StateDelta,
+  through the *existing* `apply_state_delta`), plus `watch_files`.
+- **Extraction is a Process, never a Runtime feature** (Invariant 38).
+  Extractors are pure functions in a deterministic `ExtractorRegistry`
+  (`PlainText` / `JSON` / `CSV`). Adding Office/PDF is a registration, not an
+  engine change. Adapters still never interpret (3D's Invariant 34 holds).
+- Dedup at two levels: a version is not created when `content_hash` matches any
+  existing version of that Resource; a Representation's identity is
+  `(version, type, extractor_name, extractor_version)` — so improving an
+  extractor makes a *new* rendering beside the old one, never a rewrite.
+- `ContextRequirements.resources` (`ResourcesReq`) compiles documents into
+  `ctx.view.resources` — deterministic selection only (explicit ids/URIs,
+  process input, work metadata). **No semantic retrieval, no embeddings.**
+  `max_items` / `max_bytes` with `truncate|exclude`; never summarisation.
+- **Fresh resume extends to documents** (Invariant 40): a process resumed after
+  a file changed reads the current version. The ContextSnapshot pulls the other
+  way and records `resource_version_id` + `representation_id`, so what each
+  activation actually read stays answerable (Invariant 39).
+- **`watch_files` answers 3D's open question** ("who calls `poll()`?") without a
+  daemon abstraction: Process + Continuation + Timer + Checkpoint (Invariant
+  41). Between ticks it is a row in SQLite. It inherits crash recovery and
+  restart safety; a restart resumes the same instance, never a second one.
+  `watch_mail` / `watch_git` would be the same shape.
+- `ResourceScope` unifies 3C's and 3D's duplicated `allowed_root` checks, with
+  read and write as separate powers. Paths only — not a sandbox (no network,
+  process or container isolation, no RBAC).
+- New: `resources`/`resource_versions`/`resource_representations` tables;
+  `ProcessResult.resources` / `resource_versions` / `resource_representations`;
+  `ProcessResult.events_to_route` (events already durable from ingress — routed,
+  never re-appended); `ctx.adapters` / `ctx.ingress`; `suspend_on_timer`
+  gained `also_waiting_for` + `emitted_events` and now carries staged effects.
+- Traces join rather than multiply: `get_resource_trace` /
+  `get_representation_trace` connect to the ingress and action traces, so an
+  external file → ingress → resource → context → action is one chain.
+
+## Runtime invariants (added in Phase 3E — keep them)
+
+- **35.** External persistent things are Resources, with version history.
+- **36.** Resource identity and ResourceVersion content are separate.
+- **37.** Extraction results attach to the ResourceVersion, not the Resource.
+- **38.** Extractors are Processes, not Runtime features.
+- **39.** Which ResourceVersion a Context read stays traceable.
+- **40.** Resume recompiles resource Context; `latest_only` means latest.
+- **41.** A long-lived observer is Process + Continuation + Timer, not a daemon.
+
+## Done in Phase 3F (Durable Event Delivery / Runtime Hardening)
+
+- Closes the gap flagged at the end of 3E. **Event persistence ≠ event
+  delivery** (Invariant 42): storing a fact and giving something the chance to
+  react to it are separate, and only tracking the second makes "no event is
+  ever forgotten" checkable.
+- `EventDelivery` (`delivery/`) is Runtime/infrastructure data — not a core
+  type and not domain data. One row per event, UNIQUE on `event_id`.
+  `PENDING → DELIVERING → DELIVERED`, or `RETRY_WAIT` with exponential capped
+  backoff. `FAILED` is deliberately rare (no `max_attempts` by default).
+- **`EventStore.append` creates the obligation in the same transaction.**
+  Doing it there rather than at each call site is the whole point: no path can
+  persist an event and forget to promise it will be routed (Invariant 43).
+  Covers submit / ingress / process-emitted / action / timer / join / review /
+  resource events uniformly.
+- `DurableEventDispatcher` marks DELIVERING in its own commit (so an
+  interrupted attempt is visible), then commits **routing + acknowledgement in
+  one transaction** — the state "processes created but event unacknowledged"
+  cannot exist. Backed up by a routing idempotency guard:
+  `process_instances.trigger_event_id` + `ProcessStore.find_by_trigger`.
+- `Runtime._drain` alternates dispatch and execution until both are idle.
+  Startup runs legacy backfill → stale-DELIVERING recovery → RUNNING sweep.
+  `runtime.tick()` and `dispatch_pending_events()` both drive it.
+- **`ProcessResult.events_to_route` and `ctx.route_event` are gone.** The
+  ingress boundary already commits the event *with* its obligation, so an
+  observer no longer carries events onward — which is exactly why the 3E gap
+  is closed (Invariant 47). `deliver_event()` is now only an optimization
+  (Invariant 46).
+- Delivery is **at-least-once**; exactly-once *outcomes* still come from the
+  existing per-layer idempotency, which stays separate (spec §73–§74).
+  No replay of DELIVERED events; a late-registered definition does not get
+  history.
+- Legacy DBs: events with no delivery record are backfilled as **DELIVERED**,
+  never PENDING — marking them pending would replay a live system's whole
+  history. The guarantee starts at events 3F persists.
+- New table `event_deliveries`; new column `process_instances.trigger_event_id`
+  (via `ADDED_COLUMNS`). Queries: `get_event_delivery`,
+  `get_pending_event_delivery_count`, `get_failed_event_deliveries`,
+  `get_delivery_health`.
+
+## Runtime invariants (added in Phase 3F — keep them)
+
+- **42.** Event persistence and event delivery are separate concerns.
+- **43.** Every event persisted since 3F has a durable delivery record.
+- **44.** A persisted, undelivered event is recovered after a restart.
+- **45.** Delivery retry never duplicates logical Process / Work / Action.
+- **46.** Immediate routing is an optimization, not the durability mechanism.
+- **47.** Delivery recovers from the Event Store alone, without re-ingest.
+
+## Done in Phase 4A (Capability Registry / Capability-based Work Matching)
+
+- Work stops finding its implementation by *name* and starts finding it by
+  *competence*. `WorkRequirement.required_capabilities` says what doing the
+  work takes; `ProcessDefinition.provides_capabilities` says what a process can
+  accomplish; `CapabilityMatcher` connects them (Invariants 48–50).
+- **Two things called "capability" stay separate** (spec §4):
+  `BackendCapabilities` (3C) is what a *tool* can mechanically do
+  (`write_file`); `Capability` (4A) is what a *Process* can accomplish
+  (`analyze_resistance`). Different registries, deliberately.
+- **A capability gap does not cancel the need** (Invariant 51). No capable
+  process ⇒ `WorkStatus.BLOCKED_CAPABILITY` + a `capability_missing` event,
+  with `missing_capabilities` recorded. Cancelling would throw away a real
+  requirement because of a temporary limitation of our own, and acquiring the
+  competence later could never revive it. This is the input to self-extension.
+- **Three outcomes, kept distinct** (spec §92): `MATCHED_SINGLE_PROCESS`,
+  `MISSING_CAPABILITY` (nothing provides it — *we cannot do this at all*), and
+  `COMPOSITION_REQUIRED` (all provided, no single process covers them —
+  *we cannot do it in one step*). Phase 4A records the third and stops;
+  combining processes is 4B (Invariant 54).
+- **Deterministic matching only** (spec §26, §99). No LLM, no embeddings, no
+  similarity. Ranking: eligibility → score (`capability_priority` + optional
+  coverage) → newer definition version → name. Stable across restarts and
+  registration order. Descriptions/tags/input-output types are stored but
+  **not matched on** — they are for 4B/planning.
+- Candidates are only definitions providing ≥1 required capability: a process
+  with nothing to do with the work was never in the running, and recording it
+  would make the audit grow with the system rather than with the decision.
+- **Reconciliation, not replay** (Invariant 52 / spec §98). A new or re-enabled
+  capability appends `capability_available`; `reconcile_blocked_work` re-offers
+  the *existing* blocked requirements — same ids, same provenance, no raw event
+  re-delivered. Registering only appends, so Phase 3F's delivery obligation
+  carries it even if startup crashes before draining.
+- Re-registering an unchanged definition announces nothing (spec §83), so a
+  restart does not churn through all blocked work.
+- **Legacy path coexists** (spec §16–§17): work with no declared capabilities
+  falls back to `WORK_PROCESS_REGISTRY`. `resistance_check` /
+  `write_analysis_result` now declare `analyze_resistance` /
+  `generate_analysis_report`; the D1_CD scenario reaches the same process, only
+  the selection principle changed.
+- Disable, never delete (spec §42). Disabling affects future matching only;
+  running and suspended processes are untouched (spec §43).
+- New tables: `capabilities`, `process_capabilities`, `capability_work_matches`
+  (attempts accumulate, never overwrite). New `work_requirements` columns for
+  required/missing capabilities and the selected definition. New
+  `ProcessResult.work_matches` / `capability_matches`.
+- The capability registry is the system's **self-model** — what it can do — as
+  distinct from World State, which is what it knows about the outside
+  (spec §88–§89). No `SelfModel` primitive was added.
+
+## Runtime invariants (added in Phase 4A — keep them)
+
+- **48.** A WorkRequirement may declare the capabilities it requires.
+- **49.** A ProcessDefinition may declare the capabilities it provides.
+- **50.** Capability matching lives in the work/capability domain, not the Runtime.
+- **51.** A missing capability never cancels the need.
+- **52.** New capabilities trigger reconciliation of blocked work, not replay.
+- **53.** Only a single process covering everything is auto-spawned.
+- **54.** Phase 4A never composes several processes.
+
+## Done in Phase 4B (Dynamic Process Composition / Durable Process Plan)
+
+- Takes 4A's `COMPOSITION_REQUIRED` — every competence exists but scattered —
+  and works out an order in which several processes add up to the job.
+  `ProcessPlan` / `PlanNode` / `PlanEdge` are domain data under `planning/`.
+- **A PlanNode is a position, not an execution** (Invariant 56). It names a
+  ProcessDefinition; a `ProcessInstance` is still the only thing that runs.
+  Execution reuses the existing spawn / join / continuation machinery, so
+  atomicity, crash recovery and activation idempotency come for free.
+- **Deterministic, bounded backward chaining** (Invariant 64). Goals are the
+  required capabilities plus required output types; providers are chosen, their
+  inputs become new goals, and `SearchBounds` (nodes / depth / candidates)
+  guarantees an answer rather than a hang. Connection is exact symbolic type
+  equality (Invariant 59) — no subtyping, no ontology, **no LLM**.
+- **Plans are DAGs** (Invariant 58); cycles are rejected. A loop belongs inside
+  a process, expressed with a continuation.
+- **Nothing runs a plan the planner merely proposed** (Invariant 60) — the same
+  boundary as 3B/3C. Validated twice: at composition, and again before each
+  stage spawns, because a definition can be disabled in between.
+- **A completed node is never re-run** (Invariant 61). `(plan_id, node_key)` is
+  UNIQUE, the spawn binds the node to its instance in the same transaction, and
+  a restart resumes from the first unfinished position.
+- **Failure does not undo** (spec §55) and **does not cancel the need**
+  (Invariant 63). No compensation was invented.
+- **All nodes complete ≠ work satisfied.** `evaluate_plan_satisfaction` checks
+  capability coverage *and* that the required output types were actually
+  produced — a plan whose processes all ran but produced nothing required is
+  COMPLETED and **not** SATISFIED.
+- **`ProcessResult` restructured without breaking anything** (spec §70–§77):
+  the ~22 flat lists stay (every handler and test keeps working) and
+  `result.effects` / `result.lifecycle` are grouping *views* over them
+  (`SemanticEffects`, `WorkEffects`, `ActionEffects`, `ResourceEffects`,
+  `PlanningEffects`, …). No generic `Effect(type, payload)` (spec §75).
+- **Effect conflicts are refused, not resolved by list order** (Invariant 65).
+  `check_conflicts` runs before the commit transaction: identical updates
+  collapse, contradictory ones raise `EffectConflictError` and fail the
+  activation cleanly. This closes the exact Phase 4A bug where a capability
+  selection silently overwrote a work status set in the same handler.
+- `TypedOutput` (`{"outputs": [{"type": ..., "value": ...}]}`) is additive: a
+  handler returning a plain dict still works and simply contributes nothing to
+  data flow. Outputs bind to the next stage by type.
+- New tables `process_plans` / `plan_nodes` / `plan_edges`; new columns on
+  `work_requirements` (`available_input_types`, `required_output_types`,
+  `selected_plan_id`) and `process_instances` (`plan_id`, `plan_node_id`).
+  `WorkStatus.PLANNED` added. `WORK_IO_TYPES` in `work/rules.py`.
+
+## Runtime invariants (added in Phase 4B — keep them)
+
+- **55.** Multi-process composition is a durable ProcessPlan.
+- **56.** A PlanNode references a ProcessDefinition; it is not an execution.
+- **57.** A validated plan's structure is not silently rewritten.
+- **58.** Phase 4B plans are DAGs.
+- **59.** Process connection is exact symbolic input/output type equality.
+- **60.** Planner output is validated before it runs.
+- **61.** A COMPLETED PlanNode is never re-run after a restart.
+- **62.** Each logical PlanNode converges on one logical ProcessInstance.
+- **63.** A failed plan never cancels the need.
+- **64.** Phase 4B does not use an LLM to generate plans.
+- **65.** Contradictory staged effects fail the activation; no last-write-wins.
+
+## Done in Phase 4B.1 (Composition Hardening / Explicit Binding / Bounded Drain)
+
+Purely structural: no new capability, no LLM, no replanning, no delegation, no
+compensation. It closes three things Phase 4B left unsafe to build on before
+4C adds judgement.
+
+- **An edge *is* the data flow** (Invariant 66). Phase 4B recorded a
+  dependency and let the executor pick a value by type at run time, so with two
+  producers of one type the consumer got whichever was visited first — the plan
+  could not explain its own data flow and two runs could differ.
+  `PlanEdge` now names `output_type` / `output_key` / `input_type` /
+  `input_key`; `_resolve_inputs` follows edges instead of building a
+  type-keyed dict. Nothing is decided at execution time that was not decided at
+  planning time.
+- **`Port`** — `"type"` or `"type:key"`, parsed wherever a capability declares
+  its input/output types, so the capability model itself did not change.
+  A keyless port is a wildcard **on the producing side only**; on the consuming
+  side the declaration must match exactly, because the port's name is the dict
+  key the handler is given.
+- **Ambiguity is a validation failure, never a choice** (Invariant 68). The
+  planner leaves an unbindable input unbound and carries the reason in
+  `PlanCandidate.ambiguous_bindings`; the validator fails it as
+  `AMBIGUOUS_BINDING` naming the input and every candidate producer.
+  `BindingStatus` also distinguishes `MISSING_INPUT`, `DUPLICATE_BINDING`,
+  `TYPE_MISMATCH` and `INVALID_PORT` — "too many producers" and "no producer"
+  are different diagnoses.
+- **One producer per consumer input** (Invariant 67), enforced by a partial
+  UNIQUE index, not only by the validator. `save_edge` no longer uses
+  `INSERT OR IGNORE`: swallowing a conflict is how a consumer ends up running
+  with an input missing while the plan reports success.
+- **`plan_edges` was rebuilt.** The Phase 4B table UNIQUE
+  `(plan_id, from_node_id, to_node_id, artifact_type)` silently dropped the
+  second edge when one node feeds two keyed inputs of another — a real
+  data-loss bug found while testing this phase. SQLite cannot alter a
+  constraint, so `Database.init_schema` detects the old autoindex, renames the
+  table, lets the schema rebuild it, and copies the rows back (idempotent).
+- **Branching DAGs are an acceptance case, not an assumption.** Phase 4B
+  implemented parallel spawn and multi-input join and only ever ran a straight
+  line. `P1 → {P2, P3} → P4` now runs, fans out, joins, and survives a restart
+  with one branch finished and the other interrupted mid-activation.
+- **Bounded drain** (`runtime/drain.py`). `DrainBudget(max_dispatches,
+  max_activations, max_cycles)` and `DrainResult`; `runtime.drain(budget)` plus
+  budget arguments on `submit_event` / `tick` / `run_pending`, and
+  `runtime.default_drain_budget` / `runtime.last_drain`. **Reaching a budget is
+  not a failure** (Invariant 71): nothing is FAILED, nothing is dropped, and
+  the next call continues (Invariant 73). The default is unlimited, so every
+  pre-4B.1 caller behaves exactly as before.
+- The dispatch/execute halves **alternate**, so neither can eat the whole
+  budget — a long delivery queue cannot starve execution.
+- **A budget is a call parameter, not stored state.** What remains lives in
+  `event_deliveries` / `process_instances` / `continuations` / `plan_nodes` /
+  `timers`; a restarted runtime is told nothing about how the last one was
+  paced, and the outcome does not depend on where the slices fell.
+- **Old plans are honoured where clear and refused where not** (spec §58).
+  `resolve_legacy_binding` accepts an `artifact_type`-only edge when exactly
+  one interpretation exists; otherwise the plan is BLOCKED before it runs.
+  Guessing would reproduce the very ambiguity this phase removed.
+- **Binding provenance in the trace** — `PlanTrace.bindings` (`PlanBinding`:
+  producer node/port → consumer node/port), `binding_pairs`,
+  `bindings_into(node_key)`, and `inputs_given` read back from the instances.
+  Phase 4B could say what ran in what order; the question worth answering is
+  *where did this value come from*.
+
+## Runtime invariants (added in Phase 4B.1 — keep them)
+
+- **66.** A PlanEdge names the producing port and the consuming port; data flow
+  is decided at planning time, never at execution time.
+- **67.** Each consumer input has exactly one producer — schema-enforced.
+- **68.** An ambiguous binding fails validation; the planner never picks one.
+- **69.** A port's type must match exactly; a key disambiguates but never
+  converts.
+- **70.** A pre-4B.1 plan runs only where its binding is unambiguous.
+- **71.** Reaching a drain budget is not a failure and loses nothing.
+- **72.** One runtime call need not reach quiescence.
+- **73.** Whatever a slice did not finish is durable and resumes on the next
+  call — including after a restart.
+
+## Done in Phase 4C (Plan Selection / Decision Policy / Replanning)
+
+- Deterministic composition persists every structurally distinct valid
+  candidate as `PROPOSED`; `PlanFingerprint` removes duplicate shapes without
+  using generated ids.
+- `PlanEvaluator` derives cost, critical-path latency, maximum risk, minimum
+  quality and product reliability from definition metadata. Unknown values
+  remain unknown; unknown risk receives a conservative value.
+- `DecisionPreference` separates hard limits from soft weights.
+  `DeterministicPlanSelector` provides a total, restart-stable order and is
+  always sufficient when no LLM selector is installed.
+- `LLMPlanSelector` only produces a `PlanSelectionProposal` naming a member of
+  the validated shortlist. `SelectionValidator` rechecks membership,
+  fingerprint, hard constraints and enabled definitions immediately before
+  selection. Hallucinated or drifted choices execute nothing.
+- Medium-confidence proposals suspend on an ordinary Continuation waiting for
+  `plan_selection_reviewed`; approve and choose-alternative revalidate after a
+  restart. Plan review never replaces Action permission/risk review.
+- Evaluations, proposals, invocation attempts, `PlanSelection`s and
+  `ReplanAttempt`s are durable audit records. The selected-plan pointer,
+  selection, plan status and emitted events commit in one atomic activation.
+- Terminal plan failure emits durable `replan_required`. Replanning reads the
+  current registry, definitions and freshly compiled related World State,
+  excludes failed fingerprints, creates a new immutable plan and never cancels
+  the WorkRequirement. Exhaustion becomes `BLOCKED_PLAN` and emits
+  `replan_unavailable`.
+
+## Runtime invariants (added in Phase 4C — keep them)
+
+- **74.** An LLM cannot create or select outside the validated candidate set.
+- **75.** Plan generation and plan selection are separate.
+- **76.** Confidence never overrides a hard constraint.
+- **77.** LLM unavailability falls back to deterministic selection.
+- **78.** Plan selection history is append-only.
+- **79.** Terminal plan failure never cancels the need.
+- **80.** Replanning creates a new plan; it never rewrites the failed one.
+- **81.** Replanning uses current State and the current Capability Registry.
+- **82.** Replanning is bounded by `max_replans`.
+- **83.** Plan approval never substitutes for Action approval.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 3E+ — Artifact / Resource layer (Excel / PPT / PDF content extraction);
-  further adapters (mail, Slack, GitHub, browser); further ExecutionBackends
-  (Shell / Claude Code / OpenClaw / MCP); dynamic organization; capability
-  registry; self extension. Do NOT build until instructed.
-- Carried over, still open: generic sandbox contract shared by ingress and
-  action boundaries; hierarchical permissions; compensating actions; external
-  action exactly-once; adapter daemonisation; `adapter_errors` journal.
+- Phase 5+ — self extension, automatic capability acquisition, code generation,
+  role/team ontologies and richer dynamic organization. Do NOT build until
+  instructed.
+- Capability `description` becomes usable for LLM planning; `tags` for search.
+  Both are stored already and deliberately unused by matching.
+- Compensating actions (undoing a completed node's side effects) remain
+  unbuilt; Phase 4C replanning deliberately does not compensate.
+- Event replay (deliberately *not* durable delivery); per-subscriber delivery
+  targets (`event_delivery_targets`); a real DLQ with a UI.
+- Office / PDF / OCR extractors (the registry is ready for them); further
+  adapters (mail, Slack, GitHub, browser); further ExecutionBackends (Shell /
+  Claude Code / OpenClaw / MCP); `resource_links`.
+- Carried over, still open: hierarchical permissions; compensating actions;
+  external action exactly-once; OS-level daemonisation of `watch_files`;
+  `adapter_errors` journal; large-file streaming hash; production webhook
+  security. (Phase 3E closed the "shared sandbox contract" item: `ResourceScope`.)
 - Context compiler extensions: semantic retrieval, token budget, priority,
-  summarization, artifact loading (don't over-abstract yet).
+  summarization (don't over-abstract yet). Phase 3E deliberately shipped
+  `max_items`/`max_bytes` only.
 - Richer `waiting_for` matching; pluggable graph state backend; work dependency
   DAG (`depends_on`/`blocks`/`invalidates`).

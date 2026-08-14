@@ -24,6 +24,12 @@ Event → Process → State → Continuation → Event → Resume
 | **3B** | LLM 知能境界(Proposal → 検証 → Policy) |
 | **3C** | Action / Tool 実行境界(世界へ作用する) |
 | **3D** | External Observation / Ingress 境界(世界を取り込む) |
+| **3E** | Artifact / Resource 層 + 長寿命 Observer Process |
+| **3F** | 耐久 Event 配送(永続化された Event は決して忘れられない) |
+| **4A** | Capability Registry — 仕事は名前ではなく能力で Process を見つける |
+| **4B** | 動的合成 — 複数 Process を永続 Plan として組み立てて実行する |
+| **4B.1** | 合成の硬化 — 明示的データ束縛、分岐 DAG、有界 drain |
+| **4C** | Plan 意思決定層 — 評価、決定論的/LLM支援選択、人手レビュー、有界replanning |
 
 ---
 
@@ -408,6 +414,324 @@ action の `idempotency_key` (3C)、`source_event_key` (3D)。1つの汎用機�
 
 ---
 
+## Artifact / Resource 層 + 長寿命 Observer (Phase 3E)
+
+Phase 3D は「ファイルが変わった」までしか言えませんでした。Phase 3E はそれが**何であるか**を
+言い、履歴を保ち、Process が使える表現として渡します。そして 3D で残っていた
+「誰が `poll()` を呼ぶのか」に答えます。
+
+```
+外部ファイル → Ingress → file event → Resource + ResourceVersion
+    → Representation → Context Compiler → Process → ActionProposal → 世界
+```
+
+```mermaid
+flowchart LR
+    FE["file_created / file_modified"] --> RI["resource_indexer"]
+    RI --> RES["Resource (uri)"]
+    RI --> RV["ResourceVersion (hash, v1..vN)"]
+    RV --> EX["extract_resource"]
+    EX --> REP["Representation (text / structure)"]
+    REP --> CC["Context Compiler"]
+    CC --> P["Process (ctx.view.resources)"]
+    REP --> IR["interpret_resource"]
+    IR --> OBS["Observation + StateDelta"]
+    OBS --> WS["World State"]
+```
+
+- **3階層を分けたまま保つ。** `Resource` はそのモノが*何であるか*(URI で一意)、
+  `ResourceVersion` はある時点で*何を含んでいたか*(immutable・連番・content hash)、
+  `ResourceRepresentation` はその内容から*何を作ったか*。どの2つを混ぜても実害が
+  出ます。Resource を content hash で識別すればファイル編集のたびに履歴が消え、
+  Representation を Version ではなく Resource に付ければ、ファイルが変わった後に
+  「AIは実際に何を読んだのか」に答えられなくなります。
+- **抽出はエンジン機能ではなく Process**(不変条件 38)。Extractor は決定的な
+  registry に登録された純粋関数です(`PlainText` / `JSON` / `CSV`)。後から Office や
+  PDF に対応するのは registry への登録であって、Runtime の変更ではありません。
+  Adapter は依然として内容を解釈しません(3D のルールは維持)。
+- **重複排除は2箇所。** その Resource が既に持っている content hash と一致するなら
+  新しい version を作らないので、変わっていないファイルを何度観測しても増えません。
+  Representation の同一性には extractor の*バージョン*が含まれるので、extractor を
+  改良すると過去の描画を黙って書き換えるのではなく、隣に新しいものが作られます。
+- **文書は Context 経由で Process に届きます。** `ContextRequirements.resources` で
+  宣言し、選択は決定的(明示 id / URI、process input、work metadata)。
+  **embedding も類似度ランキングも使いません** — snapshot 監査が意味を持つには
+  compiler が再現可能でなければならないからです。`max_bytes` は truncate か exclude で、
+  要約は決してしません。
+- **fresh resume が文書にも及びます**(不変条件 40)。v1 の仕様書を持ったまま中断した
+  Process は、再開時に v2 を読みます。ContextSnapshot は逆方向に働き、各起動が読んだ
+  version と描画を記録するので、ファイルが先に進んでも当時の答えが残ります
+  (不変条件 39)。
+- **常駐 Observer はただの Process**(不変条件 41)。`watch_files` は adapter を poll し、
+  ingest し、timer で中断します。tick と tick の間、それは SQLite の1行と Continuation
+  でしかありません。クラッシュ復旧も再起動安全性もタダで継承し、再起動しても2つ目の
+  インスタンスにはならず同じものが再開します。`watch_mail` / `watch_git` も同じ形で
+  書けます。daemon 抽象は追加していません。
+- **path 境界はひとつ。** `ResourceScope` が Phase 3C と 3D で別々に育っていた
+  `allowed_root` チェックを置き換え、read と write を別の権能として扱います。
+  path のみが対象で、sandbox ではありません。
+
+## 耐久 Event 配送 (Phase 3F)
+
+Event を保存しただけでは足りません。イベント駆動システムが誠実であるためには、
+永続化されたすべての Event が**必ず Router に届く**ことが保証されている必要があります。
+そうでなければ、悪いタイミングでの crash が「DB に存在するのに誰も反応しない事実」を
+残します。
+
+Phase 3E にはまさにその穴がありました。Ingress 境界が receipt と一緒に Event を
+commit し、その後それを route するはずだった observer が失敗しうる。source key は
+消費済みなので、再 poll しても戻ってきません。
+
+```mermaid
+flowchart LR
+    P["Event 永続化"] --> D["EventDelivery (PENDING)"]
+    D --> C{"dispatch"}
+    C --> M["DELIVERING をマーク<br/>(単独 commit)"]
+    M --> T["route + DELIVERED<br/>(同一トランザクション)"]
+    C -->|router 失敗| R["RETRY_WAIT<br/>+ backoff"]
+    R --> C
+    M -->|crash| REC["起動時リカバリ<br/>→ PENDING"]
+    REC --> C
+```
+
+- **永続化と配送は別の事実**(不変条件 42)。`EventDelivery` は Event 1件につき1行で、
+  `EventStore.append` が **Event 自身と同一トランザクション**で作ります。だからどの
+  呼び出し箇所も「Event を保存したが、誰かが見る約束を忘れた」状態を作れません
+  (不変条件 43)。
+- **「配送済み」とは routing 結果が commit されたこと**であって、`route()` を呼んだ
+  ことではありません。acknowledgement は生成された activation と同一トランザクションに
+  乗るので、「Process は作られたが Event は未確認」という状態は存在し得ません。
+  `trigger_event_id` による独立したガードも併設しています。
+- **中断された作業が見える。** routing 前に `DELIVERING` を単独 commit するので、
+  route 途中の crash は起動時リカバリが `PENDING` に戻せる痕跡を残します。Phase 2A の
+  `RUNNING` sweep と同じ論法です。
+- **1件の詰まった Event が queue 全体を止めない。** backoff 中の delivery は待つのでは
+  なく飛ばされ、後続の Event は流れ続けます。
+- **at-least-once 配送、結果は1回。** retry 安全性は各 Phase が積み上げてきた層ごとの
+  冪等性から来ます。1つのエンジンに統合せず、別々のまま保ちます。
+- **`events_to_route` は廃止。** observer は ingest して終わりで、その activation が
+  commit されようとされまいと、obligation が Event を先へ運びます(不変条件 47)。
+  `deliver_event()` は optimization としてのみ残ります(不変条件 46)。
+- **旧 DB は `DELIVERED` として backfill**(`PENDING` にはしない)。稼働中システムの
+  全履歴を replay してしまうためです。
+
+正確に言うと: **Phase 3F 以降に永続化された Event は、明示的に FAILED として停止され
+ない限り、最終的に必ず Router へ配送されます。**
+
+## Capability Registry (Phase 4A)
+
+これまで、仕事は名前で実装を見つけていました。`work_type` をハードコードされた表で
+引く方式です。それは**誰かが事前にその表を書いておいた範囲でのみ**機能します。
+Phase 4A は、その参照を問いに置き換えます。
+
+```
+WorkRequirement → 必要 Capability → CapabilityRegistry
+    → 候補 ProcessDefinition → 決定的マッチング
+    → 実行可能な Process 1つ、または記録されたギャップ
+```
+
+```mermaid
+flowchart LR
+    W["WorkRequirement<br/>required: analyze_resistance"] --> M["CapabilityMatcher"]
+    R["CapabilityRegistry<br/>(自分に何ができるか)"] --> M
+    M -->|1 Process で満たせる| S["spawn"]
+    M -->|提供者が存在しない| MISS["BLOCKED_CAPABILITY<br/>+ capability_missing"]
+    M -->|提供者はいるが1つでは足りない| COMP["BLOCKED_CAPABILITY<br/>COMPOSITION_REQUIRED"]
+    NEW["capability_available"] --> REC["reconcile_blocked_work"]
+    REC --> M
+```
+
+- **「Capability」と呼ばれる2つを分けたまま保つ。** Phase 3C の
+  `BackendCapabilities` は*道具*が機械的に何をできるか(`write_file`)。ここでの
+  `Capability` は*Process* が何を成し遂げられるか(`analyze_resistance`)。
+  道具は能力ではありません。
+- **ギャップは Need を取り消さない。** 実行できる Process がなければ
+  `BLOCKED_CAPABILITY` になり、不足していた Capability が記録されます。決して
+  `CANCELLED` にはしません。取り消せば、*こちら側の*一時的な限界を理由に実在する
+  要求を捨てることになり、後から能力を獲得しても二度と復活できません。これは将来の
+  Self Extension が読むことになる記録です。
+- **3つの結果を意図的に区別する。** 一致した / *そもそもできない* / *提供者は全部
+  いるが1つの Process では満たせない*。最後のものは**解かずに記録**します。
+  Process の組み合わせは Phase 4B であり、ここで黙ってやれば planner を密輸する
+  ことになります。
+- **マッチングは厳密かつ再現可能。** LLM も embedding も類似度ランキングも使いません。
+  同点は明示的な `capability_priority`、次に新しい definition version、次に名前で
+  決まります — どのマシンでも、再起動後も同じ答えになります。description や tags は
+  保存しますが、マッチングには使いません。
+- **能力の獲得は reconcile であって replay ではない。** capable な Process を登録すると
+  `capability_available` が append され、blocked だった**既存の** requirement が
+  matcher へ再提示されます — 同じ id、同じ来歴、raw event の再配送はゼロ。
+- **すべての判断が監査可能。** 各試行が、検討された候補・それぞれに何が足りなかったか・
+  何を選びなぜ選んだかを記録します。試行は蓄積されるので、月曜に blocked で火曜に
+  matched になった requirement は両方を示します。
+- **旧経路も動く。** Capability を宣言しない仕事は名前表にフォールバックするので、
+  既存の D1_CD シナリオは同じ Process に到達します。変わったのは選択原理であって、
+  結果ではありません。
+
+概念的にはこれは World State のもう半分です。World State は NEXUS SEED が*外界*に
+ついて知っていること、Capability Registry は*自分自身*について知っていること。
+そう言うために `SelfModel` primitive を追加はしていません。
+
+## 動的 Process 合成 (Phase 4B)
+
+Phase 4A は仕事全体を1つで担える Process を見つけ、いなければギャップを記録できました。
+そのギャップの1つが興味深いものでした — `COMPOSITION_REQUIRED`、つまり**必要な能力は
+すべて存在するが、複数の Process に散らばっている**状態です。Phase 4B はそれらが
+合算されるような順序を導出します。
+
+```mermaid
+flowchart LR
+    W["WorkRequirement<br/>COMPOSITION_REQUIRED"] --> P["CompositionPlanner"]
+    P --> C["PlanCandidate(s)"]
+    C --> V["PlanValidator"]
+    V -->|不正| X["Plan なし — Need は保持"]
+    V --> PL["ProcessPlan (永続 DAG)"]
+    PL --> E["execute_process_plan"]
+    E -->|spawn + join| N1["P1"] --> N2["P2"] --> N3["P3"]
+    N3 --> S["充足判定"]
+```
+
+- **PlanNode は「位置」であって実行体ではない。** ProcessDefinition を指名するだけで、
+  実際に動くのは依然として `ProcessInstance` です。実行には既存の spawn / join /
+  continuation をそのまま使うため、原子的遷移・クラッシュ復旧・activation 冪等性が、
+  どれ1つ Plan を知ることなく合成 Plan にも適用されます。
+- **決定的・有界・厳密。** 必要 Capability と必要 output type からの後ろ向き連鎖で、
+  接続は**シンボリックな型の完全一致**のみ。node 数・深さ・候補数の明示的上限があるので、
+  探索は常にハングではなく答えで終わります。**LLM は一切使いません** — どの構成が最善かを
+  推論できるようになる前に、そもそも構成が存在するかへの再現可能な答えが要るからです。
+- **Plan は DAG であり、Planner が提案しただけのものは実行されない。** cycle は拒否
+  (ループは Process の内側に属します)。検証は合成時と、各 stage の spawn 直前の2回 —
+  その間に definition が disable されうるからです。
+- **完了した node は二度と実行しない。** `(plan_id, node_key)` は UNIQUE で、spawn は
+  同一トランザクション内で node と instance を結びます。だから最初のステップの後に
+  crash しても、再開は最初からではなく2番目からです。node には副作用があるので、これが
+  「復旧」と「新しいバグ」の分かれ目になります。
+- **失敗は巻き戻さないし、Need を取り消さない。** node の失敗は Plan を失敗させますが、
+  それ以前の結果は残り、compensation を勝手に作ることはせず、requirement は開いたままです。
+- **全 node 完了 ≠ 仕事が終わった。** 充足判定は別に行います — Capability の網羅と、
+  必要な output type が**実際に**生成されたこと。全 Process が走ったが必要なものを何も
+  生成しなかった Plan は COMPLETED であって **SATISFIED ではありません**。
+
+Phase 4B ではさらに `ProcessResult` を整理しました。effect のリストが20余りまで増えて
+いたためです。リスト自体は残し(既存 handler はすべてそのまま動く)、`result.effects` と
+`result.lifecycle` はその上のグルーピング view です。そしてより重要なこととして、
+**矛盾した staged effect は activation を失敗させる**ようになりました — リスト順で
+解決するのではなく。これは Phase 4A で実際に踏んだバグ(Capability 選択の記録が、同じ
+handler 内で直前に設定した work status を静かに上書きしていた)を塞ぎます。
+
+## 合成の硬化 (Phase 4B.1)
+
+Phase 4B は複数 Process を Plan に組み立てられました。しかし、組み立てた Plan を
+**常に説明できるわけではありませんでした**。Phase 4C が合成の上に判断を載せる前に
+真でなければならないことが3つあり、この Phase はそれを真にするためだけのものです —
+新しい能力なし、LLM なし、再計画なし。
+
+### edge は順序ではなくデータフローそのもの
+
+Phase 4B の edge は「ある node が別の node に供給する」ことだけを記録し、値は実行時に
+型で探していました。同じ型の producer が2つあると、consumer は executor がたまたま先に
+訪れた方を受け取ります。Plan は値の出所を説明できず、同じ Plan の2回の実行が
+食い違いうる状態でした。
+
+いまや edge は両端 — 供給側の port と消費側の port — を名指しし、executor は型を
+探すのではなく **edge を辿ります**。**port** は `type` または `type:key` と書き、
+2つの measurement を受け取る Process はどちらがどちらかを言えます:
+
+```
+measurement            任意の measurement
+measurement:measured   "measured" と呼ばれる方
+```
+
+計画時に決まっていないことは、実行時には何も決まりません。key なしの port は
+**供給側では**ワイルドカードのままですが、消費側では宣言と完全一致が必要です。
+port の名前は、値が渡ってくるときの key そのものだからです。
+
+### 曖昧さは解決せず、拒否する
+
+2つの node が1つの input を供給でき、どちらかを決めるものが何もない場合、planner は
+その input を未接続のまま残し、validator が input 名と両方の候補を挙げて Plan を
+落とします。片方を選んでも**動いてしまう** — それが危険なところです。`BindingStatus`
+は区別すべき診断を分けています: `AMBIGUOUS_BINDING`(producer が多すぎる)、
+`MISSING_INPUT`(いない)、`DUPLICATE_BINDING`、`TYPE_MISMATCH`、`INVALID_PORT`。
+
+「1つの consumer input に producer は1つ」は validator だけでなく UNIQUE index でも
+強制され、`save_edge` は衝突する insert を握り潰さなくなりました。この組み合わせが
+Phase 4B の実バグを見つけました — 1つの node が別の node の2つの keyed input を
+供給するとき、2本目の edge が黙って捨てられ、consumer は input を1つ欠いたまま走り、
+それでも Plan は成功を報告していたのです。原因となった制約を緩めるため、
+`plan_edges` テーブルは open 時に再構築されます。
+
+### 分岐は前提ではなくテスト対象
+
+Phase 4B は並列 spawn と多入力 join を実装しておきながら、実際には直列しか流して
+いませんでした。`P1 → {P2, P3} → P4` は受け入れケースになりました — fan-out し、
+両 branch が1 stage で走り、join は遅い方を待ち、片方完了・片方 activation 途中で
+中断した状態からの再起動でも、2つ目を spawn せず**同じ instance に再接続**します。
+
+### 1回の runtime 呼び出しは全部ではなく一切れだけ
+
+drain はこれまで世界が静まるまで走っていました。短い連鎖なら問題ありませんが、長い
+Plan では問題になり、自分の次の event を自分で作れる Process では致命的です — 他所で
+どれだけ気をつけても復旧できないハングでした。
+
+```python
+from nexus_seed.runtime.drain import DrainBudget
+
+await runtime.submit_event(event, DrainBudget(max_activations=10))
+while runtime.last_drain.has_remaining:
+    await runtime.drain(DrainBudget(max_activations=10))
+```
+
+**budget に到達することは失敗ではありません。** FAILED になるものはなく、event は
+捨てられず、Plan も放棄されません — すべてすでに永続化されているので、次の呼び出しが
+続きを引き受けます。dispatch と execute は交互に進むので、配送キューが長くても実行が
+飢えることはありません。budget は呼び出しのパラメータであって永続状態ではありません。
+再起動した runtime は「前回どう刻まれたか」を一切知らされず、結果はスライスの切れ目に
+依存しません。
+
+デフォルトは無制限なので、4B.1 以前の呼び出し側の挙動は完全に変わりません。
+
+### この値はどこから来たのか
+
+`PlanTrace.bindings` は node 単位ではなく port 単位でそれに答え、`inputs_given` は
+各位置が**実際に**渡されたものを読み戻します:
+
+```python
+trace = runtime.get_plan_trace(plan_id)
+[b.describe() for b in trace.bindings_into("compare:v1")]
+# ['measure:v1.reading:measured -> compare:v1.reading:measured',
+#  'lookup_reference:v1.reading:reference -> compare:v1.reading:reference']
+```
+
+binding が存在しなかった頃に書かれた古い Plan は、**意味が一意なときだけ**尊重され、
+そうでなければ BLOCKED になります。推測すれば、この Phase が取り除いたはずの曖昧さを
+そのまま再生産することになるからです。
+
+## Plan 選択とreplanning (Phase 4C)
+
+合成自体は引き続き決定論的です。有限個の候補DAGを生成・検証した後にだけ、
+Phase 4Cの判断層が動きます。
+
+```text
+WorkRequirement
+  -> 検証済み候補Plan
+  -> 決定論的評価とhard constraint
+  -> 決定論的選択、または任意のLLM SelectionProposal
+  -> 再検証 / confidence policy / 通常の人手レビューContinuation
+  -> 選択された1つのPlan
+  -> 成功、またはterminal failure -> durable replan_required -> 新しいPlan
+```
+
+LLMはPlan graphを返さず、提示された候補外を選べません。存在しないPlanや
+driftしたPlanは実行されず、backend/schema障害は通常のretry上限後に決定論的
+selectorへfallbackします。評価、proposal、LLM invocation、selection、replan
+attemptは監査履歴として永続化されます。失敗Planは書き換えず、Needを残した
+まま現在のCapability Registryと再コンパイルした関連World Stateで再検討します。
+`max_replans`到達時もcancelせず`BLOCKED_PLAN`になります。
+
+Plan-level approvalとAction approvalは別の安全境界です。選択済みPlan内の
+high-risk Actionも、Phase 3Cのpermission/risk reviewを必ず通ります。
+
 ## リポジトリ構成
 
 ```
@@ -426,15 +750,20 @@ nexus_seed/
 ├── ingress/         # ingress ドメインデータ: models, validation, service, trace
 │                    #   (内向き境界)
 ├── adapters/        # 外部アダプタ: manual, webhook, ローカルファイル監視
+├── resources/       # Artifact 層: models, scope, service, extractors, trace
+├── delivery/        # 耐久 Event 配送: models + dispatcher
+├── capabilities/    # 自分に何ができるか: models, registry, matcher, trace
+├── planning/        # 合成: models (Port を含む), planner, validation, trace
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
-│                    #   clock, join_coordinator, services
+│                    #   clock, join_coordinator, drain, services
 ├── storage/         # sqlite: database + event/process/state/continuation/timer/
 │                    #   join/activation/observation/state_delta/work_requirement/
 │                    #   context_snapshot/proposal/llm_invocation/
 │                    #   action_proposal/action_execution/action_decision/
-│                    #   ingress_receipt/adapter_checkpoint
+│                    #   ingress_receipt/adapter_checkpoint/resource/
+│                    #   event_delivery/capability/plan
 ├── processes/       # 具体的な Process (demo_resistance, semantic,
-│                    #   work_intelligence, llm_interpret, actions)
+│                    #   work_intelligence, llm_interpret, actions, resources)
 ├── ingress_cli.py   # 外部の出来事を手動で1件投入する
 └── demo.py          # 実行可能な受け入れシナリオ(ランタイム再起動つき)
 tests/               # 全 Phase の受け入れテスト
@@ -466,7 +795,10 @@ pytest
 `test_llm_review_restart.py`(レビュー待ちの LLM proposal)、
 `test_action_review_restart.py`(承認待ちの action)、
 `test_file_adapter_restart.py`(観測済みファイル)、
-`test_ingress_closed_loop.py`(ループ全体)。
+`test_ingress_closed_loop.py`(ループ全体)、
+`test_watch_files_restart.py`(常駐 Observer)、
+`test_resource_versioning.py`(Resource の版履歴)、
+`test_event_delivery_closed_loop.py`(全ステップ間で Runtime を再構築)。
 
 ## デモ
 
@@ -507,7 +839,9 @@ LLM / モデル API、Claude Code、OpenClaw、MCP、メール/Slack、ウェブ
 グラフのデータベース、埋め込み、GUI、ナレッジグラフ、マルチエージェント
 オーケストレーション、自己改変。それらが後から接続される*境界*だけが置かれています。
 
-以降の Phase で、そのうち LLM 境界 (3B)、行動境界 (3C)、観測境界 (3D) が実装されました。
-Artifact / Resource 層、動的組織、自己拡張は未着手です。
+以降の Phase で、そのうち LLM 境界 (3B)、行動境界 (3C)、観測境界 (3D)、
+Artifact / Resource 層 (3E)、Capability Registry (4A)、Process 合成 (4B) が
+実装されました。Office / PDF の抽出、LLM 支援の計画、再計画、Delegation、動的組織、
+自己拡張は未着手です。
 
 作業上の取り決めと今後の候補は `AGENTS.md` を参照してください。

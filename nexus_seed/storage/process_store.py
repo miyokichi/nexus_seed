@@ -62,6 +62,13 @@ class ProcessStore:
         )
         return self._row_to_definition(row) if row else None
 
+    def all_definitions(self) -> list[ProcessDefinition]:
+        """Return every registered definition, by name then version."""
+        rows = self.db.query(
+            "SELECT * FROM process_definitions ORDER BY name ASC, version ASC"
+        )
+        return [self._row_to_definition(r) for r in rows]
+
     def definitions_for_trigger(self, event_type: str) -> list[ProcessDefinition]:
         """Return every definition triggered by ``event_type``."""
         rows = self.db.query("SELECT * FROM process_definitions")
@@ -81,9 +88,10 @@ class ProcessStore:
             INSERT INTO process_instances
                 (id, definition_name, definition_version, status, input, local_state,
                  parent_process_id, priority, pending_event_id, work_key,
-                 work_requirement_id, retry_count, max_retries,
+                 work_requirement_id, trigger_event_id, plan_id, plan_node_id,
+                 retry_count, max_retries,
                  next_retry_at, last_error, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 input = excluded.input,
@@ -111,6 +119,9 @@ class ProcessStore:
                 str(instance.pending_event_id) if instance.pending_event_id else None,
                 instance.work_key,
                 str(instance.work_requirement_id) if instance.work_requirement_id else None,
+                str(instance.trigger_event_id) if instance.trigger_event_id else None,
+                str(instance.plan_id) if instance.plan_id else None,
+                str(instance.plan_node_id) if instance.plan_node_id else None,
                 instance.retry_count,
                 instance.max_retries,
                 instance.next_retry_at.isoformat() if instance.next_retry_at else None,
@@ -172,6 +183,21 @@ class ProcessStore:
         )
         return [self._row_to_instance(r) for r in rows]
 
+    def find_by_trigger(
+        self, event_id: uuid.UUID, name: str, version: str
+    ) -> list[ProcessInstance]:
+        """Return instances of ``name``/``version`` already started by ``event_id``.
+
+        The routing idempotency key (Phase 3F): a re-dispatched event must not
+        start a process it already started.
+        """
+        rows = self.db.query(
+            "SELECT * FROM process_instances WHERE trigger_event_id = ? "
+            "AND definition_name = ? AND definition_version = ?",
+            (str(event_id), name, version),
+        )
+        return [self._row_to_instance(r) for r in rows]
+
     def children_of(self, parent_id: uuid.UUID) -> list[ProcessInstance]:
         """Return the child instances of ``parent_id``, oldest first."""
         rows = self.db.query(
@@ -223,6 +249,9 @@ class ProcessStore:
             pending_event_id=_uuid(row["pending_event_id"]),
             work_key=row["work_key"],
             work_requirement_id=_uuid(row["work_requirement_id"]),
+            trigger_event_id=_uuid(row["trigger_event_id"]),
+            plan_id=_uuid(row["plan_id"]),
+            plan_node_id=_uuid(row["plan_node_id"]),
             retry_count=row["retry_count"],
             max_retries=row["max_retries"],
             next_retry_at=_dt(row["next_retry_at"]),

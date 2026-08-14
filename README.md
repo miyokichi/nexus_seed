@@ -26,6 +26,12 @@ boundaries where NEXUS SEED perceives and acts on the real world:
 | **3B** | LLM intelligence boundary (Proposal → validation → policy) |
 | **3C** | Action / tool execution boundary (acting on the world) |
 | **3D** | External observation / ingress boundary (taking the world in) |
+| **3E** | Artifact / resource layer + long-lived observer process |
+| **3F** | Durable event delivery (no persisted event is ever forgotten) |
+| **4A** | Capability registry — work finds a process by competence, not by name |
+| **4B** | Dynamic composition — several processes arranged into a durable plan |
+| **4B.1** | Composition hardening — explicit data binding, branching DAGs, bounded drain |
+| **4C** | Plan decision layer — evaluation, deterministic/LLM-assisted selection, human review and bounded replanning |
 
 ## Design principles
 
@@ -417,6 +423,340 @@ must agree without being merged into one general mechanism:
 1 real external event → 1 Event → 1 WorkRequirement → 1 Action → 1 side effect
 ```
 
+## Artifact / resource layer + long-lived observer (Phase 3E)
+
+Phase 3D could say *that* a file changed. Phase 3E can say what it is, keep its
+history, and hand a process a usable rendering of it — and it answers 3D's open
+question about who does the watching.
+
+```
+External file → Ingress → file event → Resource + ResourceVersion
+    → Representation → Context Compiler → Process → ActionProposal → world
+```
+
+```mermaid
+flowchart LR
+    FE["file_created / file_modified"] --> RI["resource_indexer"]
+    RI --> RES["Resource (uri)"]
+    RI --> RV["ResourceVersion (hash, v1..vN)"]
+    RV --> EX["extract_resource"]
+    EX --> REP["Representation (text / structure)"]
+    REP --> CC["Context Compiler"]
+    CC --> P["Process (ctx.view.resources)"]
+    REP --> IR["interpret_resource"]
+    IR --> OBS["Observation + StateDelta"]
+    OBS --> WS["World State"]
+```
+
+- **Three levels, kept apart.** `Resource` is what a thing *is* (unique by URI);
+  `ResourceVersion` is what it *contained* at a time (immutable, numbered,
+  content-hashed); `ResourceRepresentation` is what we *made* of that content.
+  Collapsing any two breaks something real: a content-keyed Resource has no
+  history, and a Representation attached to the Resource could never answer
+  "what did the AI actually read?" once the file changed.
+- **Extraction is a Process, not an engine feature** (Invariant 38). Extractors
+  are pure functions in a deterministic registry (`PlainText`, `JSON`, `CSV`);
+  adding Office or PDF support later is a registration, not a Runtime change.
+  Adapters still never interpret content — that rule from 3D holds.
+- **Two dedup rules.** A version is not created when the content hash matches
+  one this Resource already has, so a watcher re-reading an unchanged file adds
+  nothing. A Representation's identity includes the extractor's *version*, so
+  improving an extractor produces a new rendering beside the old one rather
+  than silently rewriting what a past decision was based on.
+- **Documents reach a Process through the Context**, declared in
+  `ContextRequirements.resources`. Selection is deterministic — explicit ids or
+  URIs, process input, work metadata. **No embeddings, no similarity ranking**:
+  the compiler must be reproducible for the snapshot audit to mean anything.
+  `max_bytes` truncates or excludes; it never summarises.
+- **Fresh resume extends to documents** (Invariant 40). A process suspended
+  holding v1 of a spec resumes reading v2. The ContextSnapshot pulls the other
+  way on purpose, recording the version and rendering each activation read, so
+  the historical answer survives the file moving on (Invariant 39).
+- **A resident observer is just a Process** (Invariant 41). `watch_files` polls
+  an adapter, ingests, and suspends on a timer; between ticks it is a row in
+  SQLite and a Continuation. It inherits crash recovery and restart safety for
+  free, a restart resumes the same instance rather than starting a second, and
+  `watch_mail` / `watch_git` would be the identical shape. No daemon
+  abstraction was added.
+- **One path boundary.** `ResourceScope` replaces the `allowed_root` checks that
+  Phase 3C and 3D had each grown separately, with read and write as distinct
+  powers. Paths only — not a sandbox.
+
+## Durable event delivery (Phase 3F)
+
+Storing an event is not enough. An event-driven system is only honest if every
+persisted event is *guaranteed* to reach the router — otherwise a crash at the
+wrong moment leaves a fact in the database that nothing will ever act on.
+
+Phase 3E had exactly that hole: the ingress boundary committed an event with
+its receipt, and the observer that was going to route it could fail afterwards.
+The source key was spent, so no re-poll would bring it back.
+
+```mermaid
+flowchart LR
+    P["Event persisted"] --> D["EventDelivery (PENDING)"]
+    D --> C{"dispatch"}
+    C --> M["mark DELIVERING<br/>(own commit)"]
+    M --> T["route + mark DELIVERED<br/>(one transaction)"]
+    C -->|router failed| R["RETRY_WAIT<br/>+ backoff"]
+    R --> C
+    M -->|crash| REC["startup recovery<br/>→ PENDING"]
+    REC --> C
+```
+
+- **Persistence and delivery are separate facts** (Invariant 42). `EventDelivery`
+  is one row per event, created by `EventStore.append` **in the same
+  transaction as the event itself** — so no call site can persist an event and
+  forget to promise that something will look at it (Invariant 43).
+- **"Delivered" means the routing result committed**, not that `route()` was
+  called. The acknowledgement rides in the same transaction as the activations
+  it produced, so "processes created but event unacknowledged" is a state that
+  cannot exist. A `trigger_event_id` guard backs it up independently.
+- **Interrupted work is visible.** `DELIVERING` is committed on its own before
+  routing, so a crash mid-route leaves a signature that startup recovery
+  returns to `PENDING`. Same argument as Phase 2A's `RUNNING` sweep.
+- **One stuck event does not stall the queue.** A delivery inside its backoff
+  is skipped, not waited on; later events keep flowing.
+- **At-least-once delivery, once-only outcomes.** Retry safety still comes from
+  the per-layer idempotency each phase added — they stay separate rather than
+  being merged into one engine.
+- **`events_to_route` is gone.** An observer ingests and stops; the obligation
+  carries the event onward whether that activation commits or not
+  (Invariant 47). `deliver_event()` survives as an optimization only.
+- **Legacy databases are backfilled as `DELIVERED`, never `PENDING`** — marking
+  old events pending would replay a live system's entire history.
+
+The result, stated precisely: *an event persisted since Phase 3F is delivered to
+the router eventually, unless it is explicitly settled as FAILED.*
+
+## Capability registry (Phase 4A)
+
+Until now, work found its implementation by name: a `work_type` was looked up in
+a hard-coded table. That works exactly as long as somebody wrote the table down
+in advance. Phase 4A replaces the lookup with a question.
+
+```
+WorkRequirement → required capabilities → CapabilityRegistry
+    → candidate ProcessDefinitions → deterministic matching
+    → one capable process, or a recorded gap
+```
+
+```mermaid
+flowchart LR
+    W["WorkRequirement<br/>required: analyze_resistance"] --> M["CapabilityMatcher"]
+    R["CapabilityRegistry<br/>(what we can do)"] --> M
+    M -->|one process covers it| S["spawn"]
+    M -->|nothing provides it| MISS["BLOCKED_CAPABILITY<br/>+ capability_missing"]
+    M -->|provided, but not by one process| COMP["BLOCKED_CAPABILITY<br/>COMPOSITION_REQUIRED"]
+    NEW["capability_available"] --> REC["reconcile_blocked_work"]
+    REC --> M
+```
+
+- **Two things called "capability" stay apart.** Phase 3C's
+  `BackendCapabilities` is what a *tool* can mechanically do (`write_file`);
+  a `Capability` here is what a *Process* can accomplish
+  (`analyze_resistance`). A tool is not a competence.
+- **A gap does not cancel the need.** When nothing can do the work, it becomes
+  `BLOCKED_CAPABILITY` with the missing capabilities recorded — never
+  `CANCELLED`. Cancelling would discard a real requirement because of a
+  temporary limitation of *ours*, and acquiring the competence later could
+  never bring it back. This is the record self-extension would later read.
+- **Three outcomes, deliberately distinct.** Matched; *nothing provides this*;
+  or *everything is provided but no single process covers it all*. The last is
+  recorded, not solved — combining processes is Phase 4B, and quietly doing it
+  here would smuggle in a planner.
+- **Matching is exact and reproducible.** No LLM, no embeddings, no similarity
+  ranking. Ties break on an explicit `capability_priority`, then the newer
+  definition version, then the name — the same answer on every machine and
+  after every restart. Descriptions and tags are stored but never matched on.
+- **Acquiring a capability reconciles; it does not replay.** Registering a
+  capable process appends `capability_available`, and the blocked *existing*
+  requirements are re-offered to the matcher — same ids, same provenance, no
+  raw event re-delivered.
+- **Every decision is auditable.** Each attempt records the candidates weighed,
+  what each was missing, what was chosen and why. Attempts accumulate, so a
+  requirement blocked on Monday and matched on Tuesday shows both.
+- **The old path still works.** Work that declares no capabilities falls back
+  to the name table, so the existing D1_CD scenario reaches the same process —
+  what changed is the selection principle, not the outcome.
+
+Conceptually this is the other half of World State: world state is what NEXUS
+SEED knows about the *outside*; the capability registry is what it knows about
+*itself*. No `SelfModel` primitive was added to say so.
+
+## Dynamic process composition (Phase 4B)
+
+Phase 4A could find *one* process that does the whole job, and record a gap
+when none existed. One of those gaps was interesting: `COMPOSITION_REQUIRED` —
+every competence the work needs exists, just scattered across several
+processes. Phase 4B works out an order in which they add up.
+
+```mermaid
+flowchart LR
+    W["WorkRequirement<br/>COMPOSITION_REQUIRED"] --> P["CompositionPlanner"]
+    P --> C["PlanCandidate(s)"]
+    C --> V["PlanValidator"]
+    V -->|invalid| X["no plan — need still held"]
+    V --> PL["ProcessPlan (durable DAG)"]
+    PL --> E["execute_process_plan"]
+    E -->|spawn + join| N1["P1"] --> N2["P2"] --> N3["P3"]
+    N3 --> S["satisfaction check"]
+```
+
+- **A PlanNode is a position, not an execution.** It names a
+  ProcessDefinition; a `ProcessInstance` is still the only thing that runs, and
+  execution reuses the existing spawn / join / continuation machinery. Atomic
+  transitions, crash recovery and activation idempotency therefore apply to a
+  composed plan without any of them learning what a plan is.
+- **Deterministic, bounded, and exact.** Backward chaining from the required
+  capabilities and output types; connection decided by *symbolic type equality*
+  and nothing cleverer. Explicit limits on nodes, depth and candidates mean the
+  search always terminates with an answer rather than hanging. **No LLM** takes
+  part — before the system can reason about which arrangement is best, it needs
+  a reproducible answer to whether one exists.
+- **Plans are DAGs, and nothing runs one the planner merely proposed.**
+  Cycles are rejected (a loop belongs inside a process). Validation happens at
+  composition *and* again before each stage spawns, because a definition can be
+  disabled in between.
+- **A completed node is never re-run.** `(plan_id, node_key)` is unique and the
+  spawn binds the node to its instance in the same transaction, so a crash
+  after the first step resumes at the second — not at the beginning. Node side
+  effects make this the difference between recovery and a new bug.
+- **Failure does not undo, and does not cancel the need.** A failed node fails
+  the plan; earlier results stand, no compensation is invented, and the
+  requirement stays open.
+- **All nodes complete is not the same as the work being done.** Satisfaction
+  is judged separately: capability coverage *and* the required output types
+  actually produced. A plan whose processes all ran but produced nothing
+  required is COMPLETED and **not** SATISFIED.
+
+Phase 4B also restructured `ProcessResult`, which had grown to some twenty
+effect lists. The lists stay (every handler keeps working); `result.effects`
+and `result.lifecycle` are grouping views over them, and — more importantly —
+**contradictory staged effects now fail the activation** instead of being
+resolved by list order. That closes a real Phase 4A bug where recording a
+capability selection silently overwrote a work status set moments earlier in
+the same handler.
+
+## Composition hardening (Phase 4B.1)
+
+Phase 4B could arrange several processes into a plan. It could not always
+explain the plan it had arranged. Three things had to be true before Phase 4C
+puts any judgement on top of composition, and this phase is entirely about
+making them true — no new capability, no LLM, no replanning.
+
+### An edge is the data flow, not just an ordering
+
+Phase 4B's edge recorded *that* one node fed another and left the executor to
+find a value by type at run time. With two producers of the same type the
+consumer got whichever the executor happened to visit first: the plan could not
+say where a value came from, and two runs of the same plan could differ.
+
+An edge now names both ends — the producing port and the consuming port — and
+the executor follows edges rather than searching by type. A **port** is written
+`type` or `type:key`, so a process consuming two measurements can say which is
+which:
+
+```
+measurement            any measurement
+measurement:measured   the one called "measured"
+```
+
+Nothing is decided at execution time that was not decided at planning time. A
+keyless port stays a wildcard on the *producing* side; on the consuming side
+the declaration must match exactly, because a port's name is the key the value
+arrives under.
+
+### Ambiguity is refused, never resolved
+
+If two nodes could feed one input and nothing says which, the planner leaves it
+unbound and the validator fails the plan naming the input and both candidates.
+Picking one would still *run* — which is what makes it dangerous. `BindingStatus`
+separates the diagnoses that matter: `AMBIGUOUS_BINDING` (too many producers),
+`MISSING_INPUT` (none), `DUPLICATE_BINDING`, `TYPE_MISMATCH`, `INVALID_PORT`.
+
+One producer per consumer input is enforced by a UNIQUE index, not only by the
+validator — and `save_edge` no longer swallows a conflicting insert. That
+combination found a real Phase 4B bug: when one node fed two keyed inputs of
+another, the second edge was silently dropped, the consumer ran with an input
+missing, and the plan still reported success. The `plan_edges` table is rebuilt
+on open to widen the constraint that caused it.
+
+### Branching is tested, not assumed
+
+Phase 4B implemented parallel spawn and multi-input join and then only ever ran
+a straight line. `P1 → {P2, P3} → P4` is now an acceptance case: it fans out,
+both branches run in one stage, the join waits for the slower one, and a
+restart with one branch finished and the other interrupted mid-activation
+re-attaches instead of spawning a second.
+
+### A runtime call does a slice of work, not all of it
+
+A drain used to run until the world stood still. Fine for short chains; not
+fine for a long plan, and not fine at all for a process that can cause its own
+next event — that was a hang no care elsewhere could recover from.
+
+```python
+from nexus_seed.runtime.drain import DrainBudget
+
+await runtime.submit_event(event, DrainBudget(max_activations=10))
+while runtime.last_drain.has_remaining:
+    await runtime.drain(DrainBudget(max_activations=10))
+```
+
+**Reaching a budget is not a failure.** Nothing is marked FAILED, no event is
+dropped, no plan is abandoned — everything is already durable, so the next call
+continues. The dispatch and execute halves alternate, so a long delivery queue
+cannot starve execution. The budget is a parameter of a call, never stored
+state: a restarted runtime is told nothing about how the last one was paced,
+and the outcome does not depend on where the slices fell.
+
+The default is unlimited, so every pre-4B.1 caller behaves exactly as before.
+
+### Where did this value come from?
+
+`PlanTrace.bindings` answers that per port rather than per node, and
+`inputs_given` reads back what each position was actually handed:
+
+```python
+trace = runtime.get_plan_trace(plan_id)
+[b.describe() for b in trace.bindings_into("compare:v1")]
+# ['measure:v1.reading:measured -> compare:v1.reading:measured',
+#  'lookup_reference:v1.reading:reference -> compare:v1.reading:reference']
+```
+
+Old plans, written before bindings existed, are honoured where their meaning is
+beyond doubt and BLOCKED where it is not. Guessing would reproduce exactly the
+ambiguity the phase removed.
+
+## Plan selection and replanning (Phase 4C)
+
+Composition stays deterministic: it generates and validates a bounded set of
+candidate DAGs. Phase 4C adds judgement only after that boundary:
+
+```text
+WorkRequirement
+  -> validated candidate plans
+  -> deterministic evaluations and hard constraints
+  -> deterministic selection, or an optional LLM SelectionProposal
+  -> validation / confidence policy / ordinary human-review Continuation
+  -> one selected plan
+  -> success, or terminal failure -> durable replan_required -> a new plan
+```
+
+The LLM never returns a graph and cannot name a plan outside its shortlist.
+Unknown or drifted plans execute nothing, while backend/schema failures exhaust
+the normal retry budget and then fall back to the deterministic selector.
+Selections, proposals, invocation attempts, evaluations and replan attempts are
+persisted for audit. A failed plan stays immutable; its WorkRequirement remains
+open and is reconsidered against the current Capability Registry and freshly
+compiled related World State. `max_replans` bounds the loop, ending in
+`BLOCKED_PLAN` rather than cancellation.
+
+Plan-level approval is intentionally separate from Action approval. A selected
+plan that proposes a high-risk external action still stops at the Phase 3C
+permission/risk boundary.
+
 ## Repository layout
 
 ```
@@ -435,15 +775,20 @@ nexus_seed/
 ├── ingress/         # ingress domain data: models, validation, service, trace
 │                    #   (the inward boundary)
 ├── adapters/        # external adapters: manual, webhook, local file watcher
+├── resources/       # artifact layer: models, scope, service, extractors, trace
+├── delivery/        # durable event delivery: models + dispatcher
+├── capabilities/    # what the system can do: models, registry, matcher, trace
+├── planning/        # composition: models (incl. Port), planner, validation, trace
 ├── runtime/         # runtime, router, scheduler, executor, continuation_resolver,
-│                    #   clock, join_coordinator, services
+│                    #   clock, join_coordinator, drain, services
 ├── storage/         # sqlite: database + event/process/state/continuation/timer/
 │                    #   join/activation/observation/state_delta/work_requirement/
 │                    #   context_snapshot/proposal/llm_invocation/
 │                    #   action_proposal/action_execution/action_decision/
-│                    #   ingress_receipt/adapter_checkpoint
+│                    #   ingress_receipt/adapter_checkpoint/resource/
+│                    #   event_delivery/capability/plan
 ├── processes/       # concrete Processes (demo_resistance, semantic,
-│                    #   work_intelligence, llm_interpret, actions)
+│                    #   work_intelligence, llm_interpret, actions, resources)
 ├── ingress_cli.py   # submit one external occurrence by hand
 └── demo.py          # runnable acceptance scenario (with runtime restart)
 tests/               # phase 1: event_store, process_execution, suspend_resume
@@ -483,6 +828,41 @@ tests/               # phase 1: event_store, process_execution, suspend_resume
                      #           ingress_trace, ingress_llm_integration,
                      #           ingress_closed_loop,
                      #           ingress_duplicate_closed_loop
+                     # phase 3e: resource_models, resource_indexer,
+                     #           resource_versioning, resource_restart,
+                     #           resource_representation, representation_dedup,
+                     #           representation_trace, resource_scope,
+                     #           context_resources,
+                     #           context_resource_fresh_resume,
+                     #           context_resource_snapshot,
+                     #           resource_interpretation, watch_files,
+                     #           watch_files_restart, watch_files_duplicate,
+                     #           resource_action_integration,
+                     #           resource_semantic_loop
+                     # phase 3f: event_delivery_models, _store, _dispatcher,
+                     #           _retry, _restart, _starvation, _router_crash,
+                     #           _ingress_gap, _process_event, _action_event,
+                     #           _review_event, _timer, _resource_event,
+                     #           _closed_loop, _migration, _trace
+                     # phase 4a: capability_models, _store, _registry,
+                     #           _matcher, _multiple_candidates, _disabled,
+                     #           process_capabilities,
+                     #           work_capability_missing, _reconciliation,
+                     #           _restart, _audit, _trace,
+                     #           capability_legacy_compat, _work_integration,
+                     #           _closed_loop, _durable_delivery
+                     # phase 4b: effect_conflicts, composition_planner,
+                     #           plan_validation, plan_restart, plan_trace,
+                     #           composed_work_integration,
+                     #           composed_closed_loop
+                     # phase 4b.1: plan_bindings, plan_binding_validation,
+                     #           plan_binding_trace, plan_binding_migration,
+                     #           plan_branching, plan_branching_restart,
+                     #           plan_parallel_binding, bounded_drain,
+                     #           bounded_drain_delivery, bounded_drain_plan,
+                     #           bounded_drain_loop_protection,
+                     #           composition_hardening_integration,
+                     #           composition_hardening_restart
 ```
 
 ## Install
@@ -552,7 +932,9 @@ graph databases, embeddings, GUI, knowledge graph, multi-agent orchestration,
 self-modification. Only the boundaries where those will later attach are in
 place.
 
-Later phases filled in three of those boundaries — the LLM boundary (3B), the
-action boundary (3C) and the observation boundary (3D). The Artifact / Resource
-layer, dynamic organization and self extension remain unbuilt. See `AGENTS.md`
-for the working agreement and the current later-phase candidates.
+Later phases filled in five of those boundaries — the LLM boundary (3B), the
+action boundary (3C), the observation boundary (3D), the artifact / resource
+layer (3E), the capability registry (4A) and process composition (4B). Office /
+PDF extraction, LLM-assisted planning, replanning, delegation, dynamic
+organization and self extension remain unbuilt. See `AGENTS.md` for the working
+agreement and the current later-phase candidates.

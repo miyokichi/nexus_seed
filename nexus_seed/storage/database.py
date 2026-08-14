@@ -34,6 +34,20 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_correlation ON events(correlation_id);
 
+CREATE TABLE IF NOT EXISTS event_deliveries (
+    id              TEXT PRIMARY KEY,
+    event_id        TEXT NOT NULL UNIQUE,
+    status          TEXT NOT NULL,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    delivered_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_dispatch
+    ON event_deliveries(status, next_attempt_at);
+
 CREATE TABLE IF NOT EXISTS process_definitions (
     name                TEXT NOT NULL,
     version             TEXT NOT NULL,
@@ -57,6 +71,9 @@ CREATE TABLE IF NOT EXISTS process_instances (
     pending_event_id   TEXT,
     work_key           TEXT,
     work_requirement_id TEXT,
+    trigger_event_id   TEXT,
+    plan_id            TEXT,
+    plan_node_id       TEXT,
     retry_count        INTEGER NOT NULL DEFAULT 0,
     max_retries        INTEGER NOT NULL DEFAULT 0,
     next_retry_at      TEXT,
@@ -180,6 +197,18 @@ CREATE TABLE IF NOT EXISTS work_requirements (
     priority              INTEGER NOT NULL DEFAULT 0,
     status                TEXT NOT NULL,
     metadata              TEXT NOT NULL DEFAULT '{}',
+    required_capabilities_json  TEXT,
+    missing_capabilities_json   TEXT,
+    selected_definition_name    TEXT,
+    selected_definition_version TEXT,
+    available_input_types_json  TEXT,
+    required_output_types_json  TEXT,
+    selected_plan_id            TEXT,
+    -- Phase 4C: what this need is optimising for, and how many times it may
+    -- be replanned before the system stops trying (never CANCELs it).
+    decision_preference_json    TEXT,
+    max_replans                 INTEGER,
+    replan_count                INTEGER NOT NULL DEFAULT 0,
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL
 );
@@ -302,6 +331,241 @@ CREATE TABLE IF NOT EXISTS ingress_receipts (
 CREATE INDEX IF NOT EXISTS idx_ingress_event ON ingress_receipts(event_id);
 CREATE INDEX IF NOT EXISTS idx_ingress_adapter ON ingress_receipts(adapter_id, status);
 
+CREATE TABLE IF NOT EXISTS capabilities (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    version          TEXT NOT NULL,
+    description      TEXT,
+    input_types_json TEXT NOT NULL DEFAULT '[]',
+    output_types_json TEXT NOT NULL DEFAULT '[]',
+    tags_json        TEXT NOT NULL DEFAULT '[]',
+    metadata_json    TEXT NOT NULL DEFAULT '{}',
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE (name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_capability_name ON capabilities(name, enabled);
+
+CREATE TABLE IF NOT EXISTS process_capabilities (
+    id                 TEXT PRIMARY KEY,
+    definition_name    TEXT NOT NULL,
+    definition_version TEXT NOT NULL,
+    capability_id      TEXT NOT NULL,
+    metadata_json      TEXT NOT NULL DEFAULT '{}',
+    created_at         TEXT NOT NULL,
+    UNIQUE (definition_name, definition_version, capability_id)
+);
+CREATE INDEX IF NOT EXISTS idx_proccap_capability ON process_capabilities(capability_id);
+
+CREATE TABLE IF NOT EXISTS capability_work_matches (
+    id                         TEXT PRIMARY KEY,
+    work_requirement_id        TEXT NOT NULL,
+    status                     TEXT NOT NULL,
+    required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    candidates_json            TEXT NOT NULL DEFAULT '[]',
+    missing_capabilities_json  TEXT NOT NULL DEFAULT '[]',
+    selected_definition_name   TEXT,
+    selected_definition_version TEXT,
+    reasons_json               TEXT NOT NULL DEFAULT '[]',
+    created_at                 TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capmatch_work ON capability_work_matches(work_requirement_id);
+
+CREATE TABLE IF NOT EXISTS process_plans (
+    id                        TEXT PRIMARY KEY,
+    work_requirement_id       TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    planner_name              TEXT NOT NULL DEFAULT 'composition',
+    planner_version           TEXT NOT NULL DEFAULT '1',
+    required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    input_types_json          TEXT NOT NULL DEFAULT '[]',
+    required_output_types_json TEXT NOT NULL DEFAULT '[]',
+    planning_snapshot_json    TEXT NOT NULL DEFAULT '{}',
+    reasons_json              TEXT NOT NULL DEFAULT '[]',
+    created_by_process_id     TEXT,
+    -- Phase 4C: the identity of this plan's *shape*, so candidates can be
+    -- compared and a failed shape excluded from a later attempt.
+    fingerprint               TEXT,
+    replan_attempt            INTEGER NOT NULL DEFAULT 0,
+    supersedes_plan_id        TEXT,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL,
+    completed_at              TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plan_work ON process_plans(work_requirement_id, status);
+CREATE INDEX IF NOT EXISTS idx_plan_fingerprint
+    ON process_plans(work_requirement_id, fingerprint);
+
+CREATE TABLE IF NOT EXISTS plan_nodes (
+    id                  TEXT PRIMARY KEY,
+    plan_id             TEXT NOT NULL,
+    node_key            TEXT NOT NULL,
+    definition_name     TEXT NOT NULL,
+    definition_version  TEXT NOT NULL,
+    provided_capabilities_json TEXT NOT NULL DEFAULT '[]',
+    input_types_json    TEXT NOT NULL DEFAULT '[]',
+    output_types_json   TEXT NOT NULL DEFAULT '[]',
+    status              TEXT NOT NULL,
+    process_instance_id TEXT,
+    depth               INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    -- One logical position per plan: what makes node execution idempotent.
+    UNIQUE (plan_id, node_key)
+);
+CREATE INDEX IF NOT EXISTS idx_plannode_plan ON plan_nodes(plan_id, status);
+
+CREATE TABLE IF NOT EXISTS plan_edges (
+    id            TEXT PRIMARY KEY,
+    plan_id       TEXT NOT NULL,
+    from_node_id  TEXT NOT NULL,
+    to_node_id    TEXT NOT NULL,
+    artifact_type TEXT,
+    output_type   TEXT,
+    input_type    TEXT,
+    output_key    TEXT,
+    input_key     TEXT,
+    created_at    TEXT NOT NULL
+);
+-- One producer per consumer input (Invariant 67).  A partial index because
+-- SQLite treats NULLs as distinct, which would let legacy edges collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_planedge_one_producer_per_input
+    ON plan_edges(plan_id, to_node_id, input_type, IFNULL(input_key, ''))
+    WHERE input_type IS NOT NULL;
+-- The Phase 4B rule, kept only for edges that carry no binding: one dependency
+-- of a given type between two nodes.  It cannot apply to bound edges, because
+-- one node legitimately feeds two keyed inputs of another (spec §14).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_planedge_legacy_dependency
+    ON plan_edges(plan_id, from_node_id, to_node_id, artifact_type)
+    WHERE input_type IS NULL;
+CREATE INDEX IF NOT EXISTS idx_planedge_plan ON plan_edges(plan_id);
+
+-- Phase 4C: what each candidate plan is estimated to cost, take, risk and
+-- yield.  Append-only (Invariant 78) — a decision history that can be
+-- overwritten explains nothing afterwards.
+CREATE TABLE IF NOT EXISTS plan_evaluations (
+    id                      TEXT PRIMARY KEY,
+    plan_id                 TEXT NOT NULL,
+    work_requirement_id     TEXT,
+    fingerprint             TEXT,
+    estimated_cost          REAL,
+    estimated_latency       REAL,
+    estimated_risk          REAL,
+    estimated_quality       REAL,
+    estimated_reliability   REAL,
+    node_count              INTEGER NOT NULL DEFAULT 0,
+    depth                   INTEGER NOT NULL DEFAULT 0,
+    human_approval_required INTEGER NOT NULL DEFAULT 0,
+    reasons_json            TEXT NOT NULL DEFAULT '[]',
+    metadata_json           TEXT NOT NULL DEFAULT '{}',
+    created_at              TEXT NOT NULL,
+    -- One evaluation per plan: the same plan evaluated twice by the same
+    -- deterministic rules is the same evaluation (spec §103).
+    UNIQUE (plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_planeval_work
+    ON plan_evaluations(work_requirement_id, created_at);
+
+-- An LLM's suggestion about which candidate to run.  Never the decision.
+CREATE TABLE IF NOT EXISTS plan_selection_proposals (
+    id                      TEXT PRIMARY KEY,
+    work_requirement_id     TEXT NOT NULL,
+    candidate_plan_ids_json TEXT NOT NULL DEFAULT '[]',
+    selected_plan_id        TEXT,
+    confidence              REAL NOT NULL DEFAULT 0,
+    rationale               TEXT,
+    status                  TEXT NOT NULL,
+    reasons_json            TEXT NOT NULL DEFAULT '[]',
+    context_snapshot_id     TEXT,
+    llm_invocation_id       TEXT,
+    created_by_process_id   TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_selproposal_work
+    ON plan_selection_proposals(work_requirement_id, created_at);
+
+-- What the system actually committed to, and how it got there.
+CREATE TABLE IF NOT EXISTS plan_selections (
+    id                     TEXT PRIMARY KEY,
+    work_requirement_id    TEXT NOT NULL,
+    selected_plan_id       TEXT,
+    selection_method       TEXT NOT NULL,
+    deterministic_score    REAL,
+    selection_proposal_id  TEXT,
+    replan_attempt         INTEGER NOT NULL DEFAULT 0,
+    considered_plan_ids_json TEXT NOT NULL DEFAULT '[]',
+    rejected_plan_ids_json TEXT NOT NULL DEFAULT '[]',
+    decision_reasons_json  TEXT NOT NULL DEFAULT '[]',
+    created_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_planselection_work
+    ON plan_selections(work_requirement_id, created_at);
+
+-- One attempt to find another way after a plan failed terminally.  The UNIQUE
+-- key is the logical identity of an attempt (spec §93), which is what makes a
+-- redelivered replan_required find the attempt already made instead of making
+-- a second one.
+CREATE TABLE IF NOT EXISTS replan_attempts (
+    id                        TEXT PRIMARY KEY,
+    work_requirement_id       TEXT NOT NULL,
+    previous_plan_id          TEXT,
+    attempt_number            INTEGER NOT NULL DEFAULT 1,
+    excluded_fingerprints_json TEXT NOT NULL DEFAULT '[]',
+    excluded_definitions_json TEXT NOT NULL DEFAULT '[]',
+    candidate_plan_ids_json   TEXT NOT NULL DEFAULT '[]',
+    selected_plan_id          TEXT,
+    failure_reason            TEXT,
+    reasons_json              TEXT NOT NULL DEFAULT '[]',
+    created_at                TEXT NOT NULL,
+    UNIQUE (work_requirement_id, previous_plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_replan_work
+    ON replan_attempts(work_requirement_id, created_at);
+
+CREATE TABLE IF NOT EXISTS resources (
+    id                 TEXT PRIMARY KEY,
+    uri                TEXT NOT NULL UNIQUE,
+    resource_type      TEXT NOT NULL DEFAULT 'unknown',
+    source_adapter_id  TEXT,
+    source_identity    TEXT,
+    current_version_id TEXT,
+    metadata_json      TEXT NOT NULL DEFAULT '{}',
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS resource_versions (
+    id                 TEXT PRIMARY KEY,
+    resource_id        TEXT NOT NULL,
+    version            INTEGER NOT NULL,
+    content_hash       TEXT,
+    size_bytes         INTEGER,
+    source_event_id    TEXT,
+    ingress_receipt_id TEXT,
+    locator            TEXT NOT NULL DEFAULT '',
+    metadata_json      TEXT NOT NULL DEFAULT '{}',
+    created_at         TEXT NOT NULL,
+    UNIQUE (resource_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_rversion_resource ON resource_versions(resource_id, version);
+CREATE INDEX IF NOT EXISTS idx_rversion_hash ON resource_versions(resource_id, content_hash);
+
+CREATE TABLE IF NOT EXISTS resource_representations (
+    id                   TEXT PRIMARY KEY,
+    resource_version_id  TEXT NOT NULL,
+    representation_type  TEXT NOT NULL,
+    content_json         TEXT,
+    metadata_json        TEXT NOT NULL DEFAULT '{}',
+    created_by_process_id TEXT,
+    extractor_name       TEXT NOT NULL DEFAULT '',
+    extractor_version    TEXT NOT NULL DEFAULT '1',
+    created_at           TEXT NOT NULL,
+    UNIQUE (resource_version_id, representation_type, extractor_name, extractor_version)
+);
+CREATE INDEX IF NOT EXISTS idx_repr_version ON resource_representations(resource_version_id);
+
 CREATE TABLE IF NOT EXISTS adapter_checkpoints (
     adapter_id    TEXT NOT NULL,
     stream_key    TEXT NOT NULL,
@@ -317,6 +581,39 @@ CREATE TABLE IF NOT EXISTS adapter_checkpoints (
 #: by an earlier phase needs these added explicitly.  ``(table, column, ddl)``.
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("events", "ingress_receipt_id", "TEXT"),
+    # Phase 3F: which event triggered this instance, so re-dispatching an event
+    # cannot start the same process twice.
+    ("process_instances", "trigger_event_id", "TEXT"),
+    # Phase 4A: what a unit of work needs, what it turned out to be missing,
+    # and which definition was chosen for it.
+    ("work_requirements", "required_capabilities_json", "TEXT"),
+    ("work_requirements", "missing_capabilities_json", "TEXT"),
+    ("work_requirements", "selected_definition_name", "TEXT"),
+    ("work_requirements", "selected_definition_version", "TEXT"),
+    # Phase 4B: what a composed plan may start from and must produce, and
+    # which plan is currently pursuing this need.
+    ("work_requirements", "available_input_types_json", "TEXT"),
+    ("work_requirements", "required_output_types_json", "TEXT"),
+    ("work_requirements", "selected_plan_id", "TEXT"),
+    ("process_instances", "plan_id", "TEXT"),
+    ("process_instances", "plan_node_id", "TEXT"),
+    # Phase 4B.1: an edge now names the ports it connects, so data flow is
+    # decided at planning time rather than by iteration order at run time.
+    # Nullable: a Phase 4B edge has none, and is treated as legacy.
+    ("plan_edges", "output_type", "TEXT"),
+    ("plan_edges", "input_type", "TEXT"),
+    ("plan_edges", "output_key", "TEXT"),
+    ("plan_edges", "input_key", "TEXT"),
+    # Phase 4C: a plan is now one candidate among several, so it carries the
+    # identity of its own shape and its place in the replanning history.
+    ("process_plans", "fingerprint", "TEXT"),
+    ("process_plans", "replan_attempt", "INTEGER NOT NULL DEFAULT 0"),
+    ("process_plans", "supersedes_plan_id", "TEXT"),
+    # What this work is optimising for, how many times it may be replanned,
+    # and how many times it has been.
+    ("work_requirements", "decision_preference_json", "TEXT"),
+    ("work_requirements", "max_replans", "INTEGER"),
+    ("work_requirements", "replan_count", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -352,9 +649,84 @@ class Database:
 
     def init_schema(self) -> None:
         """Create all tables if they do not already exist, then widen old ones."""
+        retired = self._retire_legacy_plan_edges()
         self.conn.executescript(SCHEMA)
         self._add_missing_columns()
+        if retired:
+            self._restore_plan_edges(retired)
         self.conn.commit()
+
+    # --- plan_edges: a constraint that had to change ------------------------
+
+    #: The Phase 4B uniqueness rule, as a column tuple.
+    _LEGACY_EDGE_UNIQUE = ["plan_id", "from_node_id", "to_node_id", "artifact_type"]
+
+    def _retire_legacy_plan_edges(self) -> list[str] | None:
+        """Move a Phase 4B ``plan_edges`` aside so the schema can rebuild it.
+
+        Phase 4B allowed one edge per ``(plan, producer, consumer, type)``.
+        That is wrong once an edge names ports: a node that produces
+        ``m:left`` and ``m:right`` legitimately feeds both inputs of one
+        consumer, and under the old rule the second edge was silently dropped
+        — the consumer then ran with an input missing and the plan still
+        reported success.  Exactly the quiet wrong answer this phase exists to
+        remove (spec §14).
+
+        SQLite cannot alter a table constraint, so the table is renamed here
+        and its rows copied into the rebuilt one by
+        :meth:`_restore_plan_edges`.  Returns the old column names, or ``None``
+        when there is nothing to migrate.
+        """
+        tables = {
+            row["name"]
+            for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "plan_edges" not in tables:
+            return None
+        if "plan_edges_legacy" in tables:  # an interrupted migration
+            self.conn.execute("DROP TABLE plan_edges_legacy")
+
+        if not self._has_legacy_edge_constraint():
+            return None
+
+        columns = [row["name"] for row in self.conn.execute("PRAGMA table_info(plan_edges)")]
+        self.conn.execute("ALTER TABLE plan_edges RENAME TO plan_edges_legacy")
+        # The renamed table drags its indexes along; drop ours so the rebuilt
+        # table can create them under the same names.
+        for row in self.conn.execute("PRAGMA index_list(plan_edges_legacy)"):
+            if row["origin"] == "c":
+                self.conn.execute(f'DROP INDEX IF EXISTS "{row["name"]}"')
+        return columns
+
+    def _has_legacy_edge_constraint(self) -> bool:
+        """Whether ``plan_edges`` still carries the table-level Phase 4B UNIQUE."""
+        for row in self.conn.execute("PRAGMA index_list(plan_edges)"):
+            if row["origin"] != "u":  # 'u' = created by a UNIQUE table constraint
+                continue
+            columns = [
+                info["name"]
+                for info in self.conn.execute(f'PRAGMA index_info("{row["name"]}")')
+            ]
+            if columns == self._LEGACY_EDGE_UNIQUE:
+                return True
+        return False
+
+    def _restore_plan_edges(self, columns: list[str]) -> None:
+        """Copy the retired edges into the rebuilt table and drop the old one.
+
+        Only columns the rebuilt table also has are carried over, so a database
+        from any earlier phase migrates without knowing which one it came from.
+        """
+        current = {row["name"] for row in self.conn.execute("PRAGMA table_info(plan_edges)")}
+        shared = [c for c in columns if c in current]
+        column_list = ", ".join(f'"{c}"' for c in shared)
+        self.conn.execute(
+            f"INSERT OR IGNORE INTO plan_edges ({column_list}) "
+            f"SELECT {column_list} FROM plan_edges_legacy"
+        )
+        self.conn.execute("DROP TABLE plan_edges_legacy")
 
     def _add_missing_columns(self) -> None:
         """Add columns introduced after a table first shipped (idempotent).

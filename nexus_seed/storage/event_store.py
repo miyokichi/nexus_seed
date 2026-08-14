@@ -14,13 +14,30 @@ def _uuid(value: str | None) -> uuid.UUID | None:
 
 
 class EventStore:
-    """Stores events append-only and reads them back by id/type/correlation."""
+    """Stores events append-only and reads them back by id/type/correlation.
 
-    def __init__(self, db: Database) -> None:
+    Since Phase 3F, appending an event also records its **delivery obligation**
+    in the same transaction (Invariant 43).  Doing it here rather than at each
+    of the dozen call sites is the point: there is no way to persist an event
+    and forget to promise that something will look at it.
+    """
+
+    def __init__(self, db: Database, delivery_store=None) -> None:
         self.db = db
+        self.delivery_store = delivery_store
 
     def append(self, event: Event) -> Event:
-        """Persist ``event``.  Events are never updated once written."""
+        """Persist ``event`` (and its delivery obligation) atomically.
+
+        Events are never updated once written.
+        """
+        with self.db.atomic():
+            self._insert(event)
+            if self.delivery_store is not None:
+                self.delivery_store.create_for_event(event.id)
+        return event
+
+    def _insert(self, event: Event) -> None:
         self.db.execute(
             """
             INSERT INTO events
@@ -39,7 +56,6 @@ class EventStore:
                 str(event.ingress_receipt_id) if event.ingress_receipt_id else None,
             ),
         )
-        return event
 
     def get(self, event_id: uuid.UUID) -> Event | None:
         """Return the event with ``event_id``, or ``None``."""
