@@ -75,6 +75,8 @@ from ..storage.construction_store import ConstructionStore
 from ..storage.installation_store import InstallationStore
 from ..storage.autonomy_store import AutonomyStore
 from ..storage.provider_store import ProviderStore
+from ..storage.control_store import ControlStore
+from ..control.service import ConsoleService
 from ..providers.models import ExecutionProvider, ProviderBinding
 from ..providers.registry import ProviderRegistry
 from ..providers.skills import DirectorySkillAdapter, SkillImporter
@@ -199,6 +201,7 @@ class Runtime:
         self.observation_store = ObservationStore(self.db)
         self.state_delta_store = StateDeltaStore(self.db)
         self.work_requirement_store = WorkRequirementStore(self.db)
+        self.control_store = ControlStore(self.db)
         self.context_snapshot_store = ContextSnapshotStore(self.db)
         self.proposal_store = ProposalStore(self.db)
         self.llm_invocation_store = LLMInvocationStore(self.db)
@@ -295,6 +298,10 @@ class Runtime:
         self.autonomy_policy = AutonomyPolicy()
         self.default_autonomy_budget = AutonomyBudget()
 
+        # Phase 5G application service.  It is outside Runtime mechanism even
+        # though Runtime exposes the wired instance to CLI/HTTP adapters.
+        self.console = ConsoleService(self)
+
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)
         self.router = Router(self.process_store, self.resolver)
@@ -336,6 +343,7 @@ class Runtime:
             autonomy_budget=self.default_autonomy_budget,
             provider_registry=self.providers,
             continuation_store=self.continuation_store,
+            control_store=self.control_store,
             runtime=self,
             extractor_registry=self.extractors,
             ingress_receipt_store=self.ingress_receipt_store,
@@ -385,6 +393,7 @@ class Runtime:
             installation_manager=self.installation_manager,
             autonomy_store=self.autonomy_store,
             provider_registry=self.providers,
+            control_store=self.control_store,
         )
         #: How much one drain call may do.  Unlimited by default, so callers
         #: written before Phase 4B.1 behave exactly as they did.

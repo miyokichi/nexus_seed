@@ -102,7 +102,7 @@ async def compose_work_plan(ctx: ProcessContext) -> ProcessResult:
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
     # A need already met is not replanned, however the event got here (spec §91).
-    if requirement.resolved:
+    if requirement.resolved or requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
         return ctx.complete(
             output={"planned": False, "reason": f"work is {requirement.status.value}"}
         )
@@ -289,6 +289,9 @@ async def execute_process_plan(ctx: ProcessContext) -> ProcessResult:
     plan = plans.get(plan_id)
     if plan is None:
         return ctx.fail(f"plan {plan_id} not found")
+    controlled_work = ctx.services.get_work_requirement(plan.work_requirement_id)
+    if controlled_work is not None and controlled_work.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW, WorkStatus.CANCELLED}:
+        return ctx.complete(output={"plan_id": str(plan.id), "ran": False, "reason": controlled_work.status.value})
     if plan.status.terminal:
         return ctx.complete(output={"plan_id": str(plan.id), "status": plan.status.value})
 

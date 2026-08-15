@@ -123,7 +123,7 @@ async def _select_fresh(ctx: ProcessContext) -> ProcessResult:
     requirement = ctx.services.get_work_requirement(requirement_id)
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
-    if requirement.resolved:
+    if requirement.resolved or requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
         return ctx.complete(
             output={"selected": False, "reason": f"work is {requirement.status.value}"}
         )
@@ -357,7 +357,7 @@ def _handle_review(ctx: ProcessContext) -> ProcessResult:
     requirement = ctx.services.get_work_requirement(proposal.work_requirement_id)
     if requirement is None:
         return ctx.fail("work requirement disappeared during review")
-    if requirement.resolved:
+    if requirement.resolved or requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
         return ctx.complete(output={"selected": False, "reason": "work already resolved"})
 
     context = _decision_context(ctx, requirement)
@@ -630,7 +630,7 @@ async def replan_work(ctx: ProcessContext) -> ProcessResult:
     requirement = ctx.services.get_work_requirement(requirement_id)
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
-    if requirement.resolved:
+    if requirement.resolved or requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
         # A late or redelivered failure for work that has since been met
         # (spec §91).
         return ctx.complete(

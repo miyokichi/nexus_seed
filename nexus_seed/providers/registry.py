@@ -154,6 +154,12 @@ class ProviderRegistry:
 
     async def _execute_new(self, definition, ctx, internal_handler, *, excluded):
         eligible = self.eligible_bindings(definition, excluded_provider_ids=excluded)
+        work = (
+            ctx.services.get_work_requirement(ctx.instance.work_requirement_id)
+            if ctx.services is not None and ctx.instance.work_requirement_id is not None
+            else None
+        )
+        eligible, constraint_reasons = self._apply_work_constraints(eligible, work)
         selected = self.selector.select(eligible)
         selection = ProviderSelection(
             process_instance_id=ctx.instance.id,
@@ -164,12 +170,22 @@ class ProviderRegistry:
             provider_binding_id=selected[0].id if selected else None,
             eligible_provider_ids=[provider.id for _, provider in eligible],
             reasons=[
+                *constraint_reasons,
                 "selected by binding priority, provider priority, trust, cost, latency, load, id"
                 if selected else "no eligible execution provider"
             ],
         )
         self.store.save_selection(selection)
         if selected is None:
+            if work is not None:
+                ctx.mark_work(work.id, "BLOCKED_PROVIDER")
+                return ctx.complete(
+                    output={"blocked": True, "reason": "provider constraints unavailable"},
+                    emitted_events=[ctx.new_event(
+                        "provider_missing",
+                        {"work_requirement_id": str(work.id), "reasons": constraint_reasons},
+                    )],
+                )
             raise ProviderUnavailableError(
                 f"no eligible provider for {definition.name}:v{definition.version}"
             )
@@ -216,6 +232,55 @@ class ProviderRegistry:
             self.store.update_provider(provider.id, health=ProviderHealth.DEGRADED)
             return ctx.fail(f"external provider execution failed: {exc}")
         return self._accept_delegation(definition, ctx, invocation, delegated)
+
+    @staticmethod
+    def _apply_work_constraints(candidates, work):
+        """Apply human hard constraints/preferences without widening safety."""
+        if work is None:
+            return candidates, []
+        constraints = work.constraints or {}
+        allowed = {str(value) for value in constraints.get("allowed_providers", ())}
+        forbidden = {str(value) for value in constraints.get("forbidden_providers", ())}
+        directive = work.provider_directive or {}
+        kind = str(directive.get("kind") or "").upper()
+        named = str(directive.get("provider") or "")
+        if kind == "FORBID" and named:
+            forbidden.add(named)
+
+        def matches(provider, values):
+            identities = {str(provider.id), provider.name, provider.kind.value, provider.adapter_name}
+            return bool(identities & values)
+
+        filtered = []
+        reasons = []
+        for binding, provider in candidates:
+            if allowed and not matches(provider, allowed):
+                continue
+            if forbidden and matches(provider, forbidden):
+                continue
+            if constraints.get("network_forbidden") and provider.kind is not ProviderKind.INTERNAL:
+                continue
+            if constraints.get("cloud_forbidden") and bool(provider.metadata.get("cloud")):
+                continue
+            if constraints.get("production_write_forbidden") and any(
+                str(permission).startswith("production.")
+                for permission in binding.required_permissions
+            ):
+                continue
+            filtered.append((binding, provider))
+        if kind == "REQUIRE" and named:
+            filtered = [item for item in filtered if matches(item[1], {named})]
+            reasons.append(f"human REQUIRE provider {named}")
+        elif kind == "PREFER" and named:
+            preferred = [item for item in filtered if matches(item[1], {named})]
+            if preferred:
+                filtered = preferred
+                reasons.append(f"human PREFER provider {named} applied")
+            else:
+                reasons.append(f"preferred provider {named} unavailable; fallback allowed")
+        if constraints:
+            reasons.append("human work constraints narrowed provider eligibility")
+        return filtered, reasons
 
     def _from_existing(self, definition, ctx, invocation):
         if invocation.status is ProviderInvocationStatus.COMPLETED:
@@ -343,7 +408,13 @@ class ProviderRegistry:
             objective=(definition.metadata or {}).get("objective", definition.name),
             typed_inputs=dict(ctx.instance.input.get("inputs") or ctx.instance.input),
             relevant_context=relevant_context,
-            constraints=list((binding.metadata or {}).get("constraints") or []),
+            constraints=[
+                *list((binding.metadata or {}).get("constraints") or []),
+                *list(((ctx.services.get_work_requirement(ctx.instance.work_requirement_id).constraints
+                        if ctx.services and ctx.instance.work_requirement_id and
+                        ctx.services.get_work_requirement(ctx.instance.work_requirement_id)
+                        else {}).get("additional") or [])),
+            ],
             allowed_permissions=list(binding.required_permissions),
             idempotency_key=key,
             metadata={"provider_id": str(provider.id)},

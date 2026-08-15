@@ -164,6 +164,8 @@ async def work_matcher(ctx: ProcessContext) -> ProcessResult:
     requirement = ctx.services.get_work_requirement(requirement_id)
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
+    if requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW, WorkStatus.CANCELLED}:
+        return ctx.complete(output={"matched": False, "reason": requirement.status.value})
 
     if requirement.needs_capabilities:
         blocked = _match_capabilities(ctx, requirement)
@@ -303,6 +305,12 @@ async def missing_work_detector(ctx: ProcessContext) -> ProcessResult:
     """Decide whether a spawn is required for a matched requirement."""
     assert ctx.event is not None
     p = ctx.event.payload
+    requirement = (
+        ctx.services.get_work_requirement(_uuid(p.get("work_requirement_id")))
+        if ctx.services is not None else None
+    )
+    if requirement is not None and requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW, WorkStatus.CANCELLED}:
+        return ctx.complete(output={"spawn_required": False, "reason": requirement.status.value})
     requirement_id = p["work_requirement_id"]
     if p.get("match_status") == WorkMatchStatus.NEW.value:
         missing = ctx.new_event("work_missing", {"work_requirement_id": requirement_id})
@@ -317,6 +325,8 @@ async def work_spawner(ctx: ProcessContext) -> ProcessResult:
     requirement = ctx.services.get_work_requirement(requirement_id)
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
+    if requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW, WorkStatus.CANCELLED}:
+        return ctx.complete(output={"spawned": False, "reason": requirement.status.value})
 
     # Capability matching already decided; spawning does not re-decide.
     # Falling back to the legacy name table keeps Phase 2C work running

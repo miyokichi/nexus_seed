@@ -22,6 +22,8 @@ _ENV_NAMES = (
     "NEXUS_SEED_WEBHOOK_TOKEN",
     "NEXUS_SEED_TICK_SECONDS",
     "NEXUS_SEED_LOG_LEVEL",
+    "NEXUS_SEED_CONTROL_IDENTITY",
+    "NEXUS_SEED_CONTROL_PERMISSIONS",
     "NEXUS_SEED_LLM_ENABLED",
     "NEXUS_SEED_LLM_PROVIDER",
     "NEXUS_SEED_LLM_BASE_URL",
@@ -71,8 +73,10 @@ def test_build_runtime_bootstraps_the_complete_stack(tmp_path):
         assert "analyze_capability_gap" in names
         assert "advance_capability_acquisition" in names
         assert "activate_installed_extension" in names
+        assert "evaluate_goal" in names
         assert "local_file" in runtime.backends
         assert "llm" not in runtime.backends
+        assert runtime.control_store.get_identity("local-operator") is not None
     finally:
         runtime.close()
 
@@ -104,3 +108,14 @@ def test_once_and_llm_check_are_mutually_exclusive():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--once", "--check-llm"])
+
+
+def test_operational_subcommands_accept_connection_options_after_command():
+    args = build_parser().parse_args(
+        ["task", "analyze this", "--port", "9999", "--source-key", "task-1"]
+    )
+
+    assert args.command == "task"
+    assert args.text == "analyze this"
+    assert args.port == 9999
+    assert args.source_key == "task-1"

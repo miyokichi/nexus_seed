@@ -36,6 +36,7 @@ from ..context.requirements import (
     WorldStateReq,
 )
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
+from ..work.work_requirement import WorkStatus
 from ..extension.builder import build_proposal
 from ..extension.models import (
     SOURCE_DETERMINISTIC,
@@ -144,7 +145,7 @@ async def _analyze_missing(ctx: ProcessContext) -> ProcessResult:
     requirement = ctx.services.get_work_requirement(requirement_id)
     if requirement is None:
         return ctx.fail(f"work requirement {requirement_id} not found")
-    if requirement.resolved:
+    if requirement.resolved or requirement.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
         # A late or redelivered block for work that has since been met.
         return ctx.complete(
             output={"analyzed": False, "reason": f"work is {requirement.status.value}"}

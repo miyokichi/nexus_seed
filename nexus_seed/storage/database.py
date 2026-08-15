@@ -1034,6 +1034,62 @@ CREATE TABLE IF NOT EXISTS imported_skills (
     updated_at TEXT NOT NULL,
     UNIQUE(source, process_definition_name, process_definition_version)
 );
+
+CREATE TABLE IF NOT EXISTS human_identities (
+    identity_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    permissions_json TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS commands (
+    id TEXT PRIMARY KEY,
+    command_type TEXT NOT NULL,
+    issuer_identity_id TEXT NOT NULL,
+    source_channel TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    arguments_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    validation_reasons_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    executed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_commands_issuer ON commands(issuer_identity_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_commands_target ON commands(target_type, target_id);
+
+CREATE TABLE IF NOT EXISTS command_results (
+    command_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    affected_entities_json TEXT NOT NULL DEFAULT '[]',
+    emitted_events_json TEXT NOT NULL DEFAULT '[]',
+    message TEXT,
+    failure_reason TEXT,
+    data_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    owner_identity_id TEXT NOT NULL,
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    priority TEXT NOT NULL,
+    deadline TEXT,
+    constraints_json TEXT NOT NULL DEFAULT '{}',
+    success_criteria_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at);
 """
 
 #: Columns added to pre-existing tables after they shipped.  ``CREATE TABLE IF
@@ -1074,6 +1130,19 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("work_requirements", "decision_preference_json", "TEXT"),
     ("work_requirements", "max_replans", "INTEGER"),
     ("work_requirements", "replan_count", "INTEGER NOT NULL DEFAULT 0"),
+    # Phase 5G: explicit human Work request, controls and Goal provenance.
+    ("work_requirements", "objective", "TEXT"),
+    ("work_requirements", "scope_json", "TEXT"),
+    ("work_requirements", "project", "TEXT"),
+    ("work_requirements", "human_priority", "TEXT"),
+    ("work_requirements", "deadline", "TEXT"),
+    ("work_requirements", "input_resources_json", "TEXT"),
+    ("work_requirements", "constraints_json", "TEXT"),
+    ("work_requirements", "completion_criteria_json", "TEXT"),
+    ("work_requirements", "provider_directive_json", "TEXT"),
+    ("work_requirements", "goal_id", "TEXT"),
+    ("work_requirements", "command_id", "TEXT"),
+    ("work_requirements", "pre_pause_status", "TEXT"),
 )
 
 

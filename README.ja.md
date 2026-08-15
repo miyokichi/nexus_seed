@@ -22,9 +22,10 @@ Processが担う役割として表現します。
 - CapabilityベースのWork matching、複数ProcessのPlan、有界replanning
 - LLM入力と外部Actionのvalidation・policy・監査境界
 - 永続Ingress、Resource versioning、抽出、Event配送
-- Sandbox内Capability構築、検証、人手確認付きProduction activation、rollback
+- Capability gap分析、Sandbox内構築、検証、人手確認付きProduction activation、rollback
 - `AUTO / REVIEW_REQUIRED / FORBIDDEN`とBudgetを備えたPhase 5D自律Capability取得
 - 内部Process、Directory Skill、外部Agentを統合するPhase 5E Provider Federation
+- 認証・認可された明示Command、永続Goal、Work制御、監査履歴を備えたPhase 5G Control Plane
 
 `AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
 Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
@@ -113,31 +114,117 @@ durable delivery、retry/timer、Capability acquisitionがすべて登録され�
 Runtimeがtickします。終了は`Ctrl+C`です。同じコマンドで再起動するとSQLiteから
 未完了処理を復旧します。
 
-### 5. Eventを投入
+### 5. タスクを投入
 
-サーバーを起動したまま、別のPowerShellから送信します。
+サーバーを起動したまま、別のPowerShellから実行します。`.env`のURLとTokenは
+コマンドが自動的に使用します。
 
 ```powershell
-$headers = @{ "X-Ingress-Token" = "上で設定したtoken" }
-$body = @{
-    source_event_key = "manual-20260815-001"
-    event_type = "human_message"
-    payload = @{ text = "顧客レポートを解析し、必要な作業を判断してください" }
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod `
-    -Uri http://127.0.0.1:8787/ingress/webhook `
-    -Method Post `
-    -Headers $headers `
-    -ContentType "application/json" `
-    -Body $body
+nexus-seed task "顧客レポートを解析し、必要な作業を判断してください"
 ```
 
-`202 Accepted`はEventがSQLiteへ安全に保存されたことを表します。Process処理や
-LLM呼び出しの完了を待った応答ではありません。同じ`source_event_key`を再送すると
-重複処理せず`duplicate: true`を返します。
+これは`human_message` EventをIngressへ投入します。LLMが有効なら通常の
+`interpret_event_llm` Processが処理し、Proposalの検証とPolicy判定を通ります。
+応答の`status: accepted`はEventがSQLiteへ安全に保存されたという意味で、Processや
+LLM処理の完了を待った結果ではありません。
 
-### 6. 作成されるデータ
+再送時の重複を確実に防ぎたい場合は、外部側で一意なキーを指定します。
+
+```powershell
+nexus-seed task "同じ依頼" --source-key crm-ticket-12345
+```
+
+任意のEventも投入できます。複雑なJSONはファイルにするとPowerShellのquoteを
+気にせず扱えます。
+
+```powershell
+nexus-seed event process_parameter_changed `
+    --payload '{"entity":"reactor-1","attribute":"target","value":42}' `
+    --source-key sensor-change-001
+
+nexus-seed event measurement_completed --payload-file measurement.json
+```
+
+### 6. 状況とレビューを確認
+
+`status`はSQLiteを読み取り専用で開き、Event数、Work/Process/Deliveryの状態、最近の
+処理を表示します。常駐サーバーを止める必要はありません。
+
+```powershell
+nexus-seed status
+nexus-seed status --json
+```
+
+人の判断待ちになった処理は次で確認・再開できます。レビューの種類はContinuation
+から自動判別されるため、Event名を指定する必要はありません。
+
+```powershell
+nexus-seed reviews
+nexus-seed review <reviewsに表示されたID> approve
+nexus-seed review <reviewsに表示されたID> reject
+```
+
+`modify`が対応するレビューでは追加JSONも渡せます。
+
+```powershell
+nexus-seed review <ID> modify --payload-file replacement.json
+```
+
+`status`はDB内の永続状態を示すコマンドであり、HTTPサーバーの死活監視では
+ありません。`task`や`event`が接続できない場合は、`nexus-seed`が別ターミナルで
+起動しているかを確認してください。
+
+### 7. 明示CommandとGoalで制御
+
+Phase 5GのControl Planeは、自然言語の`task` Eventと明示Commandを分離します。
+明示CommandはLLMを通らず、Schema ValidationとHumanIdentityのPermission確認後に
+実行されます。常駐サーバーを起動した別ターミナルから使います。
+
+```powershell
+# Control Console summary
+nexus-seed control '/status'
+
+# 明示的なWork作成
+nexus-seed control '/task create objective="Project Aの最新測定結果を解析" priority=HIGH cloud_forbidden=true'
+
+# 結果に表示されたWork IDを操作
+nexus-seed control '/work <WORK-ID>'
+nexus-seed control '/pause <WORK-ID>'
+nexus-seed control '/resume <WORK-ID>'
+nexus-seed control '/priority <WORK-ID> CRITICAL'
+nexus-seed control '/deadline <WORK-ID> 2026-08-20T18:00+09:00'
+nexus-seed control '/provider <WORK-ID> PREFER local_runtime'
+nexus-seed control '/trace <WORK-ID>'
+nexus-seed control '/cancel <WORK-ID>'
+```
+
+レビューは既存のContinuation/Event境界へ変換され、新しい承認経路を作りません。
+
+```powershell
+nexus-seed control '/approve <REVIEW-ID>'
+nexus-seed control '/reject <REVIEW-ID>'
+```
+
+長期GoalはWorkRequirementとは別に保存され、通常の`evaluate_goal` Processが現在の
+World Stateと既存Workから不足Workを生成します。同じ不足は再評価・再起動後も
+deterministic keyで1件へ収束します。
+
+```powershell
+nexus-seed control '/goal create title="Project A review readiness" objective="Project Aをレビュー可能状態へする" priority=HIGH deadline=2026-09-15'
+nexus-seed control '/goals'
+nexus-seed control '/goal show <GOAL-ID>'
+nexus-seed control '/goal evaluate <GOAL-ID>'
+nexus-seed control '/goal pause <GOAL-ID>'
+nexus-seed control '/goal resume <GOAL-ID>'
+nexus-seed control '/goal cancel <GOAL-ID>'
+```
+
+`NEXUS_SEED_CONTROL_IDENTITY`と`NEXUS_SEED_CONTROL_PERMISSIONS`は`.env`で設定します。
+HTTPのBearer/Ingress Tokenは接続認証、HumanIdentity PermissionはCommand認可であり、
+役割が異なります。Commandは既存Permission・Action・Validator・Autonomy Policyを
+緩和できません。
+
+### 8. 作成されるデータ
 
 `NEXUS_SEED_DATA_DIR`の下に次が作成されます。
 
@@ -168,8 +255,12 @@ nexus_seed/core/          固定データモデル
 nexus_seed/runtime/       routing、scheduling、execution、recovery
 nexus_seed/storage/       SQLite永続化
 nexus_seed/processes/     Process定義とhandler
+nexus_seed/extension/     Phase 5AのCapability gapと取得提案
+nexus_seed/construction/  Phase 5BのSandbox内構築と検証
+nexus_seed/installation/  Phase 5Cの承認付きActivationとrollback
 nexus_seed/autonomy/      Phase 5DのSession、Policy、Budget、Trace
 nexus_seed/providers/     Phase 5EのProvider、委譲、Skill import、Trace
+nexus_seed/control/       Phase 5GのCommand、Identity、Goal、認可
 tests/                    受入テストと再起動収束テスト
 ```
 
@@ -179,4 +270,4 @@ tests/                    受入テストと再起動収束テスト
 - [Detailed architecture (English)](docs/architecture.md)
 - [開発時に守るInvariant](AGENTS.md)
 
-現在の実装範囲は**Phase 5Eまで**です。Phase 6には進んでいません。
+現在の実装範囲は**Phase 5Gまで**です。Phase 6には進んでいません。

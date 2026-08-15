@@ -64,6 +64,8 @@ class ProcessStatus(str, Enum):
     RETRY_WAIT = "RETRY_WAIT"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    #: Phase 5G operator pause.  Resume returns to RUNNABLE and recompiles Context.
+    PAUSED = "PAUSED"
 
 
 class RetryableError(Exception):
@@ -312,6 +314,9 @@ class ProcessResult:
     acquisition_subscribers: list = field(default_factory=list)
     autonomy_decisions: list = field(default_factory=list)
     acquisition_attempts: list = field(default_factory=list)
+    #: Phase 5G Goal effects.  Goal remains domain data, never a core primitive.
+    goals: list = field(default_factory=list)
+    goal_updates: list[tuple] = field(default_factory=list)
     #: Explicit closure of another suspended instance whose continuation ended.
     process_instance_updates: list[tuple] = field(default_factory=list)
     join: JoinRequest | None = None
@@ -522,6 +527,8 @@ class ProcessContext:
     _acquisition_subscribers: list = field(default_factory=list)
     _autonomy_decisions: list = field(default_factory=list)
     _acquisition_attempts: list = field(default_factory=list)
+    _goals: list = field(default_factory=list)
+    _goal_updates: list[tuple] = field(default_factory=list)
     _continuations_to_delete: list[uuid.UUID] = field(default_factory=list)
     _process_instance_updates: list[tuple] = field(default_factory=list)
 
@@ -754,6 +761,11 @@ class ProcessContext:
             available_input_types=list(available_input_types or []),
             required_output_types=list(required_output_types or []),
         )
+        self._work_requirements.append(requirement)
+        return requirement
+
+    def add_work_requirement(self, requirement: WorkRequirement) -> WorkRequirement:
+        """Stage a pre-built WorkRequirement with extended domain metadata."""
         self._work_requirements.append(requirement)
         return requirement
 
@@ -1003,10 +1015,62 @@ class ProcessContext:
                 (process_instance_id, ProcessStatus.COMPLETED.value, {"reason": reason})
             )
 
-    def satisfy_work(self) -> None:
-        """Mark this process's WorkRequirement (if any) SATISFIED."""
-        if self.instance.work_requirement_id is not None:
-            self.mark_work(self.instance.work_requirement_id, WorkStatus.SATISFIED)
+    def satisfy_work(self, evidence: dict | None = None) -> bool:
+        """Mark Work SATISFIED only when its structured criteria are met.
+
+        Existing work has no explicit criteria and behaves exactly as before.
+        Human-created work may name evidence, state predicates, or artifact
+        availability; Process completion alone does not satisfy those needs.
+        """
+        if self.instance.work_requirement_id is None:
+            return False
+        requirement = (
+            self.services.get_work_requirement(self.instance.work_requirement_id)
+            if self.services is not None
+            else None
+        )
+        if requirement is not None and requirement.completion_criteria:
+            supplied = evidence or {}
+            unmet = [
+                criterion
+                for criterion in requirement.completion_criteria
+                if not self._completion_criterion_met(criterion, supplied)
+            ]
+            if unmet:
+                self.logger.info(
+                    "work %s completed a Process but has unmet criteria: %s",
+                    requirement.work_key,
+                    unmet,
+                )
+                return False
+        self.mark_work(self.instance.work_requirement_id, WorkStatus.SATISFIED)
+        return True
+
+    def _completion_criterion_met(self, criterion, evidence: dict) -> bool:
+        if isinstance(criterion, str):
+            return bool(evidence.get(criterion))
+        if not isinstance(criterion, dict):
+            return False
+        kind = str(criterion.get("type") or "evidence")
+        if kind == "evidence":
+            return bool(evidence.get(str(criterion.get("name"))))
+        if kind == "state_predicate" and self.services is not None:
+            entry = self.services.get_current_state(
+                str(criterion.get("entity")), str(criterion.get("attribute"))
+            )
+            return bool(entry and entry.value == criterion.get("value"))
+        if kind == "artifact_available" and self.services is not None:
+            return self.services.get_resource_by_uri(str(criterion.get("uri"))) is not None
+        return False
+
+    def record_goal(self, goal) -> object:
+        """Stage a new Goal for atomic persistence."""
+        self._goals.append(goal)
+        return goal
+
+    def update_goal(self, goal_id: uuid.UUID, status) -> None:
+        """Stage a Goal lifecycle transition."""
+        self._goal_updates.append((goal_id, getattr(status, "value", status)))
 
     def _staged(self) -> dict:
         """Every effect staged on this context, as ProcessResult kwargs."""
@@ -1066,6 +1130,8 @@ class ProcessContext:
             "acquisition_subscribers": list(self._acquisition_subscribers),
             "autonomy_decisions": list(self._autonomy_decisions),
             "acquisition_attempts": list(self._acquisition_attempts),
+            "goals": list(self._goals),
+            "goal_updates": list(self._goal_updates),
             "continuations_to_delete": list(self._continuations_to_delete),
             "process_instance_updates": list(self._process_instance_updates),
         }

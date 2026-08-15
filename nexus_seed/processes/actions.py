@@ -48,6 +48,7 @@ from ..context.requirements import (
 )
 from ..core.event import Event, utcnow
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
+from ..work.work_requirement import WorkStatus
 
 #: Metadata key holding the risk policy table on the validator's definition.
 RISK_POLICY_METADATA_KEY = "risk_policy"
@@ -130,6 +131,18 @@ async def action_validator(ctx: ProcessContext) -> ProcessResult:
     proposal = ctx.services.get_action_proposal(proposal_id) if ctx.services else None
     if proposal is None:
         return ctx.fail(f"action proposal {proposal_id} not found")
+    controlled_work = (
+        ctx.services.get_work_requirement(proposal.source_work_requirement_id)
+        if ctx.services and proposal.source_work_requirement_id else None
+    )
+    if controlled_work is not None and controlled_work.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
+        return ctx.complete(output={"authorized": False, "deferred": "work paused"})
+    if controlled_work is not None and controlled_work.status is WorkStatus.CANCELLED:
+        ctx.update_action_proposal(proposal.id, ActionProposalStatus.REJECTED)
+        return ctx.complete(
+            output={"authorized": False, "reason": "work cancelled"},
+            emitted_events=[ctx.new_event("action_rejected", _lifecycle_payload(proposal, reasons=["work cancelled"]))],
+        )
     return _authorize(ctx, proposal)
 
 
@@ -362,6 +375,19 @@ async def action_executor(ctx: ProcessContext) -> ProcessResult:
     proposal = ctx.services.get_action_proposal(proposal_id) if ctx.services else None
     if proposal is None:
         return ctx.fail(f"action proposal {proposal_id} not found")
+
+    controlled_work = (
+        ctx.services.get_work_requirement(proposal.source_work_requirement_id)
+        if ctx.services and proposal.source_work_requirement_id else None
+    )
+    if controlled_work is not None and controlled_work.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW}:
+        return ctx.complete(output={"executed": False, "deferred": "work paused"})
+    if controlled_work is not None and controlled_work.status is WorkStatus.CANCELLED:
+        ctx.update_action_proposal(proposal.id, ActionProposalStatus.REJECTED)
+        return ctx.complete(
+            output={"executed": False, "reason": "work cancelled"},
+            emitted_events=[ctx.new_event("action_rejected", _lifecycle_payload(proposal, reasons=["work cancelled"]))],
+        )
 
     attempt = ctx.instance.retry_count + 1
 

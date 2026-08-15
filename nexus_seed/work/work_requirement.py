@@ -46,6 +46,10 @@ class WorkStatus(str, Enum):
     #: reason as it, still not CANCELLED (Invariant 79): the need is real; only
     #: our current arrangements for meeting it have run out.
     BLOCKED_PLAN = "BLOCKED_PLAN"
+    #: Phase 5G: explicitly parked by an authorized human command.
+    PAUSED = "PAUSED"
+    #: Phase 5G hard constraint: no matching/planning/execution before review.
+    WAITING_REVIEW = "WAITING_REVIEW"
 
 
 @dataclass
@@ -99,6 +103,20 @@ class WorkRequirement:
     #: (Invariant 82).
     max_replans: int | None = None
     replan_count: int = 0
+    #: Phase 5G explicit human request/control fields.  These remain domain
+    #: data on the need and are not new Runtime primitives.
+    objective: str | None = None
+    scope: dict = field(default_factory=dict)
+    project: str | None = None
+    human_priority: str | None = None
+    deadline: datetime | None = None
+    input_resources: list[str] = field(default_factory=list)
+    constraints: dict = field(default_factory=dict)
+    completion_criteria: list = field(default_factory=list)
+    provider_directive: dict | None = None
+    goal_id: uuid.UUID | None = None
+    command_id: uuid.UUID | None = None
+    pre_pause_status: str | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)

@@ -207,10 +207,20 @@ class WebhookServer:
     Single event loop, so it shares the runtime's SQLite connection safely.
     """
 
-    def __init__(self, ingress: WebhookIngress, *, host: str = "127.0.0.1", port: int = 0) -> None:
+    def __init__(
+        self,
+        ingress: WebhookIngress,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        console=None,
+        control_identity_id: str = "local-operator",
+    ) -> None:
         self.ingress = ingress
         self.host = host
         self.port = port
+        self.console = console
+        self.control_identity_id = control_identity_id
         self._server: asyncio.AbstractServer | None = None
 
     @property
@@ -270,6 +280,28 @@ class WebhookServer:
 
         if method.upper() != "POST":
             return WebhookResponse(405, {"error": "only POST is supported"})
+        if path.split("?", 1)[0] == "/control":
+            if self.console is None:
+                return WebhookResponse(404, {"error": "control endpoint is disabled"})
+            if not self.ingress.authorize(_token_from(headers)):
+                return WebhookResponse(401, {"error": "unauthorized"})
+            try:
+                body = json.loads(raw_body or b"{}")
+            except ValueError:
+                return WebhookResponse(400, {"error": "body is not valid JSON"})
+            if not isinstance(body, dict) or not isinstance(body.get("command"), str):
+                return WebhookResponse(400, {"error": "command must be a string"})
+            try:
+                result = self.console.execute_text(
+                    body["command"],
+                    issuer_identity_id=self.control_identity_id,
+                    source_channel=str(body.get("source_channel") or "http-control"),
+                    source_message_id=str(body.get("source_message_id") or "") or None,
+                    idempotency_key=str(body.get("idempotency_key") or "") or None,
+                )
+            except ValueError as exc:
+                return WebhookResponse(400, {"error": str(exc)})
+            return WebhookResponse(200, result.to_dict())
         adapter_id = _adapter_id_from_path(path)
         if adapter_id is None:
             return WebhookResponse(404, {"error": "unknown path"})
@@ -306,6 +338,7 @@ def _http_response(response: WebhookResponse) -> bytes:
         202: "Accepted",
         400: "Bad Request",
         401: "Unauthorized",
+        403: "Forbidden",
         404: "Not Found",
         405: "Method Not Allowed",
         500: "Internal Server Error",

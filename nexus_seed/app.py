@@ -15,12 +15,24 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import Any
 
 from .adapters.webhook import WebhookIngress, WebhookServer
 from .backends.action import LocalFileActionBackend
 from .backends.base import BackendRequest
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
+from .operations import (
+    OperationalCommandError,
+    build_review_payload,
+    read_pending_reviews,
+    read_status,
+    resolve_pending_review,
+    submit_webhook_event,
+    submit_control_command,
+)
+from .control.models import HumanIdentity
 from .processes.autonomy import bootstrap_autonomy
+from .processes.control import bootstrap_control
 from .processes.extension import bootstrap_extension
 from .processes.planning import bootstrap_planning
 from .processes.resources import bootstrap_observer, bootstrap_resources
@@ -44,6 +56,8 @@ class AppSettings:
     webhook_token: str | None = None
     tick_seconds: float = 1.0
     log_level: str = "INFO"
+    control_identity_id: str = "local-operator"
+    control_permissions: tuple[str, ...] = ("command.*",)
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -70,7 +84,17 @@ class AppSettings:
             raise ApplicationConfigurationError(
                 "NEXUS_SEED_WEBHOOK_TOKEN is required when listening beyond localhost"
             )
-        return cls(data_dir, host, port, token, tick_seconds, log_level)
+        identity_id = os.environ.get("NEXUS_SEED_CONTROL_IDENTITY", "local-operator").strip()
+        permissions = tuple(
+            value.strip()
+            for value in os.environ.get("NEXUS_SEED_CONTROL_PERMISSIONS", "command.*").split(",")
+            if value.strip()
+        )
+        if not identity_id or not permissions:
+            raise ApplicationConfigurationError(
+                "control identity and at least one control permission are required"
+            )
+        return cls(data_dir, host, port, token, tick_seconds, log_level, identity_id, permissions)
 
 
 def bootstrap_application(
@@ -90,6 +114,15 @@ def bootstrap_application(
     bootstrap_observer(runtime)
     bootstrap_extension(runtime)
     bootstrap_autonomy(runtime)
+    bootstrap_control(runtime)
+    runtime.control_store.save_identity(
+        HumanIdentity(
+            identity_id=settings.control_identity_id,
+            display_name="Configured control operator",
+            permissions=settings.control_permissions,
+            metadata={"source": "application configuration"},
+        )
+    )
     runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)
 
@@ -119,10 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="nexus-seed",
         description="Run the durable NEXUS SEED webhook application.",
     )
-    parser.add_argument("--env-file", default=".env", help="dotenv file (default: .env)")
-    parser.add_argument("--data-dir", default=None, help="override NEXUS_SEED_DATA_DIR")
-    parser.add_argument("--host", default=None, help="override webhook listen host")
-    parser.add_argument("--port", type=int, default=None, help="override webhook port")
+    _add_connection_arguments(parser)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--once",
@@ -134,11 +164,211 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="make one structured-output request to the configured LLM, then exit",
     )
+    commands = parser.add_subparsers(dest="command", title="operational commands")
+
+    serve = commands.add_parser("serve", help="run the webhook server (default)")
+    _add_connection_arguments(serve, suppress_defaults=True)
+
+    task = commands.add_parser("task", help="submit a natural-language task")
+    _add_connection_arguments(task, suppress_defaults=True)
+    task.add_argument("text", help="task text sent as a human_message Event")
+    task.add_argument("--source-key", default=None, help="stable external id for deduplication")
+
+    event = commands.add_parser("event", help="submit an arbitrary Event")
+    _add_connection_arguments(event, suppress_defaults=True)
+    event.add_argument("event_type", help="Event.type to submit")
+    _add_payload_arguments(event)
+    event.add_argument("--source-key", default=None, help="stable external id for deduplication")
+
+    status = commands.add_parser("status", help="show durable work and process status")
+    _add_connection_arguments(status, suppress_defaults=True)
+    status.add_argument("--limit", type=_positive_int, default=10, help="recent rows to show")
+    status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    reviews = commands.add_parser("reviews", help="list pending human reviews")
+    _add_connection_arguments(reviews, suppress_defaults=True)
+    reviews.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    review = commands.add_parser("review", help="approve, reject, or modify a pending review")
+    _add_connection_arguments(review, suppress_defaults=True)
+    review.add_argument("review_id", help="id shown by 'nexus-seed reviews'")
+    review.add_argument("decision", help="usually approve, reject, or modify")
+    _add_payload_arguments(review, label="additional review payload")
+    review.add_argument("--source-key", default=None, help="stable external id for deduplication")
+
+    control = commands.add_parser("control", help="execute an explicit Phase 5G slash command")
+    _add_connection_arguments(control, suppress_defaults=True)
+    control.add_argument("text", help="for example: /status or /pause <work-id>")
+    control.add_argument("--idempotency-key", default=None, help="stable command delivery id")
     return parser
+
+
+def _add_connection_arguments(
+    parser: argparse.ArgumentParser, *, suppress_defaults: bool = False
+) -> None:
+    """Add dotenv/database/webhook overrides to a parser or subparser."""
+
+    omitted = argparse.SUPPRESS if suppress_defaults else None
+    parser.add_argument(
+        "--env-file",
+        default=argparse.SUPPRESS if suppress_defaults else ".env",
+        help="dotenv file (default: .env)",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=omitted,
+        help="override NEXUS_SEED_DATA_DIR",
+    )
+    parser.add_argument(
+        "--host",
+        default=omitted,
+        help="override webhook listen host",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=omitted,
+        help="override webhook port",
+    )
+
+
+def _add_payload_arguments(
+    parser: argparse.ArgumentParser, *, label: str = "Event payload"
+) -> None:
+    """Add mutually exclusive inline/file JSON payload options."""
+
+    payload = parser.add_mutually_exclusive_group()
+    payload.add_argument(
+        "--payload",
+        dest="payload_json",
+        default=None,
+        metavar="JSON",
+        help=f"{label} as a JSON object",
+    )
+    payload.add_argument(
+        "--payload-file",
+        default=None,
+        metavar="PATH",
+        help=f"read {label} JSON from a file",
+    )
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 async def run(args: argparse.Namespace) -> int:
     """Run recovery and either exit once or serve webhook input continuously."""
+
+    settings = _settings_from_args(args)
+    command = getattr(args, "command", None)
+    if command and (args.once or args.check_llm):
+        raise ApplicationConfigurationError(
+            "--once/--check-llm cannot be combined with an operational command"
+        )
+
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    database_path = settings.data_dir / "nexus_seed.db"
+    if command == "status":
+        report = read_status(database_path, limit=args.limit)
+        _print_operational_status(report, as_json=args.json)
+        return 0
+    if command == "reviews":
+        reviews = read_pending_reviews(database_path)
+        _print_reviews(reviews, as_json=args.json)
+        return 0
+    if command == "task":
+        result = await asyncio.to_thread(
+            submit_webhook_event,
+            host=settings.host,
+            port=settings.port,
+            token=settings.webhook_token,
+            event_type="human_message",
+            payload={"text": args.text},
+            source_event_key=args.source_key,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if command == "event":
+        payload = _read_payload(args)
+        result = await asyncio.to_thread(
+            submit_webhook_event,
+            host=settings.host,
+            port=settings.port,
+            token=settings.webhook_token,
+            event_type=args.event_type,
+            payload=payload,
+            source_event_key=args.source_key,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if command == "review":
+        review = resolve_pending_review(database_path, args.review_id)
+        payload = build_review_payload(review, args.decision, _read_payload(args))
+        result = await asyncio.to_thread(
+            submit_webhook_event,
+            host=settings.host,
+            port=settings.port,
+            token=settings.webhook_token,
+            event_type=review.event_type,
+            payload=payload,
+            source_event_key=args.source_key,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if command == "control":
+        result = await asyncio.to_thread(
+            submit_control_command,
+            host=settings.host,
+            port=settings.port,
+            token=settings.webhook_token,
+            command=args.text,
+            idempotency_key=args.idempotency_key,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("status") == "EXECUTED" else 1
+
+    runtime = build_runtime(settings, env_file=args.env_file)
+    server: WebhookServer | None = None
+    try:
+        await runtime.run_pending()
+        await runtime.tick()
+        if args.check_llm:
+            return await _check_llm(runtime)
+        if args.once:
+            print(json.dumps(_status(runtime, settings), ensure_ascii=False, indent=2))
+            return 0
+
+        ingress = WebhookIngress(runtime.ingress, token=settings.webhook_token)
+        server = await WebhookServer(
+            ingress,
+            host=settings.host,
+            port=settings.port,
+            console=runtime.console,
+            control_identity_id=settings.control_identity_id,
+        ).start()
+        _print_started(runtime, settings, server.bound_port)
+
+        while True:
+            await asyncio.sleep(settings.tick_seconds)
+            await runtime.tick()
+    finally:
+        if server is not None:
+            await server.stop()
+        runtime.close()
+
+
+def _settings_from_args(args: argparse.Namespace) -> AppSettings:
+    """Load dotenv settings and apply explicit CLI overrides."""
 
     settings = AppSettings.from_env(args.env_file)
     if args.data_dir is not None:
@@ -160,36 +390,91 @@ async def run(args: argparse.Namespace) -> int:
             "NEXUS_SEED_WEBHOOK_TOKEN is required when listening beyond localhost"
         )
 
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    runtime = build_runtime(settings, env_file=args.env_file)
-    server: WebhookServer | None = None
+    return settings
+
+
+def _read_payload(args: argparse.Namespace) -> dict[str, Any]:
+    """Read and validate an optional JSON-object command payload."""
+
+    raw = getattr(args, "payload_json", None)
+    payload_file = getattr(args, "payload_file", None)
+    if payload_file is not None:
+        raw = Path(payload_file).read_text(encoding="utf-8")
+    if raw is None:
+        return {}
     try:
-        await runtime.run_pending()
-        await runtime.tick()
-        if args.check_llm:
-            return await _check_llm(runtime)
-        if args.once:
-            print(json.dumps(_status(runtime, settings), ensure_ascii=False, indent=2))
-            return 0
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise ApplicationConfigurationError(f"payload is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ApplicationConfigurationError("payload must be a JSON object")
+    return payload
 
-        ingress = WebhookIngress(runtime.ingress, token=settings.webhook_token)
-        server = await WebhookServer(
-            ingress,
-            host=settings.host,
-            port=settings.port,
-        ).start()
-        _print_started(runtime, settings, server.bound_port)
 
-        while True:
-            await asyncio.sleep(settings.tick_seconds)
-            await runtime.tick()
-    finally:
-        if server is not None:
-            await server.stop()
-        runtime.close()
+def _print_operational_status(report: dict[str, Any], *, as_json: bool) -> None:
+    """Print a status snapshot for people or shell tooling."""
+
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    print("NEXUS SEED status")
+    print(f"  database: {report['database']}")
+    if not report.get("initialized"):
+        print("  state: not initialized")
+        print(f"  hint: {report['hint']}")
+        return
+    counts = report["counts"]
+    print(f"  events: {counts['events']}")
+    print(f"  continuations: {counts['continuations']}")
+    print(f"  pending reviews: {counts['pending_reviews']}")
+    _print_count_line("work", report["work_by_status"])
+    _print_count_line("processes", report["processes_by_status"])
+    _print_count_line("deliveries", report["deliveries_by_status"])
+    _print_count_line("provider calls", report["provider_invocations_by_status"])
+    if report["recent_work"]:
+        print("Recent work:")
+        for work in report["recent_work"]:
+            print(
+                f"  {work['id']}  {work['status']}  {work['work_type']}"
+                f"  priority={work['priority']}"
+            )
+    if report["recent_processes"]:
+        print("Recent processes:")
+        for process in report["recent_processes"]:
+            error = f"  error={process['last_error']}" if process["last_error"] else ""
+            print(
+                f"  {process['id']}  {process['status']}  "
+                f"{process['definition_name']}@{process['definition_version']}{error}"
+            )
+
+
+def _print_count_line(label: str, counts: dict[str, int]) -> None:
+    rendered = ", ".join(f"{key}={value}" for key, value in counts.items()) or "none"
+    print(f"  {label}: {rendered}")
+
+
+def _print_reviews(reviews: list, *, as_json: bool) -> None:
+    """Print durable review waiters without exposing unrelated state."""
+
+    if as_json:
+        print(
+            json.dumps(
+                {"count": len(reviews), "reviews": [item.to_dict() for item in reviews]},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    if not reviews:
+        print("No pending human reviews.")
+        return
+    print(f"Pending human reviews: {len(reviews)}")
+    for review in reviews:
+        print(
+            f"  {review.review_id}  {review.event_type}  "
+            f"process={review.process_definition}  since={review.created_at}"
+        )
+    print("Decide with: nexus-seed review <review-id> approve|reject")
 
 
 async def _check_llm(runtime: Runtime) -> int:
@@ -259,6 +544,7 @@ def _print_started(runtime: Runtime, settings: AppSettings, bound_port: int) -> 
     )
     print("NEXUS SEED is running")
     print(f"  webhook: http://{settings.host}:{bound_port}/ingress/webhook")
+    print(f"  control: http://{settings.host}:{bound_port}/control")
     print(f"  token:   {token_state}")
     print(f"  database: {settings.data_dir / 'nexus_seed.db'}")
     print(f"  LLM:     {llm_state}")
@@ -314,7 +600,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nNEXUS SEED stopped.")
         return 130
-    except (ApplicationConfigurationError, LLMConfigurationError, OSError) as exc:
+    except (
+        ApplicationConfigurationError,
+        LLMConfigurationError,
+        OperationalCommandError,
+        OSError,
+    ) as exc:
         print(f"configuration/startup error: {exc}", file=sys.stderr)
         return 2
 

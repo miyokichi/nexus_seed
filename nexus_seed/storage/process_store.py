@@ -183,6 +183,30 @@ class ProcessStore:
         )
         return [self._row_to_instance(r) for r in rows]
 
+    def pause_for_work(self, work_requirement_id: uuid.UUID) -> None:
+        """Park future activations for one Work without touching external effects."""
+        self.db.execute(
+            """UPDATE process_instances SET status=?, updated_at=?
+               WHERE work_requirement_id=? AND status IN (?, ?)""",
+            (ProcessStatus.PAUSED.value, datetime.now().astimezone().isoformat(),
+             str(work_requirement_id), ProcessStatus.RUNNABLE.value,
+             ProcessStatus.RETRY_WAIT.value),
+        )
+
+    def resume_for_work(self, work_requirement_id: uuid.UUID) -> None:
+        """Make parked activations runnable; executor recompiles fresh Context."""
+        self.db.execute(
+            "UPDATE process_instances SET status=?, updated_at=? WHERE work_requirement_id=? AND status=?",
+            (ProcessStatus.RUNNABLE.value, datetime.now().astimezone().isoformat(),
+             str(work_requirement_id), ProcessStatus.PAUSED.value),
+        )
+
+    def update_priority_for_work(self, work_requirement_id: uuid.UUID, priority: int) -> None:
+        self.db.execute(
+            "UPDATE process_instances SET priority=?, updated_at=? WHERE work_requirement_id=?",
+            (priority, datetime.now().astimezone().isoformat(), str(work_requirement_id)),
+        )
+
     def find_by_trigger(
         self, event_id: uuid.UUID, name: str, version: str
     ) -> list[ProcessInstance]:

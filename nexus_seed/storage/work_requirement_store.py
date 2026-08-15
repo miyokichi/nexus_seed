@@ -36,8 +36,12 @@ class WorkRequirementStore:
                  selected_definition_name, selected_definition_version,
                  available_input_types_json, required_output_types_json,
                  selected_plan_id, decision_preference_json, max_replans,
-                 replan_count, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 replan_count, objective, scope_json, project, human_priority,
+                 deadline, input_resources_json, constraints_json,
+                 completion_criteria_json, provider_directive_json, goal_id,
+                 command_id, pre_pause_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(requirement.id),
@@ -64,6 +68,18 @@ class WorkRequirementStore:
                 else None,
                 requirement.max_replans,
                 requirement.replan_count,
+                requirement.objective,
+                dumps(requirement.scope),
+                requirement.project,
+                requirement.human_priority,
+                requirement.deadline.isoformat() if requirement.deadline else None,
+                dumps(requirement.input_resources),
+                dumps(requirement.constraints),
+                dumps(requirement.completion_criteria),
+                dumps(requirement.provider_directive) if requirement.provider_directive else None,
+                str(requirement.goal_id) if requirement.goal_id else None,
+                str(requirement.command_id) if requirement.command_id else None,
+                requirement.pre_pause_status,
                 requirement.created_at.isoformat(),
                 requirement.updated_at.isoformat(),
             ),
@@ -138,6 +154,56 @@ class WorkRequirementStore:
             (value, utcnow().isoformat(), str(requirement_id)),
         )
 
+    def pause(self, requirement_id: uuid.UUID) -> bool:
+        """Persist PAUSED while remembering the lifecycle state to resume."""
+        current = self.get(requirement_id)
+        if current is None or current.resolved or current.status is WorkStatus.PAUSED:
+            return False
+        self.db.execute(
+            "UPDATE work_requirements SET pre_pause_status=status, status=?, updated_at=? WHERE id=?",
+            (WorkStatus.PAUSED.value, utcnow().isoformat(), str(requirement_id)),
+        )
+        return True
+
+    def resume(self, requirement_id: uuid.UUID) -> WorkStatus | None:
+        """Restore the pre-pause lifecycle state, defaulting to EXPECTED."""
+        current = self.get(requirement_id)
+        if current is None or current.status is not WorkStatus.PAUSED:
+            return None
+        try:
+            restored = WorkStatus(current.pre_pause_status or WorkStatus.EXPECTED.value)
+        except ValueError:
+            restored = WorkStatus.EXPECTED
+        self.db.execute(
+            "UPDATE work_requirements SET status=?, pre_pause_status=NULL, updated_at=? WHERE id=?",
+            (restored.value, utcnow().isoformat(), str(requirement_id)),
+        )
+        return restored
+
+    def update_priority(self, requirement_id: uuid.UUID, name: str, value: int) -> None:
+        self.db.execute(
+            "UPDATE work_requirements SET human_priority=?, priority=?, updated_at=? WHERE id=?",
+            (name, value, utcnow().isoformat(), str(requirement_id)),
+        )
+
+    def update_deadline(self, requirement_id: uuid.UUID, deadline: datetime) -> None:
+        self.db.execute(
+            "UPDATE work_requirements SET deadline=?, updated_at=? WHERE id=?",
+            (deadline.isoformat(), utcnow().isoformat(), str(requirement_id)),
+        )
+
+    def update_provider_directive(self, requirement_id: uuid.UUID, directive: dict) -> None:
+        self.db.execute(
+            "UPDATE work_requirements SET provider_directive_json=?, updated_at=? WHERE id=?",
+            (dumps(directive), utcnow().isoformat(), str(requirement_id)),
+        )
+
+    def for_goal(self, goal_id: uuid.UUID) -> list[WorkRequirement]:
+        rows = self.db.query(
+            "SELECT * FROM work_requirements WHERE goal_id=? ORDER BY created_at", (str(goal_id),)
+        )
+        return [self._row(row) for row in rows]
+
     def get(self, requirement_id: uuid.UUID) -> WorkRequirement | None:
         """Return the requirement with ``requirement_id``, or ``None``."""
         row = self.db.query_one(
@@ -191,6 +257,19 @@ class WorkRequirementStore:
             decision_preference=_preference(_column(row, "decision_preference_json")),
             max_replans=_column(row, "max_replans"),
             replan_count=_column(row, "replan_count") or 0,
+            objective=_column(row, "objective"),
+            scope=loads(_column(row, "scope_json")) or {},
+            project=_column(row, "project"),
+            human_priority=_column(row, "human_priority"),
+            deadline=(datetime.fromisoformat(_column(row, "deadline"))
+                      if _column(row, "deadline") else None),
+            input_resources=loads(_column(row, "input_resources_json")) or [],
+            constraints=loads(_column(row, "constraints_json")) or {},
+            completion_criteria=loads(_column(row, "completion_criteria_json")) or [],
+            provider_directive=loads(_column(row, "provider_directive_json")),
+            goal_id=_uuid(_column(row, "goal_id")),
+            command_id=_uuid(_column(row, "command_id")),
+            pre_pause_status=_column(row, "pre_pause_status"),
             id=uuid.UUID(row["id"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),

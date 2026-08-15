@@ -882,6 +882,43 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **132.** One ProcessDefinition may bind several providers.
 - **133.** Provider selection and Plan selection remain separate.
 
+## Done in Phase 5G (Human Command & Goal Interface)
+
+- `Command`, `CommandResult`, `HumanIdentity`, `Goal`, structured Work request,
+  constraints and provider directives are domain/application data, never Core
+  primitives. `ConsoleService` is channel-independent and backs CLI/HTTP plus
+  future Discord slash-command mapping.
+- Explicit slash commands are parsed deterministically and pass schema,
+  unambiguous-target and permission validation. Natural-language
+  `CommandProposal` is untrusted; ambiguous targets clarify and high-impact
+  proposals wait for confirmation.
+- Human Work preserves objective, scope, priority, deadline, resources,
+  constraints, completion criteria, provider directive, command and Goal
+  provenance on `WorkRequirement`. Provider constraints only narrow
+  `ProviderSelector`; they never grant permissions.
+- Work pause/restart is durable. Parked ProcessInstances resume RUNNABLE and
+  follow the ordinary activation path, so Context is freshly compiled.
+  Cancellation stops future Process/Plan/Action/Acquisition stages but does not
+  pretend an already-started external effect was interrupted.
+- Goal evaluation is an ordinary event-driven Process. Goal-gap Work uses a
+  deterministic semantic key, is generated through `work_required`, and is
+  reevaluated on state/work events without a daemon or infinite loop.
+- New tables: `human_identities`, `commands`, `command_results`, `goals`;
+  WorkRequirement gains explicit control metadata and Goal/Command provenance.
+
+## Runtime invariants (added in Phase 5G — keep them)
+
+- **144.** Explicit Command and Natural Language Interaction stay separate.
+- **145.** A Command passes schema validation and authorization before execution.
+- **146.** An LLM-generated CommandProposal is never committed directly.
+- **147.** Human Command never bypasses Safety or Permission Policy.
+- **148.** Goal and WorkRequirement stay separate.
+- **149.** Goal is an input for discovering needed Work from current state.
+- **150.** Goal reevaluation generates Work idempotently.
+- **151.** Provider instruction is a ProviderSelector constraint/preference.
+- **152.** Pause/resume recompiles fresh Context.
+- **153.** Every control Command audits issuer, request, validation and result.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 6+ is intentionally not started. Plugin/package discovery and install,

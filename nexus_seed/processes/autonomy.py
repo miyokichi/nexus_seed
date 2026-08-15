@@ -18,6 +18,7 @@ from ..autonomy.models import (
 from ..construction.models import ConstructionResultStatus
 from ..core.event import utcnow
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
+from ..work.work_requirement import WorkStatus
 from ..extension.models import ExtensionProposalStatus
 from .construction import (
     EXTENSION_CONSTRUCTION_FAILED, EXTENSION_CONSTRUCTION_READY,
@@ -183,6 +184,8 @@ def _open_or_join(ctx: ProcessContext) -> ProcessResult:
     work = ctx.services.get_work_requirement(proposal.work_requirement_id)
     if gap is None or work is None:
         return ctx.fail("gap/work provenance missing at autonomy boundary")
+    if work.status in {WorkStatus.PAUSED, WorkStatus.WAITING_REVIEW, WorkStatus.CANCELLED}:
+        return ctx.complete(output={"opened": False, "reason": work.status.value})
     requirements = gap.missing_capabilities or gap.required_capabilities
     key = acquisition_key_for(requirements)
     store = ctx.services.get_autonomy_store()

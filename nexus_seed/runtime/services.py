@@ -69,6 +69,7 @@ class RuntimeServices:
         autonomy_budget=None,
         provider_registry=None,
         continuation_store=None,
+        control_store=None,
         runtime=None,
     ) -> None:
         self._construction_store = construction_store
@@ -85,6 +86,7 @@ class RuntimeServices:
         self._autonomy_budget = autonomy_budget
         self._providers = provider_registry
         self._continuation_store = continuation_store
+        self._control_store = control_store
         self._extension_store = extension_store
         self._acquisition_analyzer = acquisition_analyzer
         self._extension_validator = extension_validator
@@ -123,6 +125,24 @@ class RuntimeServices:
     def get_work_requirement_by_key(self, work_key: str) -> WorkRequirement | None:
         """Return a work requirement by its logical ``work_key``."""
         return self._work_requirement_store.get_by_work_key(work_key)
+
+    def get_work_for_goal(self, goal_id) -> list[WorkRequirement]:
+        """Return every WorkRequirement generated for a Goal."""
+        return self._work_requirement_store.for_goal(goal_id)
+
+    def get_goal(self, goal_id):
+        """Return one durable Goal for event-driven evaluation."""
+        return self._control_store.get_goal(goal_id) if self._control_store else None
+
+    def get_active_goals(self) -> list:
+        """Return ACTIVE goals for state/work-triggered reevaluation."""
+        if self._control_store is None:
+            return []
+        return self._control_store.goals("ACTIVE")
+
+    def get_control_store(self):
+        """Read-side access to Goal records and command provenance."""
+        return self._control_store
 
     # --- processes ---------------------------------------------------------
 

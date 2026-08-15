@@ -22,9 +22,10 @@ roles of a Process—not additional core abstractions.
 - Capability-based work matching, multi-process plans, and bounded replanning
 - LLM input and external action boundaries with validation, policy, and audit trails
 - Durable ingress, resource versioning, extraction, and event delivery
-- Sandboxed capability construction, verification, reviewed production activation, and rollback
+- Capability-gap analysis, sandboxed construction, verification, reviewed production activation, and rollback
 - Phase 5D autonomous capability acquisition with `AUTO`, `REVIEW_REQUIRED`, `FORBIDDEN`, and hard budgets
 - Phase 5E provider federation for local Processes, directory Skills, and external Agents
+- Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -64,23 +65,52 @@ nexus-seed --check-llm
 nexus-seed
 ```
 
-Send an Event from another terminal:
+Submit a natural-language task from another terminal. The command reads the
+webhook URL and token from `.env`:
 
 ```powershell
-$headers = @{ "X-Ingress-Token" = "replace-this-token" }
-$body = @{
-    source_event_key = "manual-20260815-001"
-    event_type = "human_message"
-    payload = @{ text = "Analyze this request and determine the required work" }
-} | ConvertTo-Json -Depth 5
-Invoke-RestMethod -Uri http://127.0.0.1:8787/ingress/webhook `
-    -Method Post -Headers $headers -ContentType "application/json" -Body $body
+nexus-seed task "Analyze this request and determine the required work"
 ```
 
-`202 Accepted` means the Event is durable; processing continues asynchronously.
-Restarting the same command recovers unfinished delivery, processes, retries,
-timers, and continuations from SQLite. See the [Japanese guide](README.ja.md)
-for the full step-by-step procedure.
+Inspect durable state and handle human-review pauses without stopping the
+server:
+
+```powershell
+nexus-seed status
+nexus-seed reviews
+nexus-seed review <review-id> approve
+```
+
+Phase 5G also provides an authenticated, schema-validated control plane. These
+commands bypass natural-language interpretation, but never bypass safety,
+permission, action, or autonomy policy:
+
+```powershell
+nexus-seed control '/status'
+nexus-seed control '/task create objective="Analyze Project A" priority=HIGH cloud_forbidden=true'
+nexus-seed control '/pause <work-id>'
+nexus-seed control '/resume <work-id>'
+nexus-seed control '/provider <work-id> REQUIRE local_runtime'
+nexus-seed control '/trace <work-id>'
+nexus-seed control '/goal create objective="Make Project A review ready" priority=HIGH'
+```
+
+The local control principal and comma-separated grants are configured with
+`NEXUS_SEED_CONTROL_IDENTITY` and `NEXUS_SEED_CONTROL_PERMISSIONS`. Goals are
+separate durable domain records; `evaluate_goal` discovers deduplicated Work
+through the existing event-driven pipeline.
+
+Submit domain Events with inline JSON or `--payload-file`:
+
+```powershell
+nexus-seed event measurement_completed --payload-file measurement.json
+```
+
+An `accepted` response means the Event is durable; processing continues
+asynchronously. `--source-key` supplies a stable external deduplication key.
+Restarting the server recovers unfinished delivery, processes, retries, timers,
+and continuations from SQLite. See the [Japanese guide](README.ja.md) for the
+full command reference and step-by-step procedure.
 
 For development only:
 
@@ -96,8 +126,12 @@ nexus_seed/core/          fixed data models
 nexus_seed/runtime/       routing, scheduling, execution, recovery
 nexus_seed/storage/       SQLite persistence
 nexus_seed/processes/     concrete Process definitions and handlers
+nexus_seed/extension/     Phase 5A capability gaps and acquisition proposals
+nexus_seed/construction/  Phase 5B sandboxed construction and verification
+nexus_seed/installation/  Phase 5C reviewed activation and rollback
 nexus_seed/autonomy/      Phase 5D sessions, policy, budget, trace
 nexus_seed/providers/     Phase 5E providers, delegation, skill import, trace
+nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
 tests/                    acceptance and restart-convergence tests
 ```
 
@@ -107,5 +141,5 @@ tests/                    acceptance and restart-convergence tests
 - [詳細アーキテクチャ（日本語）](docs/architecture.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)
 
-Current implementation stops at **Phase 5E**. Phase 6 work is intentionally
+Current implementation stops at **Phase 5G**. Phase 6 work is intentionally
 out of scope.

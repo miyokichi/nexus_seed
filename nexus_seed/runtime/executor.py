@@ -85,6 +85,7 @@ class Executor:
         installation_manager=None,
         autonomy_store=None,
         provider_registry=None,
+        control_store=None,
     ) -> None:
         self.capability_store = capability_store
         self.plan_store = plan_store
@@ -95,6 +96,7 @@ class Executor:
         self.installation_manager = installation_manager
         self.autonomy_store = autonomy_store
         self.provider_registry = provider_registry
+        self.control_store = control_store
         self.db = db
         self.registry = registry
         self.process_store = process_store
@@ -123,6 +125,19 @@ class Executor:
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
         """Run one activation of ``instance`` and return its result."""
+        if instance.work_requirement_id is not None:
+            controlled_work = self.work_requirement_store.get(instance.work_requirement_id)
+            if controlled_work is not None and controlled_work.status.value == "PAUSED":
+                instance.status = ProcessStatus.PAUSED
+                self.process_store.save_instance(instance)
+                return ProcessResult(status=ProcessStatus.PAUSED, output={"paused": True})
+            if controlled_work is not None and controlled_work.status.value == "CANCELLED":
+                continuation = self.continuation_store.for_instance(instance.id)
+                if continuation is not None:
+                    self.continuation_store.delete(continuation.id)
+                instance.status = ProcessStatus.COMPLETED
+                self.process_store.save_instance(instance)
+                return ProcessResult(status=ProcessStatus.COMPLETED, output={"cancelled": True})
         original_event_id = instance.pending_event_id
         key = activation_key(instance.id, original_event_id)
         if self.activation_store.exists(key):
@@ -389,6 +404,11 @@ class Executor:
                         self.autonomy_store.save_decision(autonomy_decision)
                     for attempt in result.acquisition_attempts:
                         self.autonomy_store.save_attempt(attempt)
+                if self.control_store is not None:
+                    for goal in result.goals:
+                        self.control_store.save_goal(goal)
+                    for goal_id, status in result.goal_updates:
+                        self.control_store.update_goal_status(goal_id, status)
                 self._persist_journals(result)
                 if self.proposal_store is not None:
                     for proposal in result.proposals:
