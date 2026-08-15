@@ -36,6 +36,7 @@ boundaries where NEXUS SEED perceives and acts on the real world:
 | **5B** | Sandboxed capability construction and layered verification |
 | **5C** | Reviewed installation, production smoke verification and activation |
 | **5D** | Policy- and budget-bounded autonomous capability acquisition loop |
+| **5E** | Capability-provider federation, Skill import, and durable Agent delegation |
 
 ## Design principles
 

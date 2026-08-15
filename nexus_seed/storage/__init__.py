@@ -10,6 +10,7 @@ from .llm_invocation_store import LLMInvocationStore
 from .observation_store import ObservationStore
 from .process_store import ProcessStore
 from .proposal_store import ProposalStore
+from .provider_store import ProviderStore
 from .state_delta_store import StateDeltaStore
 from .state_store import StateStore
 from .timer_store import TimerRecord, TimerStore
@@ -28,6 +29,7 @@ __all__ = [
     "ObservationStore",
     "ProcessStore",
     "ProposalStore",
+    "ProviderStore",
     "StateDeltaStore",
     "StateStore",
     "TimerRecord",

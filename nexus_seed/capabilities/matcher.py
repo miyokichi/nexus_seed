@@ -50,8 +50,9 @@ def definition_enabled(definition) -> bool:
 class CapabilityMatcher:
     """Chooses the one ProcessDefinition that can satisfy a work requirement."""
 
-    def __init__(self, registry) -> None:
+    def __init__(self, registry, provider_registry=None) -> None:
         self.registry = registry
+        self.provider_registry = provider_registry
 
     def match(
         self,
@@ -114,6 +115,26 @@ class CapabilityMatcher:
                 reasons=[f"no process provides {sorted(set(unprovided))}"],
             )
 
+        unavailable = [
+            r.name
+            for r in mandatory
+            if not any(
+                r.name in c.covered_capabilities and c.provider_available
+                for c in candidates
+            )
+        ]
+        semantic_matches = [c for c in candidates if not c.missing_capabilities]
+        if semantic_matches or unavailable:
+            return MatchResult(
+                status=CapabilityMatchStatus.MISSING_PROVIDER,
+                candidates=candidates,
+                missing_capabilities=[],
+                reasons=[
+                    "required competence exists, but no eligible execution "
+                    f"provider is available for {sorted(set(unavailable)) or 'the complete process'}"
+                ],
+            )
+
         # Every capability exists somewhere — just not together.
         return MatchResult(
             status=CapabilityMatchStatus.COMPOSITION_REQUIRED,
@@ -151,17 +172,25 @@ class CapabilityMatcher:
         covered, missing = self._split(mandatory, provided)
         optional_covered, _ = self._split(optional, provided)
 
+        provider_available = (
+            True
+            if self.provider_registry is None
+            else self.provider_registry.has_eligible_provider(definition)
+        )
         candidate = CandidateMatch(
             definition_name=definition.name,
             definition_version=definition.version,
             covered_capabilities=covered,
             missing_capabilities=missing,
             optional_covered=optional_covered,
-            eligible=not missing,
+            eligible=not missing and provider_available,
+            provider_available=provider_available,
         )
         candidate.score = self._score(definition, candidate)
         if missing:
             candidate.reasons.append(f"does not provide {sorted(missing)}")
+        elif not provider_available:
+            candidate.reasons.append("no eligible execution provider")
         else:
             candidate.reasons.append(f"provides all of {sorted(covered)}")
             if optional_covered:

@@ -22,9 +22,12 @@ from .models import (
 class PlanValidator:
     """Checks that a plan is a runnable DAG that actually does the job."""
 
-    def __init__(self, registry, *, bounds: SearchBounds | None = None) -> None:
+    def __init__(
+        self, registry, *, bounds: SearchBounds | None = None, provider_registry=None
+    ) -> None:
         self.registry = registry
         self.bounds = bounds or SearchBounds()
+        self.provider_registry = provider_registry
 
     def validate_candidate(
         self,
@@ -87,6 +90,11 @@ class PlanValidator:
                 continue
             if not self._capabilities_live(node):
                 result.fail(f"{node.node_key}: capabilities no longer provided")
+            if (
+                self.provider_registry is not None
+                and not self.provider_registry.has_eligible_provider(definition)
+            ):
+                result.fail(f"{node.node_key}: no eligible execution provider")
         self._check_legacy_bindings(nodes, edges or [], result)
         return result
 
@@ -114,6 +122,11 @@ class PlanValidator:
                 result.fail(f"{node.node_key}: no such ProcessDefinition")
             elif not _enabled(definition):
                 result.fail(f"{node.node_key}: ProcessDefinition is disabled")
+            elif (
+                self.provider_registry is not None
+                and not self.provider_registry.has_eligible_provider(definition)
+            ):
+                result.fail(f"{node.node_key}: no eligible execution provider")
 
     @staticmethod
     def _check_dag(candidate: PlanCandidate, result: PlanValidation) -> None:

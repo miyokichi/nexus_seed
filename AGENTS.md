@@ -838,6 +838,50 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **122.** Construction redesign attempts and transient Runtime retries stay distinct.
 - **123.** Activation returns through capability reconciliation; acquisition never satisfies Work directly.
 
+## Done in Phase 5E (Capability Provider Federation)
+
+- `Capability`, `ProcessDefinition`, and `ExecutionProvider` are separate.
+  A ProcessDefinition remains the semantic contract; `ProviderBinding` says
+  who can execute it. Existing definitions receive an automatic, durable
+  `local_runtime` INTERNAL binding.
+- `ProviderRegistry` and deterministic `ProviderSelector` filter on status,
+  health, adapter presence, permissions, priority, trust, cost, latency, load,
+  and stable id. Plan selection remains a separate decision.
+- External Skill and Agent work uses structured `DelegationRequest` /
+  `DelegationResult` plus a durable, idempotent `ProviderInvocation` journal.
+  PENDING work suspends on a normal Continuation waiting for
+  `provider_result`, and resumes after restart without invoking twice.
+- `BLOCKED_PROVIDER` is distinct from `BLOCKED_CAPABILITY`. Provider recovery
+  re-offers existing work through `provider_available`; it does not create a
+  CapabilityGap or replay the originating Event.
+- Failover is permitted only when a provider reports unavailability before
+  execution starts. An exception after start is journaled as an unknown/failed
+  attempt and never silently delegated a second time.
+- External results may yield typed outputs, inert artifacts, or proposals.
+  They cannot write World State or authorize Actions directly, and undeclared
+  output types fail validation.
+- `DirectorySkillAdapter` translates `skill.json` + `SKILL.md` packages into a
+  source-neutral `SkillDescriptor`, ProcessDefinition, provider and binding.
+  Natural language never establishes capability claims. Permissions are
+  checked explicitly, and packages containing scripts require an active Phase
+  5C installation.
+- New tables: `execution_providers`, `provider_bindings`,
+  `provider_invocations`, `provider_selections`, `imported_skills`. Provider
+  health and joined provider/skill/delegation traces are queryable.
+
+## Runtime invariants (added in Phase 5E — keep them)
+
+- **124.** Capability / ProcessDefinition / ExecutionProvider stay separate.
+- **125.** Skill and Agent are roles, never Core primitives.
+- **126.** ProcessDefinition is the source of truth for semantic execution contracts.
+- **127.** External Skills and Agents connect as ExecutionProviders.
+- **128.** A capability is executable only with an eligible provider.
+- **129.** External provider output never commits directly to World State or Actions.
+- **130.** External delegation is durably and idempotently tracked.
+- **131.** Skill import never bypasses Permission or Installation safety boundaries.
+- **132.** One ProcessDefinition may bind several providers.
+- **133.** Provider selection and Plan selection remain separate.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 6+ is intentionally not started. Plugin/package discovery and install,

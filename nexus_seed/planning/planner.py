@@ -57,9 +57,12 @@ class CompositionPlanner:
     name = "composition"
     version = "1"
 
-    def __init__(self, registry, *, bounds: SearchBounds | None = None) -> None:
+    def __init__(
+        self, registry, *, bounds: SearchBounds | None = None, provider_registry=None
+    ) -> None:
         self.registry = registry
         self.bounds = bounds or SearchBounds()
+        self.provider_registry = provider_registry
         self._definition_cache: dict = {}
 
     # --- entry point -------------------------------------------------------
@@ -113,6 +116,11 @@ class CompositionPlanner:
         providers: list[Provider] = []
         for definition in definitions:
             if not definition_enabled(definition):
+                continue
+            if (
+                self.provider_registry is not None
+                and not self.provider_registry.has_eligible_provider(definition)
+            ):
                 continue
             capabilities = self.registry.get_capabilities_for_process(
                 definition.name, definition.version

@@ -84,6 +84,7 @@ class Executor:
         installation_store=None,
         installation_manager=None,
         autonomy_store=None,
+        provider_registry=None,
     ) -> None:
         self.capability_store = capability_store
         self.plan_store = plan_store
@@ -93,6 +94,7 @@ class Executor:
         self.installation_store = installation_store
         self.installation_manager = installation_manager
         self.autonomy_store = autonomy_store
+        self.provider_registry = provider_registry
         self.db = db
         self.registry = registry
         self.process_store = process_store
@@ -187,7 +189,10 @@ class Executor:
         )
 
         try:
-            result = await handler(ctx)
+            if self.provider_registry is None:
+                result = await handler(ctx)
+            else:
+                result = await self.provider_registry.execute(definition, ctx, handler)
         except RetryableError as exc:
             logger.warning("handler %s retryable error: %s", definition.handler, exc)
             result = ProcessResult(
@@ -360,6 +365,11 @@ class Executor:
                         # Component identity, runnable definition and provider
                         # links are one atomic transition (Invariant 111).
                         self.process_store.upsert_definition(definition)
+                        if self.provider_registry is not None:
+                            # Phase 5E extends the same atomic publication:
+                            # an installed internal definition is not runnable
+                            # until its local execution provider exists.
+                            self.provider_registry.ensure_internal_binding(definition)
                         for capability in capabilities:
                             persisted = self.capability_store.save(capability)
                             self.capability_store.link(

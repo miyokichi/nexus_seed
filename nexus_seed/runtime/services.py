@@ -67,6 +67,7 @@ class RuntimeServices:
         autonomy_store=None,
         autonomy_policy=None,
         autonomy_budget=None,
+        provider_registry=None,
         continuation_store=None,
         runtime=None,
     ) -> None:
@@ -82,6 +83,7 @@ class RuntimeServices:
         self._autonomy_store = autonomy_store
         self._autonomy_policy = autonomy_policy
         self._autonomy_budget = autonomy_budget
+        self._providers = provider_registry
         self._continuation_store = continuation_store
         self._extension_store = extension_store
         self._acquisition_analyzer = acquisition_analyzer
@@ -131,6 +133,10 @@ class RuntimeServices:
     def get_definition(self, name: str, version: str) -> ProcessDefinition | None:
         """Return a ProcessDefinition — the carrier of granted permissions."""
         return self._process_store.get_definition(name, version)
+
+    def get_provider_registry(self):
+        """Return the read-side operational provider self-model."""
+        return self._providers
 
     def find_processes_by_work_key(self, work_key: str) -> list[ProcessInstance]:
         """Return every process (any status) fulfilling ``work_key``."""

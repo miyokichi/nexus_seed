@@ -74,6 +74,11 @@ from ..storage.extension_store import ExtensionStore
 from ..storage.construction_store import ConstructionStore
 from ..storage.installation_store import InstallationStore
 from ..storage.autonomy_store import AutonomyStore
+from ..storage.provider_store import ProviderStore
+from ..providers.models import ExecutionProvider, ProviderBinding
+from ..providers.registry import ProviderRegistry
+from ..providers.skills import DirectorySkillAdapter, SkillImporter
+from ..providers.trace import ProviderTrace, get_provider_trace
 from ..construction.generator import LLMConstructionGenerator
 from ..construction.planner import ConstructionPlanner
 from ..construction.validator import ConstructionValidator
@@ -218,10 +223,21 @@ class Runtime:
         # (which is what it knows about the outside).
         self.capability_store = CapabilityStore(self.db)
         self.capabilities = CapabilityRegistry(self.capability_store)
-        self.capability_matcher = CapabilityMatcher(self.capabilities)
+        self.provider_store = ProviderStore(self.db)
+        self.providers = ProviderRegistry(self.provider_store, self.capabilities)
+        for persisted_definition in self.process_store.all_definitions():
+            if not (persisted_definition.metadata or {}).get("external_provider_only"):
+                self.providers.ensure_internal_binding(persisted_definition)
+        self.capability_matcher = CapabilityMatcher(
+            self.capabilities, self.providers
+        )
         self.plan_store = PlanStore(self.db)
-        self.composition_planner = CompositionPlanner(self.capabilities)
-        self.plan_validator = PlanValidator(self.capabilities)
+        self.composition_planner = CompositionPlanner(
+            self.capabilities, provider_registry=self.providers
+        )
+        self.plan_validator = PlanValidator(
+            self.capabilities, provider_registry=self.providers
+        )
         # Phase 4C: composing a plan and choosing one are separate jobs
         # (Invariant 75), so the pieces that do the choosing are separate too.
         self.decision_store = DecisionStore(self.db)
@@ -318,6 +334,7 @@ class Runtime:
             autonomy_store=self.autonomy_store,
             autonomy_policy=self.autonomy_policy,
             autonomy_budget=self.default_autonomy_budget,
+            provider_registry=self.providers,
             continuation_store=self.continuation_store,
             runtime=self,
             extractor_registry=self.extractors,
@@ -367,6 +384,7 @@ class Runtime:
             installation_store=self.installation_store,
             installation_manager=self.installation_manager,
             autonomy_store=self.autonomy_store,
+            provider_registry=self.providers,
         )
         #: How much one drain call may do.  Unlimited by default, so callers
         #: written before Phase 4B.1 behave exactly as they did.
@@ -386,7 +404,11 @@ class Runtime:
     # --- registration ------------------------------------------------------
 
     def register_process(
-        self, definition: ProcessDefinition, handler: Handler
+        self,
+        definition: ProcessDefinition,
+        handler: Handler,
+        *,
+        bind_internal: bool = True,
     ) -> None:
         """Persist ``definition``, bind its handler, and declare what it can do.
 
@@ -398,6 +420,8 @@ class Runtime:
         """
         self.process_store.upsert_definition(definition)
         self.registry.register(definition.handler, handler)
+        if bind_internal:
+            self.providers.ensure_internal_binding(definition)
         logger.info("registered process %s v%s", definition.name, definition.version)
 
         refs = as_refs(definition.provides_capabilities)
@@ -419,6 +443,80 @@ class Runtime:
                     },
                 )
             )
+
+    def register_provider(self, provider: ExecutionProvider, adapter=None):
+        """Register an execution provider and its optional runtime adapter."""
+        saved = self.providers.register_provider(provider, adapter)
+        return saved
+
+    def register_provider_adapter(self, name: str, adapter) -> None:
+        """Attach a protocol adapter after restart without changing records."""
+        self.providers.register_adapter(name, adapter)
+
+    def import_directory_skill(
+        self,
+        source,
+        adapter: DirectorySkillAdapter,
+        *,
+        allowed_permissions: tuple[str, ...] = (),
+    ):
+        """Inspect, validate and register a directory-backed external skill."""
+        return SkillImporter(self).import_directory(
+            source, adapter, allowed_permissions=allowed_permissions
+        )
+
+    def register_provider_binding(self, binding: ProviderBinding):
+        """Bind a provider to one semantic ProcessDefinition.
+
+        Availability is announced durably so provider-blocked work is
+        reconciled without replaying its source event.
+        """
+        definition = self.process_store.get_definition(*binding.definition_key)
+        had_eligible = bool(
+            definition and self.providers.has_eligible_provider(definition)
+        )
+        saved = self.providers.register_binding(binding)
+        provider = self.provider_store.get_provider(saved.provider_id)
+        definition = self.process_store.get_definition(*saved.definition_key)
+        if provider is not None and definition is not None:
+            if not had_eligible and self.providers.has_eligible_provider(definition):
+                self.event_store.append(
+                    Event(
+                        type="provider_available",
+                        source="runtime.providers",
+                        payload={
+                            "provider_id": str(provider.id),
+                            "definition_name": definition.name,
+                            "definition_version": definition.version,
+                        },
+                    )
+                )
+        return saved
+
+    def set_provider_enabled(self, provider_id, enabled: bool) -> None:
+        """Enable/disable a provider without deleting its durable identity."""
+        from ..providers.models import ProviderStatus
+
+        before = self.provider_store.get_provider(provider_id)
+        self.provider_store.update_provider(
+            provider_id,
+            status=ProviderStatus.ACTIVE if enabled else ProviderStatus.DISABLED,
+        )
+        if enabled and before is not None:
+            for binding in self.provider_store.all_bindings():
+                if binding.provider_id != before.id or not binding.enabled:
+                    continue
+                self.event_store.append(
+                    Event(
+                        type="provider_available",
+                        source="runtime.providers",
+                        payload={
+                            "provider_id": str(before.id),
+                            "definition_name": binding.process_definition_name,
+                            "definition_version": binding.process_definition_version,
+                        },
+                    )
+                )
 
     def register_capability(self, capability, **kwargs):
         """Declare a capability without attaching it to a process yet."""
@@ -538,6 +636,10 @@ class Runtime:
     def get_process_capabilities(self, name: str, version: str) -> list[Capability]:
         """Return what a ProcessDefinition declares it can accomplish."""
         return self.capabilities.get_capabilities_for_process(name, version)
+
+    def get_definition(self, name: str, version: str) -> ProcessDefinition | None:
+        """Return one persisted semantic ProcessDefinition."""
+        return self.process_store.get_definition(name, version)
 
     def find_capable_processes(self, required) -> list:
         """Return the candidates that could do work needing ``required``."""
@@ -1318,6 +1420,110 @@ class Runtime:
         return recovered
 
     # --- lifecycle ---------------------------------------------------------
+
+    # --- provider federation ---------------------------------------------
+
+    def get_execution_providers(self):
+        """Return all registered execution providers, including disabled ones."""
+        return self.provider_store.all_providers()
+
+    def get_provider_bindings(self, name: str | None = None, version: str | None = None):
+        """Return provider bindings globally or for one ProcessDefinition."""
+        if name is None:
+            return self.provider_store.all_bindings()
+        if version is None:
+            return [
+                binding
+                for binding in self.provider_store.all_bindings()
+                if binding.process_definition_name == name
+            ]
+        return self.provider_store.bindings_for(name, version)
+
+    def get_provider_invocations(self, *, provider_id=None, status=None):
+        """Return durable external delegation attempts."""
+        return self.provider_store.invocations(provider_id=provider_id, status=status)
+
+    def get_provider_selections(self, process_instance_id):
+        """Return the deterministic provider-selection audit for an instance."""
+        return self.provider_store.selections_for_instance(process_instance_id)
+
+    def get_imported_skills(self):
+        """Return directory skills imported through the safety pipeline."""
+        return self.provider_store.imported_skills()
+
+    def get_provider_health(self, provider_id=None) -> dict:
+        """Return provider and invocation health counters for operations."""
+        if provider_id is not None:
+            provider = self.provider_store.get_provider(provider_id)
+            if provider is None:
+                return {}
+            invocations = self.provider_store.invocations(provider_id=provider_id)
+            return {
+                "provider": provider,
+                "operational": self.providers._provider_available(provider),
+                "invocations": len(invocations),
+                "failed_invocations": sum(
+                    inv.status.value == "FAILED" for inv in invocations
+                ),
+            }
+        providers = self.provider_store.all_providers()
+        invocations = self.provider_store.invocations()
+        external_ids = {
+            provider.id
+            for provider in providers
+            if provider.kind.value != "INTERNAL"
+        }
+        selections = self.provider_store.all_selections()
+        selection_counts: dict[str, int] = {}
+        for selection in selections:
+            if selection.provider_id is None:
+                continue
+            key = str(selection.provider_id)
+            selection_counts[key] = selection_counts.get(key, 0) + 1
+        completed_latencies = [
+            (inv.completed_at - inv.started_at).total_seconds()
+            for inv in invocations
+            if inv.completed_at is not None
+        ]
+        return {
+            "providers": len(providers),
+            "operational": sum(self.providers._provider_available(p) for p in providers),
+            "active_providers": sum(p.status.value == "ACTIVE" for p in providers),
+            "unavailable_providers": sum(
+                p.status.value == "UNAVAILABLE" or p.health.value == "UNAVAILABLE"
+                for p in providers
+            ),
+            "by_health": self.providers.provider_health(),
+            "invocations": len(invocations),
+            "waiting_external": sum(
+                inv.status.value == "WAITING_EXTERNAL" for inv in invocations
+            ),
+            "external_invocations_running": sum(
+                inv.provider_id in external_ids
+                and inv.status.value in {"PENDING", "RUNNING", "WAITING_EXTERNAL"}
+                for inv in invocations
+            ),
+            "failed_invocations": sum(
+                inv.status.value == "FAILED" for inv in invocations
+            ),
+            "average_latency_seconds": (
+                sum(completed_latencies) / len(completed_latencies)
+                if completed_latencies
+                else None
+            ),
+            "provider_selection_counts": selection_counts,
+        }
+
+    def get_provider_trace(self, invocation_id) -> ProviderTrace | None:
+        """Join delegation provenance through process, work, plan and Context."""
+        return get_provider_trace(
+            invocation_id,
+            provider_store=self.provider_store,
+            process_store=self.process_store,
+            work_store=self.work_requirement_store,
+            plan_store=self.plan_store,
+            context_store=self.context_snapshot_store,
+        )
 
     def close(self) -> None:
         """Close the database connection."""

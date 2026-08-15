@@ -168,6 +168,7 @@ class CapabilityMatchStatus(str, Enum):
 
     MATCHED_SINGLE_PROCESS = "MATCHED_SINGLE_PROCESS"
     MISSING_CAPABILITY = "MISSING_CAPABILITY"
+    MISSING_PROVIDER = "MISSING_PROVIDER"
     COMPOSITION_REQUIRED = "COMPOSITION_REQUIRED"
 
     @property
@@ -195,6 +196,7 @@ class CandidateMatch:
     optional_covered: list[str] = field(default_factory=list)
     score: float = 0.0
     eligible: bool = False
+    provider_available: bool = True
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -212,6 +214,7 @@ class CandidateMatch:
             "optional_covered": list(self.optional_covered),
             "score": self.score,
             "eligible": self.eligible,
+            "provider_available": self.provider_available,
             "reasons": list(self.reasons),
         }
 

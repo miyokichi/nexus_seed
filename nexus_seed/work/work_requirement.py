@@ -37,6 +37,9 @@ class WorkStatus(str, Enum):
     #: away a real need because of a temporary limitation of our own, and
     #: acquiring the capability later could never revive it.
     BLOCKED_CAPABILITY = "BLOCKED_CAPABILITY"
+    #: Phase 5E: the competence is represented by a ProcessDefinition, but no
+    #: operational provider can execute it.  This is not a capability gap.
+    BLOCKED_PROVIDER = "BLOCKED_PROVIDER"
     #: Phase 4C: the competence exists, but no plan we can currently build and
     #: run satisfies the need — every candidate failed, or replanning hit its
     #: limit.  A narrower statement than BLOCKED_CAPABILITY and, for the same

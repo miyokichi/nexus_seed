@@ -34,6 +34,7 @@ Event → Process → State → Continuation → Event → Resume
 | **5B** | Sandbox 内 Capability 構築と多層検証 |
 | **5C** | レビュー付き Installation / Production smoke / Activation |
 | **5D** | Policy と Budget で制限された自律 Capability Acquisition Loop |
+| **5E** | Capability Provider Federation、Skill import、永続 Agent delegation |
 
 ---
 

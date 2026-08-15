@@ -947,6 +947,93 @@ CREATE TABLE IF NOT EXISTS adapter_checkpoints (
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (adapter_id, stream_key)
 );
+
+-- Phase 5E: operational executors are separate from semantic capabilities.
+CREATE TABLE IF NOT EXISTS execution_providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    health TEXT NOT NULL,
+    adapter_name TEXT NOT NULL,
+    adapter_config_json TEXT NOT NULL DEFAULT '{}',
+    declared_permissions_json TEXT NOT NULL DEFAULT '[]',
+    priority INTEGER NOT NULL DEFAULT 0,
+    estimated_cost REAL,
+    estimated_latency REAL,
+    trust_level REAL NOT NULL DEFAULT 0.5,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(name, version)
+);
+
+CREATE TABLE IF NOT EXISTS provider_bindings (
+    id TEXT PRIMARY KEY,
+    process_definition_name TEXT NOT NULL,
+    process_definition_version TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    required_permissions_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(process_definition_name, process_definition_version, provider_id)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_binding_definition
+    ON provider_bindings(process_definition_name, process_definition_version, enabled);
+
+CREATE TABLE IF NOT EXISTS provider_selections (
+    id TEXT PRIMARY KEY,
+    process_instance_id TEXT NOT NULL,
+    activation_id TEXT NOT NULL,
+    process_definition_name TEXT NOT NULL,
+    process_definition_version TEXT NOT NULL,
+    provider_id TEXT,
+    provider_binding_id TEXT,
+    eligible_provider_ids_json TEXT NOT NULL DEFAULT '[]',
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    selected_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_selection_instance
+    ON provider_selections(process_instance_id, selected_at);
+
+CREATE TABLE IF NOT EXISTS provider_invocations (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    provider_binding_id TEXT NOT NULL,
+    process_instance_id TEXT NOT NULL,
+    plan_node_id TEXT,
+    request_snapshot_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    external_run_id TEXT,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    result_snapshot_json TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_provider_invocation_instance
+    ON provider_invocations(process_instance_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_provider_invocation_status
+    ON provider_invocations(status, provider_id);
+
+CREATE TABLE IF NOT EXISTS imported_skills (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    descriptor_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    provider_id TEXT,
+    process_definition_name TEXT,
+    process_definition_version TEXT,
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source, process_definition_name, process_definition_version)
+);
 """
 
 #: Columns added to pre-existing tables after they shipped.  ``CREATE TABLE IF

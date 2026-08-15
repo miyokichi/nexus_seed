@@ -223,6 +223,34 @@ def _match_capabilities(ctx: ProcessContext, requirement) -> ProcessResult | Non
         )
         return None
 
+    if result.status is CapabilityMatchStatus.MISSING_PROVIDER:
+        ctx.match_work(
+            requirement.id,
+            status=WorkStatus.BLOCKED_PROVIDER,
+            missing_capabilities=[],
+        )
+        ctx.logger.info(
+            "work %s BLOCKED_PROVIDER: %s",
+            requirement.work_key,
+            result.reasons,
+        )
+        return ctx.complete(
+            output={"match_status": result.status.value, "blocked": True},
+            emitted_events=[
+                ctx.new_event(
+                    "provider_missing",
+                    {
+                        "work_requirement_id": str(requirement.id),
+                        "work_type": requirement.work_type,
+                        "required_capabilities": [
+                            r.name for r in requirement.required_capabilities
+                        ],
+                        "reasons": list(result.reasons),
+                    },
+                )
+            ],
+        )
+
     # The need stands; we simply cannot do it right now (Invariant 51).
     ctx.match_work(
         requirement.id,
@@ -421,16 +449,36 @@ async def reconcile_blocked_work(ctx: ProcessContext) -> ProcessResult:
     """
     assert ctx.event is not None and ctx.services is not None
     capability_name = ctx.event.payload.get("capability_name")
+    provider_event = ctx.event.type == "provider_available"
 
-    blocked = ctx.services.get_work_by_status(WorkStatus.BLOCKED_CAPABILITY)
+    blocked_status = (
+        WorkStatus.BLOCKED_PROVIDER
+        if provider_event
+        else WorkStatus.BLOCKED_CAPABILITY
+    )
+    blocked = ctx.services.get_work_by_status(blocked_status)
     reopened = []
     emitted = []
     for requirement in blocked:
         # Narrow to work this capability could plausibly unblock; a requirement
         # blocked on something else is left alone (spec §87).
         wanted = {r.name for r in requirement.required_capabilities}
-        if capability_name is not None and capability_name not in wanted:
+        if not provider_event and capability_name is not None and capability_name not in wanted:
             continue
+        if provider_event:
+            selected_name = ctx.event.payload.get("definition_name")
+            selected_version = ctx.event.payload.get("definition_version")
+            if selected_name and requirement.selected_definition_name not in {
+                None,
+                selected_name,
+            }:
+                continue
+            definition = ctx.services.get_definition(selected_name, selected_version)
+            providers = ctx.services.get_provider_registry()
+            if definition is None or providers is None:
+                continue
+            if not providers.has_eligible_provider(definition):
+                continue
         ctx.mark_work(requirement.id, WorkStatus.EXPECTED)
         emitted.append(
             ctx.new_event("work_required", {"work_requirement_id": str(requirement.id)})
@@ -445,7 +493,11 @@ async def reconcile_blocked_work(ctx: ProcessContext) -> ProcessResult:
             reopened,
         )
     return ctx.complete(
-        output={"reopened": reopened, "capability": capability_name},
+        output={
+            "reopened": reopened,
+            "capability": capability_name,
+            "provider_available": provider_event,
+        },
         emitted_events=emitted,
     )
 
@@ -454,7 +506,7 @@ RECONCILE_BLOCKED_WORK = ProcessDefinition(
     name="reconcile_blocked_work",
     version="1",
     handler="reconcile_blocked_work",
-    trigger_event_types=("capability_available",),
+    trigger_event_types=("capability_available", "provider_available"),
     metadata={"role": "capability_reconciler"},
 )
 
