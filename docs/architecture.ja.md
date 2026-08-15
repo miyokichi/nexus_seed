@@ -292,7 +292,9 @@ flowchart LR
   `BackendResult` に写すだけで、他は何もしません。`LLMBackend`(API キーを環境変数から
   読む)と `FakeLLMBackend`(テストの主力、ネットワーク不要)が同一インターフェースを
   共有します(不変条件 20)。`runtime.register_backend("llm", backend)` で登録し、
-  handler は `ctx.backends` から到達します。
+  handler は `ctx.backends` から到達します。実 LLM の出力はまず厳格な JSON として
+  解析します。失敗した場合に限り `json-repair` で一度修復して再解析し、その後は
+  従来どおり proposal の検証・Policy 境界を通します。
 - **Runtime ではなく Policy。** `InterpretationPolicy`(閾値)が confidence から
   ACCEPT/REVIEW/REJECT を決めます。**状態競合は confidence を上書きし**、最低でも REVIEW を
   強制します。スキーマ/パース失敗は**リトライ可能**(Phase 2A のリトライ)で、部分的な
@@ -776,8 +778,8 @@ tests/               # 全 Phase の受け入れテスト
 
 ## インストール
 
-Python 3.12 以上。**ランタイム依存はゼロ**です。テストのみ `pytest` +
-`pytest-asyncio` を使います。
+Python 3.12 以上。ランタイム依存は、壊れた LLM JSON のフォールバック修復にのみ使う
+`json-repair` 1つです。テストには `pytest` + `pytest-asyncio` を使います。
 
 ```bash
 python -m venv .venv

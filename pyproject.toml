@@ -5,7 +5,9 @@ description = "A durable event-driven runtime with safe autonomous capability ac
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-dependencies = []
+dependencies = [
+    "json-repair>=0.61.7,<1",
+]
 
 [project.optional-dependencies]
 dev = [

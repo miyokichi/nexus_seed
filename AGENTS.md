@@ -34,7 +34,9 @@ This file is guidance for any agent (human or AI) working on this repository.
   build results with `ctx.complete(...)`, `ctx.suspend(...)`, `ctx.fail(...)`.
 - Emit events via `ctx.new_event(...)` so `correlation_id` / `causation_id`
   chains stay intact.
-- Keep dependencies at zero for the library; test-only deps go in `[dev]`.
+- Keep runtime dependencies minimal. `json-repair` is the sole runtime
+  dependency and is used only after strict parsing of LLM JSON fails;
+  test-only deps go in `[dev]`.
 
 ## Testing
 

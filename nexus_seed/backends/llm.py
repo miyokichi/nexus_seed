@@ -19,6 +19,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from json_repair import repair_json
+
 from .base import BackendRequest, BackendResult
 
 # --- helpers to build scripted fake responses ------------------------------
@@ -229,7 +231,7 @@ def _openai_message_text(response: dict[str, Any]) -> str:
 
 
 def _parse_json_output(text: str) -> Any:
-    """Parse JSON, tolerating the code fences commonly emitted by local models."""
+    """Parse model JSON, repairing malformed output only after strict parsing fails."""
 
     stripped = text.strip()
     if stripped.startswith("```") and stripped.endswith("```"):
@@ -239,6 +241,18 @@ def _parse_json_output(text: str) -> Any:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError as original:
+        try:
+            repaired = repair_json(
+                stripped,
+                ensure_ascii=False,
+                skip_json_loads=True,
+            )
+            return json.loads(repaired)
+        except (TypeError, ValueError):
+            pass
+
+        # Preserve the legacy last-resort extraction path if repair cannot
+        # produce valid JSON from prose wrapped around an otherwise valid value.
         decoder = json.JSONDecoder()
         for index, character in enumerate(stripped):
             if character not in "[{":

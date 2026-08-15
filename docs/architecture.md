@@ -294,7 +294,9 @@ flowchart LR
   (reads its API key from the env) and `FakeLLMBackend` (test workhorse, no
   network) share one interface (Invariant 20). Register with
   `runtime.register_backend("llm", backend)`; handlers reach it via
-  `ctx.backends`.
+  `ctx.backends`. Real LLM output is parsed as strict JSON first. If that fails,
+  the output is repaired once with `json-repair` and parsed again before
+  entering the unchanged proposal validation and policy boundary.
 - **Policy, not Runtime.** `InterpretationPolicy` (thresholds) decides
   ACCEPT/REVIEW/REJECT from confidence; a **state conflict overrides confidence**
   and forces at least REVIEW. Schema/parse failures are **retryable** (Phase 2A
@@ -872,8 +874,8 @@ tests/               # phase 1: event_store, process_execution, suspend_resume
 
 ## Install
 
-Requires Python 3.12+. No runtime dependencies; tests use `pytest` +
-`pytest-asyncio`.
+Requires Python 3.12+. The sole runtime dependency is `json-repair`, used only
+as a fallback for malformed LLM JSON; tests use `pytest` + `pytest-asyncio`.
 
 ```bash
 python -m venv .venv

@@ -11,6 +11,7 @@ from nexus_seed.backends import (
     invalid_response,
     proposal_response,
 )
+from nexus_seed.backends.llm import _parse_json_output
 
 
 async def test_fake_backend_replays_script():
@@ -38,6 +39,37 @@ async def test_helpers_shape():
 
 def test_fake_backend_satisfies_protocol():
     assert isinstance(FakeLLMBackend(), ExecutionBackend)
+
+
+def test_json_output_repairs_malformed_llm_response():
+    malformed = '{"subject": "D1_CD", "details": {"status": "ready"}'
+
+    assert _parse_json_output(malformed) == {
+        "subject": "D1_CD",
+        "details": {"status": "ready"},
+    }
+
+
+def test_json_output_repairs_fenced_non_ascii_response():
+    malformed = '```json\n{"subject": "日本語", "items": [1, 2, 3}\n```'
+
+    assert _parse_json_output(malformed) == {
+        "subject": "日本語",
+        "items": [1, 2, 3],
+    }
+
+
+def test_json_output_does_not_repair_valid_json(monkeypatch):
+    import nexus_seed.backends.llm as llm_module
+
+    def unexpected_repair(*args, **kwargs):
+        raise AssertionError("valid JSON must not enter the repair path")
+
+    monkeypatch.setattr(llm_module, "repair_json", unexpected_repair)
+
+    assert _parse_json_output('{"subject": "unchanged"}') == {
+        "subject": "unchanged"
+    }
 
 
 async def test_openai_compatible_backend_calls_chat_completions_without_key(monkeypatch):
