@@ -919,9 +919,60 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **152.** Pause/resume recompiles fresh Context.
 - **153.** Every control Command audits issuer, request, validation and result.
 
+## Done in Phase 6 (Persistent Being)
+
+- Phase 6 is a default-on, feature-gated composition of ordinary Processes and
+  existing stores; it adds no primitive, Runtime replacement, agent loop, or
+  parallel Memory. `NEXUS_SEED_PHASE6_ENABLED=false` performs no Phase 6
+  registration and appends no wake Event, preserving Phase 5G behavior.
+- Self and Master are World State projections. Self capabilities are projected
+  live from `CapabilityRegistry`, active Goals from the Phase 5G Goal store,
+  and Intentions from World State; none are copied into a competing self store.
+  Every Master claim retains `OBSERVED`, `INFERRED`, or `CONFIRMED`, confidence,
+  and source Event.
+- `attention_evaluation` is a finite ordinary Process. Its deterministic
+  result is `RELEVANT`, `IGNORE`, `INVESTIGATE`, or `RECONSIDER`; IGNORE is a
+  normal completion and creates no Work. Internal Phase 6 projection changes
+  are ignored so the loop cannot feed itself.
+- Intention is a long-lived `intention:<id>.record` World State schema beneath
+  the existing Goal. Its id is deterministic from Goal id and its lifecycle is
+  `ACTIVE / WAITING / SATISFIED / BLOCKED / ABANDONED`. Phase 5G still owns
+  Goal lifecycle and `evaluate_goal` remains the Goal-gap-to-Work boundary.
+- Experience is an `experience_recorded` Event that links existing Event,
+  ContextSnapshot, Goal/Intention/Work, Action and result identities.
+  `get_experience_trace` reconstructs the joined view; there is no Experience
+  table or new Core type. Reflection is a normal Process and writes lessons
+  only through Observation -> StateDelta -> `apply_state_delta`.
+- `existence_wakeup` is appended during enabled application bootstrap only
+  when durable unresolved state exists. Self-initiated activity then uses the
+  existing Work Intelligence, Provider selection, AutonomyPolicy, Grant,
+  ActionProposal, Permission, Risk and Review boundaries. Every chain is
+  finite and returns to the Runtime's normal idle/event-wait state.
+- Phase 6 failures are ordinary isolated activation failures; Phase 5G Control
+  Plane remains usable. Explicit human Commands retain priority and authority
+  over Goal/Work pause, resume and cancellation.
+
+## Runtime invariants (added in Phase 6 — keep them)
+
+- **154.** Self, Master, Attention, Intention and Experience are not Core primitives.
+- **155.** Phase 6 OFF registers nothing and appends nothing; behavior is Phase 5G.
+- **156.** Self and Master are projections over existing durable state, not a new Memory.
+- **157.** Available capabilities are projected from CapabilityRegistry, never copied.
+- **158.** Every Master claim is OBSERVED, INFERRED, or CONFIRMED.
+- **159.** Attention is a finite Process and IGNORE may complete without Work.
+- **160.** Intention is durable World State beneath, and distinct from, an existing Goal.
+- **161.** Goal evaluation remains the only Goal-gap-to-Work path.
+- **162.** Experience is reconstructable from existing Events, State and traces.
+- **163.** Reflection changes state only through existing validation and StateDelta boundaries.
+- **164.** Self-initiated Work and Action never bypass AutonomyPolicy, Grant or Review.
+- **165.** Explicit Control Plane Commands retain priority over self-initiated activity.
+- **166.** The existence loop is event/timer/Continuation-driven and never a busy loop.
+- **167.** Phase 6 restart, retry and delivery reuse existing durability/idempotency guarantees.
+- **168.** A Phase 6 activation failure does not make the Phase 5G Runtime unavailable.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 6+ is intentionally not started. Plugin/package discovery and install,
+- Phase 7+ is intentionally not started. Plugin/package discovery and install,
   production source-tree patching, permission escalation, Runtime/Core/Policy
   self-update, learning/RL policy changes, long-horizon compensation,
   multi-machine coordination, role/team ontologies and richer dynamic

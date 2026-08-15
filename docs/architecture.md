@@ -1017,3 +1017,91 @@ parent session and depth; cycles stop with `ACQUISITION_CYCLE`. Identical needs
 share one acquisition while retaining every subscribing WorkRequirement.
 `runtime.get_acquisition_trace(session_id)` joins policy, Work, 5A proposal,
 5B evidence, 5C activation and reconciliation events across restarts.
+
+## Provider federation and human control (Phases 5E/5G)
+
+Phase 5E keeps semantic competence separate from operational execution:
+`Capability` says what can be accomplished, `ProcessDefinition` is the
+contract, and `ExecutionProvider` says who can execute it. Provider selection
+is deterministic and constrained by status, health, permission, trust, cost,
+latency and human directives. External output returns through durable Events
+and cannot write World State or authorize an Action directly.
+
+Phase 5G adds authenticated, schema-validated Commands and durable Goals.
+Goals remain distinct from WorkRequirements. The ordinary `evaluate_goal`
+Process compares current state and criteria, emits idempotent goal-gap Work,
+and re-evaluates on relevant state/work Events. Explicit Control Plane
+commands retain authority over pause, resume, cancellation, priority and
+provider constraints; none of those commands widens Action or autonomy policy.
+
+## Persistent Being (Phase 6)
+
+Phase 6 adds no primitive and no replacement agent loop. It is a default-on,
+feature-gated composition over the Phase 5G runtime:
+
+```text
+Event / World State / durable Goal
+  -> attention_evaluation Process
+  -> relevant | ignore | investigate | reconsider
+  -> maintain_intention Process -> Intention World State
+  -> evaluate_goal -> existing Work Intelligence -> Provider
+  -> existing ActionProposal / Permission / Risk / Review boundary
+  -> action/work Event -> experience_recorded Event
+  -> reflect_experience -> Observation + StateDelta -> reflection_completed
+  -> idle until Event, timer, retry, or Continuation is ready
+```
+
+### Self and Master
+
+Self and Master are regenerable projections, not records competing with World
+State. Self identity, concerns, commitments, questions and beliefs use normal
+World State facts. Active Goals come from the Phase 5G Goal store, active
+Intentions from `intention:<id>.record`, and available capabilities are read
+from `CapabilityRegistry` on every projection; capability data is never copied
+into World State.
+
+Master facts are stored as `master:<id>.claim:<category>:<key>`. Every value
+contains exactly one epistemic status: `OBSERVED`, `INFERRED`, or `CONFIRMED`,
+plus confidence and source Event. The projection exposes goals, preferences,
+projects, commitments, concerns and shared history without erasing that status.
+
+### Attention and persistent Intention
+
+`attention_evaluation` is an ordinary finite Process. An ignored Event is a
+successful no-op and creates no Work. Relevant external Events and persisted
+reconsideration conditions emit `intention_reconsideration_requested`.
+Internal Phase 6 projection changes are explicitly ignored so the existence
+loop cannot feed itself.
+
+An Intention is a long-lived World State schema under an existing Goal. Its id
+is deterministically derived from the Goal id, and its lifecycle is
+`ACTIVE | WAITING | SATISFIED | BLOCKED | ABANDONED`. Goal lifecycle remains
+owned by Phase 5G; Intention records the current pursuit and persisted wake
+conditions. Goal evaluation remains the only route from a Goal gap to Work.
+
+### Experience, reflection, and safety
+
+There is no Experience table or Core type. `record_experience` emits a durable
+recipe joining situation, pre-action ContextSnapshot id, Intention/Goal/Work,
+ActionProposal/Execution, reason, result and surprise. `get_experience_trace`
+reconstructs the joined view from existing Event, State, Work and Action
+journals. Reflection is another Process and may write a lesson only through
+Observation -> StateDelta -> the existing `apply_state_delta` validator.
+
+Self-initiated Work uses the same capability matcher, Provider selector and
+ActionProposal boundary as human-requested Work. `AutonomyPolicy`, scoped
+grants, Permission, Risk, Review, retries and idempotency are unchanged. Human
+Control Plane commands remain authoritative.
+
+### Feature flag, restart, and idle behavior
+
+`NEXUS_SEED_PHASE6_ENABLED` defaults to `true`. Explicit OFF performs no Phase
+6 registration and appends no wake Event, giving Phase 5G behavior. ON may append
+one `existence_wakeup` during application bootstrap when an active Goal,
+unresolved Intention, or unanswered Self question exists. That wake is a
+durable Event obligation, not a Runtime special case. All processes are finite;
+after the resulting work drains, the existing Runtime is idle rather than
+polling in a busy loop. Phase 6 process failure is isolated as an ordinary
+failed activation and does not disable Phase 5G command processing.
+
+Phase 7 is not implemented.

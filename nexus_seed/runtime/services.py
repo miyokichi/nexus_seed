@@ -542,3 +542,17 @@ class RuntimeServices:
     def get_current_state(self, entity: str, attribute: str) -> StateEntry | None:
         """Return the current fact for ``entity.attribute``."""
         return self._state_store.get_current(entity, attribute)
+
+    def get_current_state_by_prefix(self, entity_prefix: str) -> list[StateEntry]:
+        """Return current facts whose entity starts with an explicit prefix.
+
+        This is the narrow read needed by Phase 6 projection Processes for
+        dynamic ``intention:<id>`` entities.  It remains a read-only selective
+        query; handlers still stage every write on their ProcessResult.
+        """
+
+        return [
+            entry
+            for entry in self._state_store.all_current()
+            if entry.entity.startswith(entity_prefix)
+        ]

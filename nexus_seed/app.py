@@ -34,6 +34,7 @@ from .control.models import HumanIdentity
 from .processes.autonomy import bootstrap_autonomy
 from .processes.control import bootstrap_control
 from .processes.extension import bootstrap_extension
+from .processes.persistent_being import bootstrap_persistent_being
 from .processes.planning import bootstrap_planning
 from .processes.resources import bootstrap_observer, bootstrap_resources
 from .processes.semantic import bootstrap_semantic
@@ -58,6 +59,8 @@ class AppSettings:
     log_level: str = "INFO"
     control_identity_id: str = "local-operator"
     control_permissions: tuple[str, ...] = ("command.*",)
+    #: Phase 6 is on by default; False restores the complete Phase 5G wiring.
+    phase6_enabled: bool = True
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -94,13 +97,24 @@ class AppSettings:
             raise ApplicationConfigurationError(
                 "control identity and at least one control permission are required"
             )
-        return cls(data_dir, host, port, token, tick_seconds, log_level, identity_id, permissions)
+        phase6_enabled = _read_bool("NEXUS_SEED_PHASE6_ENABLED", True)
+        return cls(
+            data_dir,
+            host,
+            port,
+            token,
+            tick_seconds,
+            log_level,
+            identity_id,
+            permissions,
+            phase6_enabled,
+        )
 
 
 def bootstrap_application(
     runtime: Runtime, settings: AppSettings, *, env_file: str | Path
 ) -> None:
-    """Register the complete Phase 1–5D process stack and bounded backends."""
+    """Register the complete stack and default-on Phase 6 Process roles."""
 
     resource_root = settings.data_dir / "resources"
     action_root = settings.data_dir / "actions"
@@ -115,6 +129,7 @@ def bootstrap_application(
     bootstrap_extension(runtime)
     bootstrap_autonomy(runtime)
     bootstrap_control(runtime)
+    bootstrap_persistent_being(runtime, enabled=settings.phase6_enabled)
     runtime.control_store.save_identity(
         HumanIdentity(
             identity_id=settings.control_identity_id,
@@ -589,6 +604,20 @@ def _read_float(name: str, default: float, *, minimum: float) -> float:
     if value < minimum:
         raise ApplicationConfigurationError(f"{name} must be at least {minimum}")
     return value
+
+
+def _read_bool(name: str, default: bool) -> bool:
+    """Read a strict boolean environment setting."""
+
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ApplicationConfigurationError(f"{name} must be true or false")
 
 
 def main(argv: list[str] | None = None) -> int:

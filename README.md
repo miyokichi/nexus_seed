@@ -26,6 +26,7 @@ roles of a Process—not additional core abstractions.
 - Phase 5D autonomous capability acquisition with `AUTO`, `REVIEW_REQUIRED`, `FORBIDDEN`, and hard budgets
 - Phase 5E provider federation for local Processes, directory Skills, and external Agents
 - Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
+- Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -100,6 +101,12 @@ The local control principal and comma-separated grants are configured with
 separate durable domain records; `evaluate_goal` discovers deduplicated Work
 through the existing event-driven pipeline.
 
+Phase 6 is enabled by default. Set `NEXUS_SEED_PHASE6_ENABLED=false` to restore
+Phase 5G behavior. When disabled, no Phase 6 Process is registered and no wake
+Event is appended. When enabled, startup may append one `existence_wakeup` only
+when an active Goal, unresolved Intention, or unanswered Self question exists.
+The finite Process chain then returns to the normal idle/event-wait state.
+
 Submit domain Events with inline JSON or `--payload-file`:
 
 ```powershell
@@ -132,6 +139,7 @@ nexus_seed/installation/  Phase 5C reviewed activation and rollback
 nexus_seed/autonomy/      Phase 5D sessions, policy, budget, trace
 nexus_seed/providers/     Phase 5E providers, delegation, skill import, trace
 nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
+nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
 tests/                    acceptance and restart-convergence tests
 ```
 
@@ -141,5 +149,5 @@ tests/                    acceptance and restart-convergence tests
 - [詳細アーキテクチャ（日本語）](docs/architecture.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)
 
-Current implementation stops at **Phase 5G**. Phase 6 work is intentionally
-out of scope.
+Current implementation includes default-on **Phase 6 — Persistent Being** with
+a complete Phase 5G compatibility flag. Phase 7 is intentionally out of scope.

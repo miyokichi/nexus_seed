@@ -918,3 +918,73 @@ Session、購読Work、append-onlyな判断履歴、論理attemptはSQLiteへ保
 不足は1つのSessionを共有し、各WorkRequirementの出自は失いません。
 `runtime.get_acquisition_trace(session_id)` でPolicy判断から5A提案、5B検証証拠、5C activation、
 Work reconciliationまで再起動をまたいで追跡できます。
+
+## Provider FederationとHuman Control（Phase 5E / 5G）
+
+Phase 5Eでは、意味的な能力と実行主体を分離します。`Capability`は何ができるか、
+`ProcessDefinition`は意味契約、`ExecutionProvider`は誰が実行するかを表します。
+外部Providerの結果はdurable Eventとして戻り、World StateやActionを直接変更・認可できません。
+
+Phase 5Gでは認証・schema validation済みCommandと永続Goalを追加しました。Goalと
+WorkRequirementは別物です。通常の`evaluate_goal` Processが現在状態と成功条件を比較し、
+同じgapについて冪等なWorkを生成します。Pause、resume、cancel、priority、Provider制約は
+明示Control Plane Commandが優先し、Action/Autonomy Policyを緩和しません。
+
+## Persistent Being（Phase 6）
+
+Phase 6は新primitiveも別Agent loopも追加せず、Phase 5G Runtime上の既定ON・feature-gated compositionです。
+
+```text
+Event / World State / 永続Goal
+  -> attention_evaluation Process
+  -> relevant | ignore | investigate | reconsider
+  -> maintain_intention Process -> Intention World State
+  -> evaluate_goal -> 既存Work Intelligence -> Provider
+  -> 既存ActionProposal / Permission / Risk / Review境界
+  -> action/work Event -> experience_recorded Event
+  -> reflect_experience -> Observation + StateDelta -> reflection_completed
+  -> Event / timer / retry / Continuationが来るまでidle
+```
+
+### Self / Master
+
+SelfとMasterはWorld Stateと競合する別Storeではなく、再生成可能なprojectionです。Selfの
+identity、concern、commitment、question、beliefはWorld State fact、active GoalはPhase 5G
+Goal Store、Intentionは`intention:<id>.record`から読みます。available capabilityは毎回
+`CapabilityRegistry`からprojectionし、World Stateへ複製しません。
+
+Master claimは`master:<id>.claim:<category>:<key>`に保存し、必ず`OBSERVED / INFERRED /
+CONFIRMED`のどれか、confidence、source Eventを保持します。goal、preference、project、
+commitment、concern、shared historyをprojectionしても、この認識上の区別は失われません。
+
+### Attention / Intention
+
+`attention_evaluation`は有限の通常Processです。ignoreは正常終了で、Workを作りません。
+外部Eventが永続reconsideration条件と一致した場合だけIntention再評価Eventを発行します。
+Phase 6自身のprojection変更はignoreし、自己増殖するEvent loopを防ぎます。
+
+Intentionは既存Goalの下にある長寿命World State schemaです。idはGoal idから決定的に導出し、
+`ACTIVE / WAITING / SATISFIED / BLOCKED / ABANDONED`を保持します。Goal lifecycleはPhase 5Gが
+所有し続け、Goal gapからWorkを作る経路も既存`evaluate_goal`だけです。
+
+### Experience / Reflection / Safety
+
+Experience専用tableやCore typeはありません。`experience_recorded` Eventはsituation、action前の
+ContextSnapshot id、Intention/Goal/Work、ActionProposal/Execution、reason、result、surpriseを
+結ぶ再構成recipeです。`get_experience_trace`は既存Event/State/Work/Action journalをjoinします。
+Reflectionは通常Processで、lessonはObservation -> StateDelta ->既存`apply_state_delta`を通ります。
+
+自発Workも同じCapability matcher、Provider selector、ActionProposal境界を使用します。
+AutonomyPolicy、Grant、Permission、Risk、Review、retry、idempotencyは変更しません。明示Human
+Control Plane Commandが常に優先されます。
+
+### Feature flag / restart / idle
+
+`NEXUS_SEED_PHASE6_ENABLED`の既定値は`true`です。明示的なOFFではPhase 6 Processを登録せず、wake
+Eventも追加しないためPhase 5Gと同じ挙動です。ONではactive Goal、未解決Intention、未回答の
+Self questionがある起動時だけ`existence_wakeup`を追加します。これはRuntime特例ではなく通常の
+durable Eventです。有限のProcess連鎖がdrainされた後はbusy loopをせず、既存Runtimeのidleへ
+戻ります。Phase 6 Processが失敗しても通常のfailed activationとして隔離され、Phase 5G Control
+Planeは利用可能です。
+
+Phase 7は実装していません。

@@ -26,6 +26,7 @@ Processが担う役割として表現します。
 - `AUTO / REVIEW_REQUIRED / FORBIDDEN`とBudgetを備えたPhase 5D自律Capability取得
 - 内部Process、Directory Skill、外部Agentを統合するPhase 5E Provider Federation
 - 認証・認可された明示Command、永続Goal、Work制御、監査履歴を備えたPhase 5G Control Plane
+- feature flagで無効化できるPhase 6 Self/Master projection、永続Intention、Attention、Experience/Reflection、自発活動
 
 `AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
 Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
@@ -224,6 +225,16 @@ HTTPのBearer/Ingress Tokenは接続認証、HumanIdentity PermissionはCommand�
 役割が異なります。Commandは既存Permission・Action・Validator・Autonomy Policyを
 緩和できません。
 
+Phase 6は既定で有効です。Phase 5G互換へ戻す場合だけ`.env`へ次を追加します。
+
+```dotenv
+NEXUS_SEED_PHASE6_ENABLED=false
+```
+
+無効時はPhase 6 Processもwake Eventも追加されず、Phase 5Gと同じ挙動です。有効時も
+常時busy loopは作らず、active Goal、未解決Intention、未回答のSelf questionがある
+起動時だけ`existence_wakeup`を追加し、有限のProcess連鎖が終われば通常のEvent待ちへ戻ります。
+
 ### 8. 作成されるデータ
 
 `NEXUS_SEED_DATA_DIR`の下に次が作成されます。
@@ -261,6 +272,7 @@ nexus_seed/installation/  Phase 5Cの承認付きActivationとrollback
 nexus_seed/autonomy/      Phase 5DのSession、Policy、Budget、Trace
 nexus_seed/providers/     Phase 5EのProvider、委譲、Skill import、Trace
 nexus_seed/control/       Phase 5GのCommand、Identity、Goal、認可
+nexus_seed/presence/      Phase 6のSelf/Master/Intention projectionとExperience trace
 tests/                    受入テストと再起動収束テスト
 ```
 
@@ -270,4 +282,4 @@ tests/                    受入テストと再起動収束テスト
 - [Detailed architecture (English)](docs/architecture.md)
 - [開発時に守るInvariant](AGENTS.md)
 
-現在の実装範囲は**Phase 5Gまで**です。Phase 6には進んでいません。
+現在の実装範囲には既定ON・Phase 5G互換flag付きの**Phase 6 — Persistent Being**を含みます。Phase 7には進んでいません。
