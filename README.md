@@ -114,6 +114,9 @@ Phase 6 is enabled by default. Set `NEXUS_SEED_PHASE6_ENABLED=false` to restore
 Phase 5G behavior. When disabled, no Phase 6 Process is registered and no wake
 Event is appended. When enabled, startup may append one `existence_wakeup` only
 when an active Goal, unresolved Intention, or unanswered Self question exists.
+Goals without explicit success criteria are structurally decomposed after the
+Intention exists; the internal `advance_human_goal` fallback is never sent to
+Capability Acquisition in Phase 6.
 The finite Process chain then returns to the normal idle/event-wait state.
 
 Submit domain Events with inline JSON or `--payload-file`:

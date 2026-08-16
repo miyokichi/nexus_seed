@@ -1087,6 +1087,17 @@ is deterministically derived from the Goal id, and its lifecycle is
 owned by Phase 5G; Intention records the current pursuit and persisted wake
 conditions. Goal evaluation remains the only route from a Goal gap to Work.
 
+For a Phase 6 Goal without explicit success criteria, `evaluate_goal` first
+uses the durable Intention boundary and produces a validated
+`goal_decomposition_proposed` Event. Only a later activation turns that inert
+proposal into concrete WorkRequirements. `advance_human_goal` is a legacy
+Phase 5G fallback label, not an acquirable capability; Phase 6 never opens a
+CapabilityGap for it. A concrete missing capability discovered by decomposition
+continues through the unchanged Phase 5A–5D policy/budget pipeline, and
+activation returns through `capability_available` and `reconcile_blocked_work`.
+With no decomposition backend or explicit capability metadata, the Goal and
+Intention remain durable without manufacturing Work or a capability gap.
+
 ### Experience, reflection, and safety
 
 There is no Experience table or Core type. `record_experience` emits a durable

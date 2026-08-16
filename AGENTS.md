@@ -940,6 +940,10 @@ compensation. It closes three things Phase 4B left unsafe to build on before
   the existing Goal. Its id is deterministic from Goal id and its lifecycle is
   `ACTIVE / WAITING / SATISFIED / BLOCKED / ABANDONED`. Phase 5G still owns
   Goal lifecycle and `evaluate_goal` remains the Goal-gap-to-Work boundary.
+- A Phase 6 Goal with no explicit success criteria is decomposed by the existing
+  `evaluate_goal` Process through a validated proposal Event before concrete
+  Work is created. `advance_human_goal` is a Phase 5G fallback label, never an
+  acquirable Capability. Only concrete missing competences reach Phase 5D.
 - Experience is an `experience_recorded` Event that links existing Event,
   ContextSnapshot, Goal/Intention/Work, Action and result identities.
   `get_experience_trace` reconstructs the joined view; there is no Experience

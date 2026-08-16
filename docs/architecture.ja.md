@@ -974,6 +974,14 @@ Intentionは既存Goalの下にある長寿命World State schemaです。idはGo
 `ACTIVE / WAITING / SATISFIED / BLOCKED / ABANDONED`を保持します。Goal lifecycleはPhase 5Gが
 所有し続け、Goal gapからWorkを作る経路も既存`evaluate_goal`だけです。
 
+明示success criteriaのないPhase 6 Goalは、まず永続Intention境界を通り、既存
+`evaluate_goal`が検証済みの`goal_decomposition_proposed` Eventを作ります。後続activationだけが
+この不活性proposalを具体的WorkRequirementへ変換します。`advance_human_goal`はPhase 5G互換の
+fallback labelであって取得対象Capabilityではなく、Phase 6はこれにCapabilityGapを開きません。
+分解後に本当に不足する具体的Capabilityは、変更していないPhase 5A〜5DのPolicy/Budget境界を通り、
+activation後は`capability_available`と`reconcile_blocked_work`で元Workへ戻ります。分解backendも
+明示capability metadataもない場合は、架空のWorkやgapを作らずGoal/Intentionを永続保持します。
+
 ### Experience / Reflection / Safety
 
 Experience専用tableやCore typeはありません。`experience_recorded` Eventはsituation、action前の

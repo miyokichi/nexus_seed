@@ -243,6 +243,8 @@ NEXUS_SEED_PHASE6_ENABLED=false
 無効時はPhase 6 Processもwake Eventも追加されず、Phase 5Gと同じ挙動です。有効時も
 常時busy loopは作らず、active Goal、未解決Intention、未回答のSelf questionがある
 起動時だけ`existence_wakeup`を追加し、有限のProcess連鎖が終われば通常のEvent待ちへ戻ります。
+success criteria未指定のGoalは、Intention確立後に具体的Workへ構造化分解されます。
+`advance_human_goal`のような内部fallbackをCapability Acquisitionへ渡すことはありません。
 
 ### 8. 作成されるデータ
 

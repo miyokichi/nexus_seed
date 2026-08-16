@@ -6,7 +6,10 @@ import uuid
 
 import pytest
 
+from extension_helpers import extension_runtime
+from nexus_seed.autonomy.models import AcquisitionStatus, AutonomyDecisionKind
 from nexus_seed.backends.action import FakeActionBackend
+from nexus_seed.backends.llm import FakeLLMBackend, proposal_response
 from nexus_seed.app import AppSettings
 from nexus_seed.capabilities.models import CapabilityRef
 from nexus_seed.context.requirements import ContextRequirements, ContinuationReq, WorkReq
@@ -27,7 +30,12 @@ from nexus_seed.processes.actions import (
     bootstrap_actions,
     waiting_for_action,
 )
-from nexus_seed.processes.control import bootstrap_control
+from nexus_seed.processes.autonomy import bootstrap_autonomy
+from nexus_seed.processes.control import (
+    GOAL_DECOMPOSITION_PROPOSED,
+    _validate_goal_decomposition,
+    bootstrap_control,
+)
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
 from nexus_seed.processes.semantic import bootstrap_semantic
 from nexus_seed.processes.work_intelligence import bootstrap_work_intelligence
@@ -91,6 +99,22 @@ async def phase6_goal_worker(ctx):
     )
 
 
+async def concrete_goal_worker(ctx):
+    """Concrete acquired capability that closes Work through the normal Event."""
+
+    ctx.satisfy_work()
+    return ctx.complete(
+        output={"done": True},
+        emitted_events=[ctx.new_event(
+            "work_satisfied",
+            {
+                "work_requirement_id": str(ctx.instance.work_requirement_id),
+                "work_key": ctx.instance.work_key,
+            },
+        )],
+    )
+
+
 async def phase5g_probe(ctx):
     """A pre-Phase-6 style Process used to prove failure isolation."""
 
@@ -100,10 +124,13 @@ async def phase5g_probe(ctx):
 async def test_phase6_off_is_a_strict_noop(tmp_path):
     runtime = Runtime(tmp_path / "off.db")
     try:
+        bootstrap_control(runtime)
+        assert runtime.process_store.get_definition("evaluate_goal", "1").max_retries == 0
         definitions_before = runtime.process_store.all_definitions()
         events_before = runtime.event_store.all()
         assert bootstrap_persistent_being(runtime, enabled=False) is False
         assert runtime.process_store.all_definitions() == definitions_before
+        assert runtime.process_store.get_definition("evaluate_goal", "1").max_retries == 0
         assert runtime.event_store.all() == events_before
         assert not hasattr(runtime, "_phase6_bootstrapped")
     finally:
@@ -118,6 +145,106 @@ async def test_phase6_application_setting_defaults_on_and_allows_explicit_off(
 
     monkeypatch.setenv("NEXUS_SEED_PHASE6_ENABLED", "false")
     assert AppSettings.from_env(tmp_path / "missing.env").phase6_enabled is False
+
+
+async def test_bare_phase6_goal_never_opens_advance_human_goal_gap(tmp_path):
+    runtime = extension_runtime(tmp_path, "bare-goal.db")
+    bootstrap_autonomy(runtime)
+    bootstrap_semantic(runtime)
+    bootstrap_control(runtime)
+    bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
+    assert runtime.process_store.get_definition("evaluate_goal", "1").max_retries == 2
+    goal = Goal(
+        title="Prepare project review",
+        objective="prepare the project for review",
+        owner_identity_id="master-1",
+    )
+    runtime.control_store.save_goal(goal)
+    try:
+        await runtime.submit_event(Event("goal_created", "test", {"goal_id": str(goal.id)}))
+
+        assert get_intention(runtime, intention_id_for_goal(goal.id)) is not None
+        assert runtime.work_requirement_store.for_goal(goal.id) == []
+        assert runtime.get_capability("advance_human_goal", "1") is None
+        assert runtime.get_capability_gaps() == []
+        assert runtime.get_acquisition_sessions() == []
+    finally:
+        runtime.close()
+
+
+async def test_goal_decomposition_reaches_bounded_acquisition_and_reconciliation(tmp_path):
+    capability = "prepare_project_review"
+    runtime = extension_runtime(tmp_path, "decomposed-goal.db")
+    bootstrap_autonomy(runtime)
+    bootstrap_semantic(runtime)
+    bootstrap_control(runtime)
+    definition = ProcessDefinition(
+        name="project_review_worker",
+        version="1",
+        handler="project_review_worker",
+        metadata={"role": "work"},
+        provides_capabilities=(CapabilityRef(capability),),
+    )
+    runtime.register_process(definition, concrete_goal_worker)
+    runtime.set_capability_enabled(capability, "1", False)
+    decomposition_backend = FakeLLMBackend(default=proposal_response({
+        "work": [{
+            "semantic_key": "project_review_preparation",
+            "objective": "prepare concrete review evidence",
+            "work_type": "project_review_work",
+            "required_capabilities": [{"name": capability}],
+            "available_input_types": [],
+            "required_output_types": [],
+            "completion_criteria": [],
+        }]
+    }))
+    runtime.register_backend("llm", decomposition_backend)
+    bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
+    goal = Goal(
+        title="Prepare project review",
+        objective="prepare the project for review",
+        owner_identity_id="master-1",
+    )
+    runtime.control_store.save_goal(goal)
+    try:
+        await runtime.submit_event(Event("goal_created", "test", {"goal_id": str(goal.id)}))
+
+        works = runtime.work_requirement_store.for_goal(goal.id)
+        assert len(works) == 1
+        assert [item.name for item in works[0].required_capabilities] == [capability]
+        assert works[0].status is WorkStatus.SATISFIED
+        assert runtime.event_store.by_type(GOAL_DECOMPOSITION_PROPOSED)
+        assert not any(
+            "advance_human_goal" in gap.missing_names
+            for gap in runtime.get_capability_gaps()
+        )
+
+        session = runtime.get_acquisition_sessions()[0]
+        assert session.status is AcquisitionStatus.COMPLETED
+        assert [decision.decision for decision in runtime.get_autonomy_decisions(session.id)] == [
+            AutonomyDecisionKind.AUTO,
+            AutonomyDecisionKind.AUTO,
+        ]
+        assert runtime.get_capability(capability, "1").enabled is True
+        reconciliations = [
+            item
+            for item in runtime.process_store.all_instances()
+            if item.definition_name == "reconcile_blocked_work"
+        ]
+        assert reconciliations
+        assert runtime.control_store.get_goal(goal.id).status.value == "ACHIEVED"
+    finally:
+        runtime.close()
+
+
+async def test_goal_decomposition_rejects_internal_lifecycle_capability():
+    with pytest.raises(ValueError, match="internal lifecycle placeholder"):
+        _validate_goal_decomposition([{
+            "semantic_key": "generic_advance",
+            "objective": "advance the goal",
+            "work_type": "human_goal_work",
+            "required_capabilities": [{"name": "advance_human_goal"}],
+        }])
 
 
 async def test_phase6_failure_does_not_disable_phase5g_runtime(tmp_path):
