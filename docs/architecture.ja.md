@@ -1,6 +1,6 @@
 # NEXUS SEED — Core Runtime
 
-*[English](architecture.md) · [簡潔なREADME](../README.ja.md)*
+*[English](architecture.md) · [全体像](system-overview.ja.md) · [簡潔なREADME](../README.ja.md)*
 
 NEXUS SEED は**イベント駆動ランタイム**です。外界から Event を受け取り、Process を
 起動・中断・再開し、State を更新しながら継続的に動きます。

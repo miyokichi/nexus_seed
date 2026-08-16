@@ -15,6 +15,9 @@ Processが担う役割として表現します。
 
 *[English](README.md)*
 
+設計をPhase順ではなく一枚の流れで把握する場合は、
+**[NEXUS SEED 全体像](docs/system-overview.ja.md)**を先に読んでください。
+
 ## 実装済みの機能
 
 - SQLiteによる原子的な状態遷移、retry、timer、crash recovery、再起動可能なContinuation
