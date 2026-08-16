@@ -348,7 +348,8 @@ flowchart LR
 | Active Intentions | Intention State | 今の追求がいくつ非終端か |
 | Running Work | Work + Process status | 実行中または待機中の具体作業 |
 | Reviews | Continuationのreview待ち条件 | 人間の判断が必要 |
-| Blocked Capability | WorkRequirement + matcher result | 具体能力が不足 |
+| Human Assistance | Goal / Intention / Work / Gap / Acquisition trace | 自動取得では進めず、人間の判断または能力提供が必要 |
+| Blocked Capability（raw detail） | WorkRequirement + matcher result | 具体能力が不足。単独では即時の人間通知を意味しない |
 | Blocked Provider | Provider selection result | 能力はあるが実行先がない |
 | Activity | Event correlation/causation + trace join | 一つの出来事から生じた判断・作用のまとまり |
 | Raw detail | 元のrecord / error / trace | 人間向け要約に置き換えられていない監査事実 |
@@ -360,7 +361,9 @@ flowchart TD
     Problem[処理が進まない] --> Review{Review待ち?}
     Review -->|Yes| Approve[Reviewsで内容とraw traceを確認]
     Review -->|No| WorkState{Work status}
-    WorkState -->|BLOCKED_CAPABILITY| Gap[具体Capability名とAcquisitionSessionを確認]
+    WorkState -->|BLOCKED_CAPABILITY| Auto{自動Acquisitionは進行可能?}
+    Auto -->|Yes| Wait[通知せず取得処理を継続]
+    Auto -->|Review / Blocked / Failed| Gap[Human Assistanceで目的・試行・理由・必要対応を表示]
     WorkState -->|BLOCKED_PROVIDER| Prov[Provider status / health / bindingを確認]
     WorkState -->|FAILED| Proc[Process errorとretry回数を確認]
     WorkState -->|SPAWNED / MATCHED| Run[Process / Plan / Continuationを確認]
@@ -373,6 +376,7 @@ flowchart TD
 
 - `schema validation failed` — LLM出力を採用できなかった。Runtime全体の故障とは限りません。
 - `BLOCKED_CAPABILITY` — 仕事は必要なまま保持され、能力追加後にreconcile可能です。
+- `Human Assistance` — 自動Capability AcquisitionがReview待ち、または安全Policy・Budget・Provider不足などで継続不能です。カードのApprove / Rejectは既存Review、「今回は保留」は既存Work pauseを通ります。
 - `BLOCKED_PROVIDER` — Capabilityを新規取得せずProvider回復を待ちます。
 - `RETRY_WAIT` — durable retry timer待ちであり、busy loopではありません。
 - `SUSPENDED` — Review、外部Event、Action結果、timerなどのContinuation待ちです。

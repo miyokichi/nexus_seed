@@ -1149,6 +1149,15 @@ change audit facts. The API uses the configured webhook bearer token. Static
 HTML contains no state and may load before authentication; snapshot and
 control data remain authenticated.
 
+Capability Assistance is another read-only projection, not an acquisition
+mechanism. It joins existing Goal, Intention, WorkRequirement, CapabilityGap,
+CapabilityAcquisitionSession, policy decision, attempt, Provider and Review
+records. Active `AUTO` acquisition is intentionally silent. A card is emitted
+only for `WAITING_REVIEW` or a terminal blocked/failed/cancelled route, and
+related blocked Work is aggregated by Goal (or by missing capability when no
+Goal exists). Approve/reject uses the existing review command; "defer" uses the
+existing Work pause command. Raw trace remains available in the card.
+
 `NEXUS_SEED_COCKPIT_ENABLED=false` removes the Cockpit routes while leaving
 Runtime, webhook, Control Plane and CLI untouched. Self-question answers are
 the only added control surface: `/answer <question-id> answer="..."` is an

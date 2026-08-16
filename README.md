@@ -27,7 +27,7 @@ roles of a Process—not additional core abstractions.
 - Phase 5E provider federation for local Processes, directory Skills, and external Agents
 - Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
 - Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
-- Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, and System health
+- Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, System health, and aggregated Capability Assistance
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -72,7 +72,10 @@ Open `http://127.0.0.1:8787/cockpit`. The browser asks for the same webhook
 token and keeps it only in tab-scoped session storage. Cockpit reads existing
 projections and traces; controls are submitted exclusively through the Phase
 5G `/control` endpoint. The view does not auto-refresh; use the refresh button
-to request a new snapshot. Set `NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
+to request a new snapshot. Capability Assistance joins the existing Goal →
+Intention → Work → CapabilityGap → AcquisitionSession trace and appears only
+when automatic acquisition is waiting for review or cannot continue. Set
+`NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
 Cockpit routes without changing Runtime, webhook, or CLI behavior.
 
 Submit a natural-language task from another terminal. The command reads the

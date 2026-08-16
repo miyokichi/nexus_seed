@@ -8,11 +8,13 @@ human-facing view; raw facts remain attached for drill-down and audit.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 from typing import Any
 
 from ..actions.models import ActionExecutionStatus
+from ..autonomy.models import AcquisitionStatus
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
@@ -77,11 +79,21 @@ class CockpitService:
         llm = self._llm_status()
         failed = self._failed_processes(processes, works)
         blocked = [work for work in works if work.status in BLOCKED_WORK]
+        capability_assistance = self._capability_assistance(
+            blocked=[
+                work for work in blocked if work.status is WorkStatus.BLOCKED_CAPABILITY
+            ],
+            goals=goals,
+            intentions=intentions,
+            reviews=reviews,
+            processes=processes,
+        )
         questions = list(self_view.unresolved_questions) if self_view else []
         unavailable = [provider for provider in providers if not provider.operational]
         needs = self._needs_attention(
             reviews=reviews,
             blocked=blocked,
+            capability_assistance=capability_assistance,
             failed=failed,
             questions=questions,
             unavailable=unavailable,
@@ -106,12 +118,14 @@ class CockpitService:
                     "active_intentions": len(active_intentions),
                     "running_work": sum(work.status in ACTIVE_WORK for work in works),
                     "pending_reviews": len(reviews),
+                    "human_assistance": len(capability_assistance),
                     "errors": error_count,
                     "warnings": warning_count,
                 },
                 "focus": focus,
             },
             "needs_attention": needs,
+            "capability_assistance": capability_assistance,
             "goals": [self._goal(goal, intentions, works) for goal in goals],
             "intentions": [self._intention(item, goals) for item in intentions],
             "being": self._being(self_view, master_view, active_intentions),
@@ -237,9 +251,26 @@ class CockpitService:
                 )
         return sorted(reviews, key=lambda item: item["created_at"] or "")
 
-    def _needs_attention(self, *, reviews, blocked, failed, questions, unavailable, llm):
+    def _needs_attention(
+        self,
+        *,
+        reviews,
+        blocked,
+        capability_assistance,
+        failed,
+        questions,
+        unavailable,
+        llm,
+    ):
         items: list[dict[str, Any]] = []
+        assistance_review_ids = {
+            review_id
+            for item in capability_assistance
+            for review_id in item["review_ids"]
+        }
         for review in reviews:
+            if review["id"] in assistance_review_ids:
+                continue
             items.append(
                 {
                     "kind": review["category"],
@@ -251,6 +282,8 @@ class CockpitService:
                 }
             )
         for work in blocked:
+            if work.status is WorkStatus.BLOCKED_CAPABILITY:
+                continue
             items.append(
                 {
                     "kind": "blocked_work",
@@ -259,6 +292,25 @@ class CockpitService:
                     "message": _blocked_work_message(work.status),
                     "target_id": str(work.id),
                     "raw": self._work(work),
+                }
+            )
+        for assistance in capability_assistance:
+            capabilities = ", ".join(assistance["missing_capabilities"])
+            items.append(
+                {
+                    "kind": "capability_assistance",
+                    "severity": "warning",
+                    "title": "能力が足りないため進められません",
+                    "message": (
+                        f"目的: {assistance['purpose']} / "
+                        f"不足能力: {capabilities} / "
+                        f"必要な対応: {assistance['human_action']['summary']}"
+                    ),
+                    "target_id": assistance["id"],
+                    "work_ids": assistance["work_ids"],
+                    "review_ids": assistance["review_ids"],
+                    "assistance": assistance,
+                    "raw": assistance["raw_trace"],
                 }
             )
         for process in failed[-10:]:
@@ -311,6 +363,351 @@ class CockpitService:
             )
         order = {"error": 0, "warning": 1, "info": 2}
         return sorted(items, key=lambda item: (order[item["severity"]], item["title"]))
+
+    def _capability_assistance(
+        self, *, blocked, goals, intentions, reviews, processes
+    ) -> list[dict[str, Any]]:
+        """Explain capability gaps only after automatic acquisition needs a human.
+
+        This is a read-only projection over the existing Work, CapabilityGap and
+        CapabilityAcquisitionSession journals.  An active automatic session is
+        intentionally omitted: ``BLOCKED_CAPABILITY`` alone is not a request for
+        human intervention while Phase 5D can still make progress.
+        """
+
+        goal_by_id = {goal.id: goal for goal in goals}
+        intention_by_goal = {item.goal_id: item for item in intentions}
+        active_capability_processes = [
+            process
+            for process in processes
+            if process.status in RUNNING_PROCESSES
+            and process.definition_name
+            in {"analyze_capability_gap", "advance_capability_acquisition"}
+        ]
+
+        candidates: list[dict[str, Any]] = []
+        for work in blocked:
+            gaps = self.runtime.get_capability_gaps_for_work(work.id)
+            sessions = self.runtime.autonomy_store.sessions_for_work(work.id)
+            latest_session = sessions[-1] if sessions else None
+
+            if latest_session is not None:
+                if latest_session.status not in {
+                    AcquisitionStatus.WAITING_REVIEW,
+                    AcquisitionStatus.BLOCKED,
+                    AcquisitionStatus.FAILED,
+                    AcquisitionStatus.CANCELLED,
+                }:
+                    continue
+            elif self._capability_automation_is_active(
+                work, gaps, active_capability_processes
+            ):
+                continue
+
+            missing = sorted(
+                {
+                    *work.missing_capabilities,
+                    *(name for gap in gaps for name in gap.missing_names),
+                }
+            )
+            goal = goal_by_id.get(work.goal_id)
+            intention = intention_by_goal.get(work.goal_id)
+            linked_reviews = self._capability_reviews(
+                reviews=reviews, work=work, gaps=gaps, sessions=sessions
+            )
+            traces = [
+                self.runtime.get_acquisition_trace(session.id) for session in sessions
+            ]
+            traces = [trace for trace in traces if trace is not None]
+            tried = self._acquisition_attempt_summary(gaps, traces)
+            provider_evidence = self._provider_evidence(gaps, traces)
+            tried.extend(
+                f"Provider {item['name']} を確認（{item['status']} / {item['health']}）"
+                for item in provider_evidence
+            )
+            reason, action_type, action = self._capability_human_action(
+                missing=missing,
+                gaps=gaps,
+                sessions=sessions,
+                reviews=linked_reviews,
+            )
+            candidates.append(
+                {
+                    "work": work,
+                    "goal": goal,
+                    "intention": intention,
+                    "missing": missing,
+                    "gaps": gaps,
+                    "sessions": sessions,
+                    "reviews": linked_reviews,
+                    "tried": tried,
+                    "reason": reason,
+                    "action_type": action_type,
+                    "action": action,
+                    "traces": traces,
+                    "providers": provider_evidence,
+                }
+            )
+
+        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in candidates:
+            if item["goal"] is not None:
+                key = f"goal:{item['goal'].id}"
+            else:
+                key = "capability:" + ",".join(item["missing"] or ["unknown"])
+            groups[key].append(item)
+
+        result: list[dict[str, Any]] = []
+        for key, members in groups.items():
+            goal = members[0]["goal"]
+            intention = members[0]["intention"]
+            missing = sorted({name for item in members for name in item["missing"]})
+            work_rows = [self._work(item["work"]) for item in members]
+            review_rows = _unique_dicts(
+                review for item in members for review in item["reviews"]
+            )
+            reasons = _unique(item["reason"] for item in members if item["reason"])
+            tried = _unique(line for item in members for line in item["tried"])
+            provider_rows = _unique_dicts(
+                provider for item in members for provider in item["providers"]
+            )
+            action_type = _strongest_action(item["action_type"] for item in members)
+            actions = _unique(item["action"] for item in members if item["action"])
+            purpose = (
+                intention.focus
+                if intention is not None
+                else goal.objective
+                if goal is not None
+                else members[0]["work"].objective or members[0]["work"].work_type
+            )
+            result.append(
+                {
+                    "id": key,
+                    "goal": (
+                        {
+                            "id": str(goal.id),
+                            "title": goal.title,
+                            "objective": goal.objective,
+                            "status": goal.status.value,
+                        }
+                        if goal is not None
+                        else None
+                    ),
+                    "intention": (
+                        {
+                            "id": str(intention.id),
+                            "focus": intention.focus,
+                            "status": intention.status.value,
+                        }
+                        if intention is not None
+                        else None
+                    ),
+                    "purpose": purpose,
+                    "blocked_work": work_rows,
+                    "work_ids": [row["id"] for row in work_rows],
+                    "work_count": len(work_rows),
+                    "missing_capabilities": missing,
+                    "automatic_acquisition": {
+                        "tried": tried,
+                        "reason": "; ".join(reasons),
+                        "session_statuses": _unique(
+                            session.status.value
+                            for item in members
+                            for session in item["sessions"]
+                        ),
+                        "providers_considered": provider_rows,
+                    },
+                    "human_action": {
+                        "type": action_type,
+                        "summary": "; ".join(actions),
+                    },
+                    "review_ids": [row["id"] for row in review_rows],
+                    "reviews": review_rows,
+                    "raw_trace": {
+                        "work": work_rows,
+                        "capability_gaps": [
+                            _json_safe(asdict(gap))
+                            for item in members
+                            for gap in item["gaps"]
+                        ],
+                        "acquisition_traces": [
+                            _json_safe(asdict(trace))
+                            for item in members
+                            for trace in item["traces"]
+                        ],
+                        "reviews": review_rows,
+                        "providers": provider_rows,
+                    },
+                }
+            )
+        return sorted(result, key=lambda item: item["id"])
+
+    def _provider_evidence(self, gaps, traces) -> list[dict[str, Any]]:
+        """Resolve provider records only for reusable Process definitions in trace."""
+
+        definition_refs = {
+            value
+            for gap in gaps
+            for value in gap.current_partial_providers
+        }
+        for trace in traces:
+            proposal = trace.extension_proposal
+            if proposal is None:
+                continue
+            definition_refs.update(
+                value
+                for value in proposal.reusable_components
+                if not value.startswith("backend:")
+            )
+        providers: list[dict[str, Any]] = []
+        for reference in sorted(definition_refs):
+            name, separator, version = reference.rpartition(":")
+            if not separator or not name or not version:
+                continue
+            for binding in self.runtime.get_provider_bindings(name, version):
+                provider = self.runtime.provider_store.get_provider(binding.provider_id)
+                if provider is None:
+                    continue
+                row = self._provider(provider)
+                row["binding"] = {
+                    "id": str(binding.id),
+                    "process_definition": f"{name}@{version}",
+                    "enabled": binding.enabled,
+                    "priority": binding.priority,
+                }
+                providers.append(row)
+        return _unique_dicts(providers)
+
+    @staticmethod
+    def _capability_automation_is_active(work, gaps, processes) -> bool:
+        entity_ids = {str(work.id), *(str(gap.id) for gap in gaps)}
+        if any(
+            process.work_requirement_id == work.id
+            or entity_ids.intersection(_strings(process.input))
+            for process in processes
+        ):
+            return True
+        return any(gap.status.value == "PROPOSAL_PENDING" for gap in gaps)
+
+    @staticmethod
+    def _capability_reviews(*, reviews, work, gaps, sessions):
+        entity_ids = {
+            str(work.id),
+            *(str(gap.id) for gap in gaps),
+            *(str(session.id) for session in sessions),
+            *(
+                str(session.extension_proposal_id)
+                for session in sessions
+                if session.extension_proposal_id
+            ),
+            *(
+                str(session.construction_plan_id)
+                for session in sessions
+                if session.construction_plan_id
+            ),
+            *(
+                str(session.installation_plan_id)
+                for session in sessions
+                if session.installation_plan_id
+            ),
+        }
+        return [
+            review
+            for review in reviews
+            if review["category"] == "capability_acquisition"
+            and entity_ids.intersection(_strings(review["condition"]))
+        ]
+
+    @staticmethod
+    def _acquisition_attempt_summary(gaps, traces) -> list[str]:
+        lines: list[str] = []
+        for gap in gaps:
+            lines.append(f"Capability gapを分析（{gap.status.value}）")
+            if gap.current_partial_providers:
+                lines.append(
+                    "既存Process候補を確認: " + ", ".join(gap.current_partial_providers)
+                )
+        for trace in traces:
+            session = trace.session
+            lines.append(
+                f"AcquisitionSessionを{session.current_stage.value}まで実行"
+                f"（{session.status.value}）"
+            )
+            if trace.extension_proposal is not None:
+                proposal = trace.extension_proposal
+                lines.append(
+                    f"取得方法 {proposal.declared_strategy} を検討"
+                    f"（{proposal.status.value}）"
+                )
+            for decision in trace.decisions:
+                reason = f": {', '.join(decision.reasons)}" if decision.reasons else ""
+                lines.append(
+                    f"{decision.stage.value} policy={decision.decision.value}{reason}"
+                )
+            for attempt in trace.attempts:
+                suffix = f": {attempt.failure_reason}" if attempt.failure_reason else ""
+                lines.append(
+                    f"{attempt.attempt_type} attempt {attempt.attempt_number} "
+                    f"{attempt.status}{suffix}"
+                )
+        return _unique(lines)
+
+    @staticmethod
+    def _capability_human_action(*, missing, gaps, sessions, reviews):
+        capability_text = ", ".join(missing) or "必要なCapability"
+        latest = sessions[-1] if sessions else None
+        if latest is not None and latest.status is AcquisitionStatus.WAITING_REVIEW:
+            reason = latest.blocked_reason or "安全Policyにより人間のReviewを待っています"
+            if reviews:
+                return (
+                    reason,
+                    "REVIEW",
+                    "Capability取得Reviewの内容を確認し、ApproveまたはRejectしてください",
+                )
+            return (
+                reason,
+                "REVIEW_UNAVAILABLE",
+                "対応するReviewをControl Planeで確認してください",
+            )
+        if latest is not None and latest.blocked_reason:
+            reason = latest.blocked_reason
+            if "FORBIDDEN" in reason:
+                return (
+                    reason,
+                    "FORBIDDEN",
+                    "この経路は承認できません。Goal/制約を変更するか、許可済みCapabilityを提供してください",
+                )
+            if any(token in reason for token in ("BUDGET", "DEPTH", "CYCLE")):
+                return (
+                    reason,
+                    "CONSTRAINT",
+                    "安全Budgetを迂回せず、Goalの範囲を狭めるか既存Capabilityを提供してください",
+                )
+            return (
+                reason,
+                "PROVIDE_CAPABILITY",
+                f"{capability_text}を提供するSkill / Process / Providerを作成または有効化してください",
+            )
+        if latest is not None and latest.status in {
+            AcquisitionStatus.FAILED,
+            AcquisitionStatus.CANCELLED,
+        }:
+            return (
+                f"自動Capability Acquisitionは{latest.status.value}で終了しました",
+                "PROVIDE_CAPABILITY",
+                f"{capability_text}を提供するSkill / Process / Providerを作成または有効化してください",
+            )
+        if not sessions and all(gap.status.value == "OPEN" for gap in gaps):
+            return (
+                "利用可能な自動取得経路またはProviderが見つかりませんでした",
+                "PROVIDE_CAPABILITY",
+                f"{capability_text}を提供するSkill / Process / Providerを作成または有効化してください",
+            )
+        return (
+            "自動Capability Acquisitionを継続できません",
+            "PROVIDE_CAPABILITY",
+            f"{capability_text}の取得経路をControl Planeで確認してください",
+        )
 
     def _failed_processes(self, processes, works):
         work_by_id = {work.id: work for work in works}
@@ -731,6 +1128,54 @@ def _counts(values) -> dict[str, int]:
     for value in values:
         result[str(value)] = result.get(str(value), 0) + 1
     return result
+
+
+def _unique(values) -> list:
+    """Return values once, preserving their audit order."""
+
+    result = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _unique_dicts(values) -> list[dict[str, Any]]:
+    """Deduplicate projected records by their stable id."""
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        key = str(value.get("id") or json.dumps(value, sort_keys=True, default=str))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _strings(value) -> set[str]:
+    """Collect scalar identities from a review condition."""
+
+    if isinstance(value, dict):
+        return {item for child in value.values() for item in _strings(child)}
+    if isinstance(value, (list, tuple, set)):
+        return {item for child in value for item in _strings(child)}
+    return {str(value)} if value is not None else set()
+
+
+def _strongest_action(values) -> str:
+    """Select the safest, most restrictive action for an aggregate."""
+
+    order = {
+        "FORBIDDEN": 0,
+        "CONSTRAINT": 1,
+        "REVIEW_UNAVAILABLE": 2,
+        "REVIEW": 3,
+        "PROVIDE_CAPABILITY": 4,
+    }
+    choices = _unique(values)
+    return min(choices, key=lambda value: order.get(value, 99)) if choices else "NONE"
 
 
 def _iso(value) -> str | None:

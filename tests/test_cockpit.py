@@ -5,15 +5,31 @@ from __future__ import annotations
 import asyncio
 import json
 
+from extension_helpers import POWERPOINT, block, extension_runtime, gap_work, needs
+
 from nexus_seed.adapters.webhook import WebhookIngress, WebhookServer
+from nexus_seed.autonomy.models import (
+    AcquisitionAttempt,
+    AcquisitionStage,
+    AcquisitionStatus,
+    AcquisitionSubscriber,
+    AutonomyDecision,
+    AutonomyDecisionKind,
+    CapabilityAcquisitionSession,
+)
+from nexus_seed.capabilities.models import CapabilityRequirement
 from nexus_seed.cockpit import CockpitService, humanize_error
 from nexus_seed.cockpit.assets import APP_JS
-from nexus_seed.control.models import HumanIdentity
+from nexus_seed.control.models import Goal, HumanIdentity
 from nexus_seed.core.event import Event
+from nexus_seed.extension.models import CapabilityGap
+from nexus_seed.presence.models import IntentionRecord
 from nexus_seed.processes.control import bootstrap_control
+from nexus_seed.processes.autonomy import bootstrap_autonomy
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
 from nexus_seed.processes.semantic import bootstrap_semantic
 from nexus_seed.runtime.runtime import Runtime
+from nexus_seed.work.work_requirement import WorkRequirement, WorkStatus
 
 
 TOKEN = "cockpit-test-token"
@@ -199,3 +215,187 @@ def test_cockpit_refresh_is_manual_only():
     assert '$("#refresh").onclick=load' in APP_JS
     assert "setTimeout(load" not in APP_JS
     assert "state.timer" not in APP_JS
+
+
+def test_capability_assistance_aggregates_goal_trace_without_writing(tmp_path):
+    runtime = Runtime(tmp_path / "assistance.db")
+    goal = Goal(
+        title="Self operation",
+        objective="LLMサーバーの状態を診断する",
+        owner_identity_id="operator",
+    )
+    runtime.control_store.save_goal(goal)
+    intention = IntentionRecord.for_goal(
+        goal.id,
+        "診断結果を得て次の対応を決める",
+        reason="Goalを具体的なWorkへ分解した",
+    )
+    runtime.state_store.set(f"intention:{intention.id}", "record", intention.to_dict())
+
+    works = []
+    gaps = []
+    requirement = CapabilityRequirement(name="diagnostic_probe")
+    for index in range(2):
+        work = WorkRequirement(
+            work_type="diagnose_llm",
+            work_key=f"diagnose:{index}",
+            objective=f"診断対象 {index + 1} を確認する",
+            reason="Goal達成に診断が必要",
+            goal_id=goal.id,
+            required_capabilities=[requirement],
+            missing_capabilities=["diagnostic_probe"],
+            status=WorkStatus.BLOCKED_CAPABILITY,
+        )
+        runtime.work_requirement_store.save(work)
+        gap = CapabilityGap(
+            work_requirement_id=work.id,
+            required_capabilities=[requirement],
+            missing_capabilities=[requirement],
+            reason="no capable process",
+        )
+        runtime.extension_store.save_gap(gap)
+        works.append(work)
+        gaps.append(gap)
+
+    session = CapabilityAcquisitionSession(
+        capability_gap_id=gaps[0].id,
+        source_work_requirement_id=works[0].id,
+        acquisition_key="diagnostic-probe",
+        target_capabilities=[{"name": "diagnostic_probe"}],
+        status=AcquisitionStatus.BLOCKED,
+        current_stage=AcquisitionStage.EXTENSION,
+        blocked_reason="AUTONOMY_FORBIDDEN: no authorized provider",
+    )
+    runtime.autonomy_store.save_session(session)
+    for work in works:
+        runtime.autonomy_store.subscribe(
+            AcquisitionSubscriber(
+                acquisition_session_id=session.id,
+                work_requirement_id=work.id,
+            )
+        )
+    runtime.autonomy_store.save_decision(
+        AutonomyDecision(
+            acquisition_session_id=session.id,
+            stage=AcquisitionStage.EXTENSION,
+            decision=AutonomyDecisionKind.FORBIDDEN,
+            evaluated_risk="CRITICAL",
+            reasons=["provider permission is forbidden"],
+        )
+    )
+    runtime.autonomy_store.save_attempt(
+        AcquisitionAttempt(
+            acquisition_session_id=session.id,
+            attempt_type="provider_discovery",
+            attempt_number=1,
+            status="FAILED",
+            failure_reason="no authorized provider",
+        )
+    )
+    try:
+        before = runtime.db.conn.total_changes
+        snapshot = CockpitService(
+            runtime, phase6_enabled=True, master_id="operator"
+        ).snapshot()
+
+        assert runtime.db.conn.total_changes == before
+        assert len(snapshot["capability_assistance"]) == 1
+        assistance = snapshot["capability_assistance"][0]
+        assert assistance["goal"]["title"] == "Self operation"
+        assert assistance["intention"]["focus"] == "診断結果を得て次の対応を決める"
+        assert assistance["purpose"] == "診断結果を得て次の対応を決める"
+        assert assistance["work_count"] == 2
+        assert assistance["missing_capabilities"] == ["diagnostic_probe"]
+        assert assistance["human_action"]["type"] == "FORBIDDEN"
+        assert any("policy=FORBIDDEN" in line for line in assistance["automatic_acquisition"]["tried"])
+        assert any("provider_discovery" in line for line in assistance["automatic_acquisition"]["tried"])
+        assert [item["kind"] for item in snapshot["needs_attention"]].count(
+            "capability_assistance"
+        ) == 1
+        assert not any(
+            item["kind"] == "blocked_work" for item in snapshot["needs_attention"]
+        )
+    finally:
+        runtime.close()
+
+
+def test_capability_assistance_waits_while_automatic_acquisition_is_active(tmp_path):
+    runtime = Runtime(tmp_path / "active-acquisition.db")
+    requirement = CapabilityRequirement(name="diagnostic_probe")
+    work = WorkRequirement(
+        work_type="diagnose_llm",
+        work_key="diagnose:active",
+        objective="LLMを診断する",
+        required_capabilities=[requirement],
+        missing_capabilities=["diagnostic_probe"],
+        status=WorkStatus.BLOCKED_CAPABILITY,
+    )
+    runtime.work_requirement_store.save(work)
+    gap = CapabilityGap(
+        work_requirement_id=work.id,
+        required_capabilities=[requirement],
+        missing_capabilities=[requirement],
+    )
+    runtime.extension_store.save_gap(gap)
+    session = CapabilityAcquisitionSession(
+        capability_gap_id=gap.id,
+        source_work_requirement_id=work.id,
+        acquisition_key="diagnostic-active",
+        target_capabilities=[{"name": "diagnostic_probe"}],
+        status=AcquisitionStatus.ANALYZING,
+        current_stage=AcquisitionStage.EXTENSION,
+    )
+    runtime.autonomy_store.save_session(session)
+    runtime.autonomy_store.subscribe(
+        AcquisitionSubscriber(
+            acquisition_session_id=session.id,
+            work_requirement_id=work.id,
+        )
+    )
+    try:
+        snapshot = CockpitService(
+            runtime, phase6_enabled=False, master_id="operator"
+        ).snapshot()
+        assert snapshot["capability_assistance"] == []
+        assert not any(
+            item["kind"] in {"capability_assistance", "blocked_work"}
+            for item in snapshot["needs_attention"]
+        )
+    finally:
+        runtime.close()
+
+
+async def test_capability_assistance_links_existing_acquisition_review(tmp_path):
+    runtime = extension_runtime(tmp_path, "assistance-review.db")
+    bootstrap_autonomy(runtime)
+    work = gap_work(
+        runtime,
+        required=[needs("parse_powerpoint", POWERPOINT)],
+    )
+    try:
+        await block(runtime, work)
+        snapshot = CockpitService(
+            runtime, phase6_enabled=False, master_id="operator"
+        ).snapshot()
+
+        assert len(snapshot["capability_assistance"]) == 1
+        assistance = snapshot["capability_assistance"][0]
+        assert assistance["human_action"]["type"] == "REVIEW"
+        assert assistance["review_ids"]
+        assert assistance["reviews"][0]["category"] == "capability_acquisition"
+        assert not any(
+            item["kind"] == "capability_acquisition"
+            and item["target_id"] in assistance["review_ids"]
+            for item in snapshot["needs_attention"]
+        )
+    finally:
+        runtime.close()
+
+
+def test_capability_assistance_ui_uses_existing_control_boundaries():
+    assert "function capabilityAssistanceCard" in APP_JS
+    assert "自動解決で試したこと" in APP_JS
+    assert "必要な対応" in APP_JS
+    assert "onclick=\"review(" in APP_JS
+    assert "sendCommand(`/pause ${id}`" in APP_JS
+    assert "fetch(\"/control\"" in APP_JS

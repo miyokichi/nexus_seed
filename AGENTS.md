@@ -985,6 +985,10 @@ compensation. It closes three things Phase 4B left unsafe to build on before
   Process names only in drill-down details.
 - Human-readable error text is a presentation paired with, never substituted
   for, the raw error/audit facts.
+- Capability Assistance joins the existing Goal → Intention → Work → Gap →
+  AcquisitionSession trace. It suppresses human notification while automatic
+  acquisition can progress and aggregates actionable gaps without adding a
+  store or changing acquisition semantics.
 - Every mutation from the UI is an explicit command to the existing Phase 5G
   `/control` endpoint. Self-question answers become an authorized Command,
   durable Event, and ordinary Phase 6 StateDelta pipeline.
@@ -1001,6 +1005,8 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **174.** Cockpit never writes Core or World State directly.
 - **175.** Cockpit failure or disablement does not disable Runtime, CLI, ingress, or Control.
 - **176.** Cockpit authentication reuses the configured HTTP shared-secret boundary.
+- **177.** A capability warning is human-facing only after automatic acquisition needs review or cannot continue.
+- **178.** Capability Assistance actions reuse Control Plane, Review and acquisition boundaries; the UI never resolves a gap directly.
 
 ## Later-phase candidates (do not build yet)
 

@@ -1025,6 +1025,14 @@ Activity tableは追加しません。人間向けerrorは詳細内のraw error�
 書き換えません。API認証は設定済みWebhook bearer tokenを再利用します。静的HTMLは状態を
 含まないため認証前にも配信できますが、snapshotとcontrol dataは認証が必要です。
 
+Capability Assistanceも新しい取得機構ではなく、read-only projectionです。既存の
+Goal、Intention、WorkRequirement、CapabilityGap、CapabilityAcquisitionSession、
+policy decision、attempt、Provider、Reviewを結合します。`AUTO`取得が進行できる間は
+人間向け通知を出さず、`WAITING_REVIEW`または取得経路がBLOCKED / FAILED / CANCELLEDに
+なった場合だけ表示します。同じGoal（Goalがなければ同じ不足Capability）のWorkは集約し、
+Approve / Rejectは既存Review command、「今回は保留」は既存Work pause commandを通します。
+元のtraceは詳細表示に保持します。
+
 `NEXUS_SEED_COCKPIT_ENABLED=false`ではCockpit routeだけが消え、Runtime、Webhook、Control
 Plane、CLIは変わりません。Self question回答だけは追加Control surfaceで、
 `/answer <question-id> answer="..."`が認可済みPhase 5G Commandとして
