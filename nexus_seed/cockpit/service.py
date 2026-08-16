@@ -15,6 +15,7 @@ from typing import Any
 
 from ..actions.models import ActionExecutionStatus
 from ..autonomy.models import AcquisitionStatus
+from ..chat.service import ProjectChatService
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
@@ -61,6 +62,9 @@ class CockpitService:
         self.control_enabled = control_enabled
         self.activity_limit = activity_limit
         self.started_at = datetime.now(timezone.utc)
+        #: Read-only Project Chat.  It lives with the interface layer, so
+        #: disabling Cockpit removes it and leaves Runtime untouched.
+        self.chat = ProjectChatService(runtime)
 
     def snapshot(self) -> dict[str, Any]:
         """Return one JSON-safe, point-in-time view of the running system."""
@@ -168,6 +172,18 @@ class CockpitService:
 
         situation = get_project_situation(self.runtime, project_id)
         return situation.to_dict() if situation is not None else None
+
+    def project_chat_history(self, project_id: str) -> dict[str, Any] | None:
+        """Return one project's durable chat thread, or ``None`` if unknown."""
+
+        return self.chat.history(project_id)
+
+    async def project_chat_ask(
+        self, project_id: str, message: str
+    ) -> dict[str, Any] | None:
+        """Answer one project question read-only, or ``None`` if unknown."""
+
+        return await self.chat.ask(project_id, message)
 
     def _llm_status(self) -> dict[str, Any]:
         backend = self.runtime.backends.get("llm")

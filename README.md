@@ -29,6 +29,7 @@ roles of a Process—not additional core abstractions.
 - Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
 - Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, System health, and aggregated Capability Assistance
 - Read-only Project Situation projections over existing Goals, Intentions, Work, Events, World State, and Reviews
+- Read-only Project Chat that explains one project in natural language from its Project Situation
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -92,6 +93,28 @@ Both endpoints use the webhook bearer token and reconstruct their response
 from the same durable records after every request. Process/LLM handlers can
 read the identical projection through
 `ctx.services.get_project_situation("project-a")`.
+
+Project Chat answers questions about one project from that same projection:
+
+```text
+GET  /projects/project-a/chat
+POST /projects/project-a/chat   {"message": "今このプロジェクトは何で止まってる？"}
+```
+
+The Cockpit Projects view opens a project and puts the chat panel beside its
+situation. The answer is compiled from the Project Situation projection, the
+project's own thread and the question — never from SQLite, another project, or
+raw traces. This phase is deliberately read-only: a request to cancel,
+prioritize, approve or proceed is refused with `READ_ONLY_REFUSED` instead of
+being executed, and change still belongs to the `/control` endpoint. Naming a
+different project returns `OUT_OF_SCOPE` rather than an answer from it.
+
+Threads survive restart in `project_chat_threads` / `project_chat_messages`.
+Chat history is conversation, not confirmed world state, so it never becomes an
+Observation, StateDelta or World State fact. Without a configured LLM — or when
+the model returns unusable output — the reply is a deterministic summary of the
+projection, labelled `LLM_UNAVAILABLE`, `LLM_FAILED` or `LLM_INVALID`, and
+Runtime is unaffected.
 
 Submit a natural-language task from another terminal. The command reads the
 webhook URL and token from `.env`:
@@ -171,6 +194,7 @@ nexus_seed/providers/     Phase 5E providers, delegation, skill import, trace
 nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
 nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
 nexus_seed/projects/      read-only Project Situation models and projections
+nexus_seed/chat/          read-only Project Chat context, guards, and answers
 nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
 tests/                    acceptance and restart-convergence tests
 ```

@@ -291,6 +291,8 @@ class WebhookServer:
             clean_path == "/projects" or clean_path.startswith("/projects/")
         ):
             return self._project_response(clean_path, headers)
+        if method.upper() == "POST" and clean_path.startswith("/projects/"):
+            return await self._project_chat_response(clean_path, headers, raw_body)
         if method.upper() != "POST":
             return WebhookResponse(405, {"error": "only POST is supported outside Cockpit"})
         if clean_path == "/control":
@@ -393,9 +395,56 @@ class WebhookServer:
                     404, {"error": "project not found"}, headers=security_headers
                 )
             return WebhookResponse(200, situation, headers=security_headers)
+        if len(parts) == 3 and parts[0] == "projects" and parts[2] == "chat":
+            history = self.cockpit.project_chat_history(unquote(parts[1]))
+            if history is None:
+                return WebhookResponse(
+                    404, {"error": "project not found"}, headers=security_headers
+                )
+            return WebhookResponse(200, history, headers=security_headers)
         return WebhookResponse(
             404, {"error": "unknown project path"}, headers=security_headers
         )
+
+    async def _project_chat_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Answer one Project Chat question; the answer changes no state."""
+
+        if self.cockpit is None:
+            return WebhookResponse(404, {"error": "cockpit is disabled"})
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        if len(parts) != 3 or parts[0] != "projects" or parts[2] != "chat":
+            return WebhookResponse(
+                404, {"error": "unknown project path"}, headers=security_headers
+            )
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        message = body.get("message") if isinstance(body, dict) else None
+        if not isinstance(message, str) or not message.strip():
+            return WebhookResponse(
+                400,
+                {"error": "message must be a non-empty string"},
+                headers=security_headers,
+            )
+        answer = await self.cockpit.project_chat_ask(unquote(parts[1]), message)
+        if answer is None:
+            return WebhookResponse(
+                404, {"error": "project not found"}, headers=security_headers
+            )
+        return WebhookResponse(200, answer, headers=security_headers)
 
 
 def _adapter_id_from_path(path: str) -> str | None:

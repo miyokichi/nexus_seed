@@ -31,6 +31,8 @@ Processが担う役割として表現します。
 - 認証・認可された明示Command、永続Goal、Work制御、監査履歴を備えたPhase 5G Control Plane
 - feature flagで無効化できるPhase 6 Self/Master projection、永続Intention、Attention、Experience/Reflection、自発活動
 - Overview、Being、因果Activity、Work、Review、Provider、Systemを表示する認証付きHuman Cockpit
+- 既存のGoal / Intention / Work / Event / World State / Reviewから再構成するread-only Project Situation projection
+- Project Situationだけを根拠にProjectの状況を自然言語で説明するread-only Project Chat
 
 `AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
 Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
@@ -126,6 +128,28 @@ projectionとtraceを読み、操作はすべてPhase 5Gの`/control`へ送り�
 されません。最新状態の取得は右上の更新ボタンで明示的に行います。
 `NEXUS_SEED_COCKPIT_ENABLED=false`にするとCockpit routeだけを無効化でき、Runtime、Webhook、
 CLIの挙動は変わりません。
+
+CockpitのProjects画面ではProjectを開き、Project Situationの横でNEXUS SEEDに質問できます。
+同じ内容はHTTPからも参照できます。
+
+```text
+GET  /projects
+GET  /projects/project-a/situation
+GET  /projects/project-a/chat
+POST /projects/project-a/chat   {"message": "今このプロジェクトは何で止まってる？"}
+```
+
+Project Chatの回答は、そのProjectのProject Situation projection、同じProjectのThread、
+今回の質問だけから生成します。SQLiteの直接探索も、他Projectの参照も行いません。
+このPhaseは説明専用です。「キャンセルして」「優先して」「この方針で進めて」のような
+状態変更要求は実行せず`READ_ONLY_REFUSED`として断ります。変更は従来どおり`/control`から
+実行してください。別Projectについての質問は`OUT_OF_SCOPE`として断り、勝手に検索しません。
+
+Thread履歴は`project_chat_threads` / `project_chat_messages`に保存され、再起動後も復元
+されます。Chat履歴は会話であり確認済みWorld Stateではないため、Observation、StateDelta、
+World Stateにはなりません。LLM未接続時やLLMの出力が不正な場合は、projectionの確定事実
+だけを`LLM_UNAVAILABLE` / `LLM_FAILED` / `LLM_INVALID`と明示して返し、Runtimeには影響
+しません。
 
 ### 5. タスクを投入
 
@@ -287,6 +311,9 @@ nexus_seed/autonomy/      Phase 5DのSession、Policy、Budget、Trace
 nexus_seed/providers/     Phase 5EのProvider、委譲、Skill import、Trace
 nexus_seed/control/       Phase 5GのCommand、Identity、Goal、認可
 nexus_seed/presence/      Phase 6のSelf/Master/Intention projectionとExperience trace
+nexus_seed/projects/      read-onlyなProject Situationのmodelとprojection
+nexus_seed/chat/          read-onlyなProject Chatのcontext、guard、回答生成
+nexus_seed/cockpit/       人間向けread modelと依存なしWeb UI
 tests/                    受入テストと再起動収束テスト
 ```
 

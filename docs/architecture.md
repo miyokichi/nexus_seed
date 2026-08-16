@@ -1201,4 +1201,42 @@ projection function. Reads add no SQLite changes; restart simply reconstructs
 the same result from durable source records. Cockpit disablement removes these
 optional HTTP routes but does not affect Runtime operation.
 
-Phase 7 is not implemented.
+## Project Chat
+
+Project Chat is the explanation layer above that projection, and nothing more:
+
+```text
+human message + project_id
+  -> ProjectSituation projection (recompiled per question)
+  -> project chat context (situation + this thread + question)
+  -> LLM
+  -> human-readable answer
+```
+
+The LLM is given the compacted situation, the recent turns of this project's
+own thread and the question. It never queries SQLite, walks Runtime state, or
+sees another project; raw event payloads are excluded as audit-only detail.
+
+This phase is read-only. Two deterministic guards run before the LLM is called:
+a request that would change state (`キャンセルして`, `優先して`, `cancel …`) is
+answered `READ_ONLY_REFUSED`, and a question naming another existing project is
+answered `OUT_OF_SCOPE` rather than resolved from that project. The guards are
+a boundary, not the guarantee — the service has no write path into Event, World
+State, Goal, Intention, Work, Process or Continuation records at all, and it
+starts no Action, Replan, Capability Acquisition or Review decision.
+
+Threads live in `project_chat_threads` / `project_chat_messages`: an append-only
+journal beside `llm_invocations`, so a restart restores the conversation while
+Core primitives stay unchanged. A stored answer is a rendering of the situation
+at one moment, never a confirmed world fact, so it becomes no Observation,
+StateDelta or World State entry and never feeds back into the projection.
+
+`ANSWERED`, `READ_ONLY_REFUSED`, `OUT_OF_SCOPE`, `LLM_UNAVAILABLE`, `LLM_FAILED`
+and `LLM_INVALID` are reported to the interface with an answer either way: with
+no LLM configured, or after an unusable response, the reply is a deterministic
+summary of the projection, labelled as such. Runtime keeps running regardless.
+`POST /projects/{project_id}/chat` and `GET /projects/{project_id}/chat` reuse
+the Cockpit bearer-token boundary and disappear with Cockpit.
+
+Guidance — turning such a request into an authorized Control Plane change — is
+deliberately left to a later phase. Phase 7 is not implemented.

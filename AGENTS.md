@@ -1032,6 +1032,42 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **184.** Restart reconstructs Project Situation from the same durable source records.
 - **185.** Project HTTP reads reuse authentication and disappear with Cockpit without disabling Runtime.
 
+## Done in Project Chat
+
+- `POST /projects/{project_id}/chat` and `GET /projects/{project_id}/chat`
+  answer questions about one project. The pipeline is
+  `human message + project_id -> ProjectSituation -> chat context -> LLM ->
+  answer`; the LLM never queries SQLite, Runtime state or another project.
+- The context carries exactly the compacted Project Situation, this project's
+  recent chat turns and the question. Raw event payloads and unrelated projects
+  are left out.
+- Read-only means read-only in this phase: no Goal/Intention/Work change, no
+  Action, Replan, Capability Acquisition or Review decision, and no Core State
+  write. A change request is refused deterministically before the LLM sees it;
+  guidance is a later phase.
+- A thread is scoped to one `project_id`. Naming another existing project is
+  answered as out of scope instead of being resolved from that project.
+- Chat lives in `project_chat_threads` / `project_chat_messages`, an append-only
+  journal beside `llm_invocations`. It adds no Core primitive and is never read
+  as a confirmed fact about the world.
+- `ANSWERED`, `READ_ONLY_REFUSED`, `OUT_OF_SCOPE`, `LLM_UNAVAILABLE`,
+  `LLM_FAILED` and `LLM_INVALID` are reported to the interface. Without an LLM,
+  or after unusable output, the answer is a deterministic projection summary
+  labelled as such, and Runtime is unaffected.
+
+## Project Chat invariants (keep them)
+
+- **186.** Project Chat adds no Core primitive and no Runtime of its own.
+- **187.** Project Chat never writes Event, World State, Goal, Intention, Work, Process or Continuation records.
+- **188.** Project Chat executes no Action, Replan, Capability Acquisition or Review decision; state change belongs to the Control Plane.
+- **189.** A Project Chat answer is compiled only from the Project Situation projection, this project's thread and the question.
+- **190.** Project Situation remains the source; a chat answer never changes what it projects.
+- **191.** A thread is scoped to one `project_id` and never resolves another project's records.
+- **192.** Chat history is conversation, never a confirmed world fact.
+- **193.** Every question recompiles the current Project Situation; a thread never answers from a stale one.
+- **194.** LLM absence, failure or malformed output degrades to labelled deterministic facts and leaves Runtime untouched.
+- **195.** Project Chat reuses the Cockpit authentication boundary and disappears with Cockpit without disabling Runtime.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,
@@ -1039,6 +1075,9 @@ compensation. It closes three things Phase 4B left unsafe to build on before
   self-update, learning/RL policy changes, long-horizon compensation,
   multi-machine coordination, role/team ontologies and richer dynamic
   organization remain unbuilt.
+- Guidance Thread: turning a Project Chat request into an authorized Control
+  Plane change (Work cancellation, prioritisation, direction) is deliberately
+  unbuilt. Project Chat explains; it never acts.
 - Capability `description` becomes usable for LLM planning; `tags` for search.
   Both are stored already and deliberately unused by matching.
 - Compensating actions (undoing a completed node's side effects) remain

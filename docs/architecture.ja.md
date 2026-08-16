@@ -1071,4 +1071,42 @@ provenance linkだけを使用します。文章の類似やLLM推測によっ�
 使うProcess/LLM handlerは同じprojection関数を読みます。読み取りはSQLiteを
 変更せず、再起動後も同じ永続source recordから再構成します。
 
-Phase 7は実装していません。
+## Project Chat
+
+Project Chatは、このprojectionの上に載る説明専用layerです。
+
+```text
+human message + project_id
+  -> ProjectSituation projection（質問ごとに再構成）
+  -> Project Chat context（situation + 同一Thread + 質問）
+  -> LLM
+  -> 人間向けの回答
+```
+
+LLMに渡すのは、圧縮したProject Situation、同じProjectのThreadの直近履歴、
+今回の質問だけです。SQLiteの直接探索、Runtime state全体の走査、他Projectの
+参照は行いません。Raw event payloadは監査用の詳細であり、contextには含めません。
+
+このPhaseはread-onlyです。LLM呼び出し前に決定論的なguardが2つ動きます。
+状態変更要求（「キャンセルして」「優先して」「cancel …」）は`READ_ONLY_REFUSED`、
+別の既存Projectを指す質問は`OUT_OF_SCOPE`として返し、そのProjectを検索しません。
+guardは境界であって保証そのものではありません。Serviceには
+Event / World State / Goal / Intention / Work / Process / Continuationへの
+書き込み経路が存在せず、Action・Replan・Capability Acquisition・Review決定も
+一切開始しません。
+
+Threadは`project_chat_threads` / `project_chat_messages`に保存します。
+`llm_invocations`と同じ追記専用journalであり、Core primitiveを増やさずに
+再起動後の履歴復元を満たします。保存された回答はある時点のProject Situationの
+表現であって確認済み事実ではないため、Observation・StateDelta・World Stateには
+ならず、projectionへ還流しません。
+
+Interfaceへは`ANSWERED` / `READ_ONLY_REFUSED` / `OUT_OF_SCOPE` /
+`LLM_UNAVAILABLE` / `LLM_FAILED` / `LLM_INVALID`を明示して返します。LLM未接続時や
+出力が不正な場合は、projectionの確定事実だけを決定論的にまとめ、その旨を明示して
+返します。いずれの場合もRuntimeは影響を受けません。
+`POST /projects/{project_id}/chat`と`GET /projects/{project_id}/chat`は
+Cockpitと同じbearer token境界を再利用し、Cockpit無効化とともに消えます。
+
+Guidance（Chatの依頼を認可済みControl Plane変更へ変換すること）は後続Phaseに
+残しています。Phase 7は実装していません。

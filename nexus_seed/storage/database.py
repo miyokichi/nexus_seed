@@ -1074,6 +1074,32 @@ CREATE TABLE IF NOT EXISTS command_results (
     created_at TEXT NOT NULL
 );
 
+-- Project Chat: the human-facing conversation about one project.  It is kept
+-- out of events/observations/world state deliberately — a question and its
+-- answer are not confirmed facts about the world (Invariant 192).
+CREATE TABLE IF NOT EXISTS project_chat_threads (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_chat_messages (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              TEXT UNIQUE NOT NULL,
+    thread_id       TEXT NOT NULL,
+    project_id      TEXT NOT NULL,
+    role            TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    certainty       TEXT,
+    references_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_chat_message_thread
+    ON project_chat_messages(thread_id, seq);
+
 CREATE TABLE IF NOT EXISTS goals (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

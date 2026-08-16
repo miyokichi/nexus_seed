@@ -50,6 +50,7 @@ from ..storage.action_execution_store import ActionExecutionStore
 from ..storage.action_decision_store import ActionDecisionStore
 from ..storage.ingress_receipt_store import IngressReceiptStore
 from ..storage.adapter_checkpoint_store import AdapterCheckpointStore
+from ..storage.chat_store import ProjectChatStore
 from ..storage.resource_store import ResourceStore
 from ..storage.event_delivery_store import EventDeliveryStore
 from ..delivery.dispatcher import DurableEventDispatcher
@@ -210,6 +211,9 @@ class Runtime:
         self.action_decision_store = ActionDecisionStore(self.db)
         self.ingress_receipt_store = IngressReceiptStore(self.db)
         self.adapter_checkpoint_store = AdapterCheckpointStore(self.db)
+        #: The human-facing Project Chat journal.  Read by the interface layer
+        #: only; no Process, Router or Executor path touches it.
+        self.chat_store = ProjectChatStore(self.db)
         self.resource_store = ResourceStore(self.db)
         self.backends: dict[str, ExecutionBackend] = {}
         self.adapters = AdapterRegistry()
