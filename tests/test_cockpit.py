@@ -228,6 +228,23 @@ def test_cockpit_refresh_is_manual_only():
     assert "state.timer" not in APP_JS
 
 
+def test_control_commands_do_not_need_a_secure_browser_context():
+    """Cockpit is served over http:// on a LAN address as well as localhost.
+
+    ``crypto.randomUUID`` is a secure-context API, so calling it directly made
+    every control button fail with "crypto.randomUUID is not a function" for
+    anyone not on localhost.
+    """
+
+    command_call = APP_JS[APP_JS.index("async function sendCommand") :]
+    command_call = command_call[: command_call.index("\n")]
+    assert "crypto.randomUUID()" not in command_call
+    assert "source_message_id:uid()" in command_call
+    assert "idempotency_key:`cockpit:${uid()}`" in command_call
+    assert "function uid()" in APP_JS
+    assert "getRandomValues" in APP_JS
+
+
 def test_capability_assistance_aggregates_goal_trace_without_writing(tmp_path):
     runtime = Runtime(tmp_path / "assistance.db")
     goal = Goal(
