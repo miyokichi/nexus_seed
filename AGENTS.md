@@ -1103,6 +1103,43 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **202.** Work belongs to the Project of the Goal it was generated for; membership is never assigned by inference.
 - **203.** Goals created outside the Control Plane stay unassigned rather than being given a Project at read time.
 
+## Done in Goal-driven integration
+
+- `docs/architecture-inventory.md` places every module in exactly one area of
+  the loop — Goal/Project, World Model, Work Planning, Capability, Execution,
+  Evaluation — plus Runtime Infrastructure and Interface/Adapter, and records
+  what was decided about each unclassified item. Nothing was deleted.
+- The loop was already there and is now proved end to end: Goal creation makes
+  the Project, `evaluate_goal` turns criteria plus World State into Work,
+  `work_matcher` resolves Capability, blocked Work reaches Capability
+  Acquisition, execution goes through the Provider boundary, results become
+  StateDeltas through the ordinary pipeline, and `state_changed` /
+  `work_satisfied` re-evaluate the Goal until the Project completes.
+- Evaluation is not a module: it is `satisfy_work` criteria + `evaluate_goal` +
+  replanning/reconciliation + `project_status`. The inventory says so rather
+  than adding a fourth evaluator.
+- `orchestration/` is the only new code, and it is thin. `get_goal_loop` reads
+  where a Goal stands (`PLANNING`, `EXECUTING`, `ACQUIRING_CAPABILITY`,
+  `HUMAN_REQUIRED`, `BLOCKED`, `EVALUATING`, `ACHIEVED`, `PAUSED`,
+  `CANCELLED`) from the subsystems that own those facts.
+- `request_human_intervention` closes the one real gap: when automatic
+  acquisition stops, it states as `human_intervention_required` what is being
+  pursued, which Task stopped, what Capability is missing, what was tried and
+  what a person can supply. It emits an Event and changes nothing.
+- Agents remain non-primitive: an external Agent is an ExecutionProvider and an
+  internal role is a Process. Self-extension stays part of Capability
+  resolution rather than a second loop.
+
+## Goal-driven integration invariants (keep them)
+
+- **204.** Orchestration coordinates; it never re-implements Goal, World, Work, Capability, Execution or Evaluation logic.
+- **205.** The Goal loop is read from the subsystems that own each fact; it stores nothing of its own.
+- **206.** Reading the loop never writes SQLite or changes Runtime state.
+- **207.** A human-intervention request is an Event stating existing facts; it changes no Work, Goal, Capability or World State.
+- **208.** Event processing and Goal processing are one path: an Event changes the World, the World re-evaluates affected Goals, and Goals produce Work.
+- **209.** Self-extension is part of Capability resolution, not a separate loop, and a failed acquisition ends in a human request rather than unbounded retries.
+- **210.** Agents are Processes or ExecutionProviders; no Agent is a Core primitive.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

@@ -474,6 +474,20 @@ class RuntimeServices:
     def get_acquisition_session(self, session_id):
         return self._autonomy_store.get_session(session_id) if self._autonomy_store else None
 
+    def get_acquisition_trace(self, session_id):
+        """Read what an acquisition already tried, for explaining a stop."""
+
+        if self._runtime is None:
+            return None
+        return self._runtime.get_acquisition_trace(session_id)
+
+    def get_capability_gaps_for_work(self, work_requirement_id) -> list:
+        """Read the deficiencies recorded against one WorkRequirement."""
+
+        if self._extension_store is None:
+            return []
+        return self._extension_store.gaps_for_work(work_requirement_id)
+
     def find_acquisition_by_key(self, acquisition_key):
         return self._autonomy_store.find_by_key(acquisition_key) if self._autonomy_store else None
 

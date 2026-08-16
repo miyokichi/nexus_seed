@@ -19,6 +19,7 @@ from ..chat.service import ProjectChatService
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
+from ..orchestration.loop import get_goal_loops
 from ..projects.projections import get_project_situation, get_project_summaries
 from ..work.work_requirement import WorkStatus
 
@@ -147,6 +148,7 @@ class CockpitService:
             "reviews": reviews,
             "providers": [self._provider(item) for item in providers],
             "projects": self.projects(),
+            "goal_loops": self.goal_loops(),
             "system": {
                 "phase6_enabled": self.phase6_enabled,
                 "delivery": _json_safe(self.runtime.get_delivery_health()),
@@ -166,6 +168,11 @@ class CockpitService:
         """Return compact, explicitly-associated project summaries read-only."""
 
         return [item.to_dict() for item in get_project_summaries(self.runtime)]
+
+    def goal_loops(self) -> list[dict[str, Any]]:
+        """Return where each Goal stands in the loop, read-only."""
+
+        return [item.to_dict() for item in get_goal_loops(self.runtime)]
 
     def project_situation(self, project_id: str) -> dict[str, Any] | None:
         """Return one complete ProjectSituation without mutating Runtime state."""

@@ -33,6 +33,7 @@ Processが担う役割として表現します。
 - Overview、Being、因果Activity、Work、Review、Provider、Systemを表示する認証付きHuman Cockpit
 - Goal作成でProjectが立ち上がり、所属Work・status・situationを既存recordから導出するGoal中心のProject lifecycle
 - Project Situationだけを根拠にProjectの状況を自然言語で説明するread-only Project Chat
+- Goal / Project / World / Work / Capability / Execution / Evaluationを一本のループとして統合し、各Goalの現在地と「自力で進めない」ことを報告する薄いGoal-driven orchestration
 
 `AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
 Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
@@ -332,6 +333,7 @@ nexus_seed/control/       Phase 5GのCommand、Identity、Goal、認可
 nexus_seed/presence/      Phase 6のSelf/Master/Intention projectionとExperience trace
 nexus_seed/projects/      read-onlyなProject Situationのmodelとprojection
 nexus_seed/chat/          read-onlyなProject Chatのcontext、guard、回答生成
+nexus_seed/orchestration/ Goalループの現在地と人間への介入要求
 nexus_seed/cockpit/       人間向けread modelと依存なしWeb UI
 tests/                    受入テストと再起動収束テスト
 ```
@@ -339,6 +341,7 @@ tests/                    受入テストと再起動収束テスト
 ## 詳細資料
 
 - [詳細アーキテクチャとPhase履歴](docs/architecture.ja.md)
+- [機能棚卸し（どのmoduleがループのどこか）](docs/architecture-inventory.ja.md)
 - [Detailed architecture (English)](docs/architecture.md)
 - [開発時に守るInvariant](AGENTS.md)
 

@@ -1165,6 +1165,43 @@ authorized Phase 5G Command that emits `self_question_answered`; the ordinary
 Phase 6 projection Process resolves the question through Observation and
 StateDelta. The UI never writes World State or SQLite directly.
 
+## The loop, and the layer that coordinates it
+
+Every subsystem below exists to turn one cycle:
+
+```text
+Goal -> Project -> World -> Work/Task -> Capability -> Execution -> Evaluation -> Goal
+```
+
+Nothing in that cycle is new. Goal creation makes the Project; `evaluate_goal`
+compares the Goal's criteria with current World State and emits the Work that
+closes the gap; `work_matcher` decides whether the system can do it; work it
+cannot do becomes a CapabilityGap and enters bounded acquisition; execution runs
+through the Provider boundary; a result reaches the world as an ordinary
+StateDelta; and `state_changed` / `work_satisfied` re-evaluate the Goal until
+the Project is complete. Event processing and Goal processing are the same
+path — an Event changes the world, and the world re-evaluates the Goals it
+affects.
+
+`nexus_seed/orchestration/` is deliberately thin and owns none of that.
+`get_goal_loop` reads where a Goal stands — `PLANNING`, `EXECUTING`,
+`ACQUIRING_CAPABILITY`, `HUMAN_REQUIRED`, `BLOCKED`, `EVALUATING`, `ACHIEVED`,
+`PAUSED`, `CANCELLED` — from the subsystems that own each fact, and stores
+nothing. `request_human_intervention` closes the loop's last step: when
+automatic acquisition stops, it emits `human_intervention_required` naming the
+Goal being pursued, the Task that stopped, the Capability that is missing, what
+was already tried and what a person can supply. It changes no state.
+
+Evaluation deliberately has no module of its own. It is `satisfy_work`'s
+completion criteria, `evaluate_goal`, replanning and blocked-work
+reconciliation, and `project_status` — listed in
+[the architecture inventory](architecture-inventory.md), which places every
+module in exactly one area of the loop.
+
+An Agent is never a primitive here: an external Agent is an ExecutionProvider,
+an internal role is a Process, and self-extension is part of Capability
+resolution rather than a second loop.
+
 ## Goal-centric Projects
 
 A Project is one root Goal plus the Work that Goal generates. One Work already

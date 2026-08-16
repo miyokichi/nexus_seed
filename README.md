@@ -30,6 +30,7 @@ roles of a Process—not additional core abstractions.
 - Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, System health, and aggregated Capability Assistance
 - Goal-centric Projects: creating a Goal starts its Project, and its Work, status, and situation are derived from existing records
 - Read-only Project Chat that explains one project in natural language from its Project Situation
+- One Goal-driven loop — Goal, Project, World, Work, Capability, Execution, Evaluation — with a thin coordinator that reports where each Goal stands and asks for help when it cannot continue
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -212,6 +213,7 @@ nexus_seed/control/       Phase 5G commands, identities, Goals, and authorizatio
 nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
 nexus_seed/projects/      read-only Project Situation models and projections
 nexus_seed/chat/          read-only Project Chat context, guards, and answers
+nexus_seed/orchestration/ Goal-loop status and the human-intervention request
 nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
 tests/                    acceptance and restart-convergence tests
 ```
@@ -219,6 +221,7 @@ tests/                    acceptance and restart-convergence tests
 ## Documentation
 
 - [Detailed architecture and phase history](docs/architecture.md)
+- [Architecture inventory: every module, in one area of the loop](docs/architecture-inventory.md)
 - [詳細アーキテクチャ（日本語）](docs/architecture.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)
 

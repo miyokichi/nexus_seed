@@ -33,6 +33,7 @@ from .operations import (
 )
 from .control.models import HumanIdentity
 from .processes.autonomy import bootstrap_autonomy
+from .orchestration import bootstrap_orchestration
 from .processes.control import bootstrap_control
 from .processes.extension import bootstrap_extension
 from .processes.persistent_being import bootstrap_persistent_being
@@ -134,6 +135,7 @@ def bootstrap_application(
     bootstrap_extension(runtime)
     bootstrap_autonomy(runtime)
     bootstrap_control(runtime)
+    bootstrap_orchestration(runtime)
     bootstrap_persistent_being(runtime, enabled=settings.phase6_enabled)
     runtime.control_store.save_identity(
         HumanIdentity(

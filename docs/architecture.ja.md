@@ -1039,6 +1039,39 @@ Plane、CLIは変わりません。Self question回答だけは追加Control sur
 `self_question_answered`を発行し、通常のPhase 6 projection ProcessがObservationと
 StateDeltaを通して解決します。UIがWorld StateやSQLiteへ直接書く経路はありません。
 
+## ループと、それを束ねる層
+
+これまでの各subsystemは、次の1周を回すために存在します。
+
+```text
+Goal -> Project -> World -> Work/Task -> Capability -> Execution -> Evaluation -> Goal
+```
+
+この循環自体に新規機構はありません。Goal作成でProjectが立ち上がり、
+`evaluate_goal`がGoalのcriteriaと現在のWorld Stateを比較してgapを埋めるWorkを
+生成し、`work_matcher`が実行可能かを判定し、できない場合はCapabilityGapとして
+有界なAcquisitionへ入り、実行はProvider境界を通り、結果は通常のStateDeltaとして
+Worldへ反映され、`state_changed` / `work_satisfied`がGoalを再評価してProjectが
+完了します。Event処理とGoal処理は別系統ではありません。Eventが世界を変え、
+世界が関係するGoalを再評価します。
+
+`nexus_seed/orchestration/`は意図的に薄く、上記のどれも所有しません。
+`get_goal_loop`は`PLANNING` / `EXECUTING` / `ACQUIRING_CAPABILITY` /
+`HUMAN_REQUIRED` / `BLOCKED` / `EVALUATING` / `ACHIEVED` / `PAUSED` /
+`CANCELLED`のどこにGoalがいるかを、それぞれの事実を持つsubsystemから読むだけで、
+自前の保存を持ちません。`request_human_intervention`はループ最後の一歩を閉じます。
+自動Acquisitionが止まったとき、何を目指していたか・どのTaskで止まったか・
+何のCapabilityが足りないか・何を試したか・人間は何を提供すればよいかを
+`human_intervention_required`として表明します。状態は変更しません。
+
+Evaluationは専用moduleを持ちません。`satisfy_work`のcompletion criteria、
+`evaluate_goal`、replanningとblocked work reconciliation、`project_status`の
+組み合わせです。全moduleの所属は
+[機能棚卸し](architecture-inventory.ja.md)に記載しています。
+
+Agentはprimitiveではありません。外部AgentはExecution Provider、内部の役割は
+Processであり、自己拡張は独立ループではなくCapability解決の一部です。
+
 ## Goal中心のProject
 
 Projectは「1つのroot Goal + そのGoalが生成するWork集合」です。Workが1件でも
