@@ -26,6 +26,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import unquote
 
 from ..core.event import utcnow
 from ..ingress.models import IngressEnvelope, IngressStatus
@@ -286,6 +287,10 @@ class WebhookServer:
         clean_path = path.split("?", 1)[0]
         if method.upper() == "GET" and clean_path.startswith("/cockpit"):
             return self._cockpit_response(clean_path, headers)
+        if method.upper() == "GET" and (
+            clean_path == "/projects" or clean_path.startswith("/projects/")
+        ):
+            return self._project_response(clean_path, headers)
         if method.upper() != "POST":
             return WebhookResponse(405, {"error": "only POST is supported outside Cockpit"})
         if clean_path == "/control":
@@ -359,6 +364,38 @@ class WebhookServer:
                 return WebhookResponse(401, {"error": "unauthorized"})
             return WebhookResponse(200, self.cockpit.snapshot(), headers=security_headers)
         return WebhookResponse(404, {"error": "unknown cockpit path"})
+
+    def _project_response(
+        self, path: str, headers: dict[str, str]
+    ) -> WebhookResponse:
+        """Serve authenticated read-only Project Situation projections."""
+
+        if self.cockpit is None:
+            return WebhookResponse(404, {"error": "cockpit is disabled"})
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        if path == "/projects":
+            return WebhookResponse(
+                200, {"projects": self.cockpit.projects()}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        if len(parts) == 3 and parts[0] == "projects" and parts[2] == "situation":
+            project_id = unquote(parts[1])
+            situation = self.cockpit.project_situation(project_id)
+            if situation is None:
+                return WebhookResponse(
+                    404, {"error": "project not found"}, headers=security_headers
+                )
+            return WebhookResponse(200, situation, headers=security_headers)
+        return WebhookResponse(
+            404, {"error": "unknown project path"}, headers=security_headers
+        )
 
 
 def _adapter_id_from_path(path: str) -> str | None:

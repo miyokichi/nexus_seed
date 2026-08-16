@@ -1165,4 +1165,40 @@ authorized Phase 5G Command that emits `self_question_answered`; the ordinary
 Phase 6 projection Process resolves the question through Observation and
 StateDelta. The UI never writes World State or SQLite directly.
 
+## Project Situation Projection
+
+Project Situation is a regenerable application/domain projection, not a Core
+primitive, Project store, Runtime, Goal system, or agent loop. It joins the
+existing durable records without copying them:
+
+```text
+explicit project_id / Work.project
+  -> Goal -> Intention
+  -> Work -> Process / Continuation / Review
+  -> Event correlation, causation and source provenance
+  -> World State / StateDelta history
+  -> ProjectSituation (read-only)
+```
+
+Association is conservative. A record enters a project only through the
+existing `WorkRequirement.project` field, explicit `project_id`/`project`
+metadata, a Goal/Work/Intention identifier, or an existing causal/provenance
+link. Text similarity and LLM inference never establish membership. Records
+without project metadata continue through the pre-existing paths and remain
+unassigned in this projection.
+
+`overall_status` is deterministic: hard Work/Goal/dependency/failure blockers
+produce `BLOCKED`; pending Review or an explicitly project-scoped unresolved
+question produces `NEEDS_ATTENTION`; unresolved non-blocked Goal/Intention/Work
+produces `ACTIVE`; all-terminal Goals produce `COMPLETED`; otherwise it is
+`IDLE`. The deterministic summary is presentation data and never replaces an
+Event, StateDelta, Work status or Review record.
+
+`GET /projects` and `GET /projects/{project_id}/situation` use the existing
+HTTP bearer-token boundary. `CockpitService`, HTTP callers and Process/LLM
+handlers through `RuntimeServices.get_project_situation()` use the same
+projection function. Reads add no SQLite changes; restart simply reconstructs
+the same result from durable source records. Cockpit disablement removes these
+optional HTTP routes but does not affect Runtime operation.
+
 Phase 7 is not implemented.

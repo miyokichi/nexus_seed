@@ -1008,6 +1008,30 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **177.** A capability warning is human-facing only after automatic acquisition needs review or cannot continue.
 - **178.** Capability Assistance actions reuse Control Plane, Review and acquisition boundaries; the UI never resolves a gap directly.
 
+## Done in Project Situation Projection
+
+- `ProjectSituation` is reconstructed from existing Goal, Intention, Work,
+  Event, World State, Process and Continuation/Review records. It has no table,
+  store, Runtime or write path of its own.
+- Association reuses `WorkRequirement.project`, explicit `project_id` /
+  `project` metadata, durable identifiers and causal/provenance links. Unknown
+  ownership is left unknown; no LLM or text similarity assigns membership.
+- `ACTIVE / BLOCKED / NEEDS_ATTENTION / IDLE / COMPLETED` and the short summary
+  are deterministic presentation results over current durable facts.
+- `GET /projects` and `GET /projects/{project_id}/situation` reuse the Cockpit
+  bearer-token boundary. Process/LLM handlers read the same projection through
+  the read-only `RuntimeServices` facade.
+
+## Project Situation invariants (keep them)
+
+- **179.** Project and ProjectSituation are not Core primitives.
+- **180.** Project Situation is a read-only projection; it has no Project store or Runtime.
+- **181.** Project membership requires explicit metadata, an existing identifier, or provenance; LLM inference never establishes it.
+- **182.** Project status and deterministic summary are derived facts and never replace source audit records.
+- **183.** Project projection reads never mutate SQLite, Runtime, Goal, Work, World State or Review state.
+- **184.** Restart reconstructs Project Situation from the same durable source records.
+- **185.** Project HTTP reads reuse authentication and disappear with Cockpit without disabling Runtime.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

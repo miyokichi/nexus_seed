@@ -18,6 +18,7 @@ from ..autonomy.models import AcquisitionStatus
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
+from ..projects.projections import get_project_situation, get_project_summaries
 from ..work.work_requirement import WorkStatus
 
 
@@ -141,6 +142,7 @@ class CockpitService:
             },
             "reviews": reviews,
             "providers": [self._provider(item) for item in providers],
+            "projects": self.projects(),
             "system": {
                 "phase6_enabled": self.phase6_enabled,
                 "delivery": _json_safe(self.runtime.get_delivery_health()),
@@ -155,6 +157,17 @@ class CockpitService:
                 "boundary": "Phase 5G Control Plane",
             },
         }
+
+    def projects(self) -> list[dict[str, Any]]:
+        """Return compact, explicitly-associated project summaries read-only."""
+
+        return [item.to_dict() for item in get_project_summaries(self.runtime)]
+
+    def project_situation(self, project_id: str) -> dict[str, Any] | None:
+        """Return one complete ProjectSituation without mutating Runtime state."""
+
+        situation = get_project_situation(self.runtime, project_id)
+        return situation.to_dict() if situation is not None else None
 
     def _llm_status(self) -> dict[str, Any]:
         backend = self.runtime.backends.get("llm")

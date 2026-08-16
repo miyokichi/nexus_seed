@@ -144,6 +144,24 @@ class RuntimeServices:
         """Read-side access to Goal records and command provenance."""
         return self._control_store
 
+    def get_project_situation(self, project_id: str):
+        """Compile one read-only ProjectSituation for a Process/LLM handler."""
+
+        if self._runtime is None:
+            return None
+        from ..projects.projections import get_project_situation
+
+        return get_project_situation(self._runtime, project_id)
+
+    def get_project_summaries(self):
+        """Compile compact project summaries for a Process/LLM handler."""
+
+        if self._runtime is None:
+            return []
+        from ..projects.projections import get_project_summaries
+
+        return get_project_summaries(self._runtime)
+
     # --- processes ---------------------------------------------------------
 
     def get_process_instance(self, instance_id: uuid.UUID) -> ProcessInstance | None:

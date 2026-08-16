@@ -28,6 +28,7 @@ roles of a Process—not additional core abstractions.
 - Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
 - Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
 - Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, System health, and aggregated Capability Assistance
+- Read-only Project Situation projections over existing Goals, Intentions, Work, Events, World State, and Reviews
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -77,6 +78,20 @@ Intention → Work → CapabilityGap → AcquisitionSession trace and appears on
 when automatic acquisition is waiting for review or cannot continue. Set
 `NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
 Cockpit routes without changing Runtime, webhook, or CLI behavior.
+
+Project Situation uses explicit project association only. Work already accepts
+`project=project-a`; Goals can use `metadata={"project_id":"project-a", ...}`.
+No Project table or Project Runtime is created. Authenticated callers can read:
+
+```text
+GET /projects
+GET /projects/project-a/situation
+```
+
+Both endpoints use the webhook bearer token and reconstruct their response
+from the same durable records after every request. Process/LLM handlers can
+read the identical projection through
+`ctx.services.get_project_situation("project-a")`.
 
 Submit a natural-language task from another terminal. The command reads the
 webhook URL and token from `.env`:
@@ -155,6 +170,7 @@ nexus_seed/autonomy/      Phase 5D sessions, policy, budget, trace
 nexus_seed/providers/     Phase 5E providers, delegation, skill import, trace
 nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
 nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
+nexus_seed/projects/      read-only Project Situation models and projections
 nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
 tests/                    acceptance and restart-convergence tests
 ```

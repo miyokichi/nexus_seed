@@ -20,7 +20,7 @@ from nexus_seed.autonomy.models import (
 from nexus_seed.capabilities.models import CapabilityRequirement
 from nexus_seed.cockpit import CockpitService, humanize_error
 from nexus_seed.cockpit.assets import APP_JS
-from nexus_seed.control.models import Goal, HumanIdentity
+from nexus_seed.control.models import Goal, GoalStatus, HumanIdentity
 from nexus_seed.core.event import Event
 from nexus_seed.extension.models import CapabilityGap
 from nexus_seed.presence.models import IntentionRecord
@@ -55,14 +55,14 @@ async def get_path(port: int, path: str, *, token: str | None = None):
     return status, response_headers, body
 
 
-async def post_control(port: int, command: str):
+async def post_control(port: int, command: str, *, message_id: str = "message-1"):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     body = json.dumps(
         {
             "command": command,
             "source_channel": "cockpit-test",
-            "source_message_id": "message-1",
-            "idempotency_key": "cockpit-test:message-1",
+            "source_message_id": message_id,
+            "idempotency_key": f"cockpit-test:{message_id}",
         }
     ).encode("utf-8")
     request = (
@@ -127,6 +127,8 @@ async def test_cockpit_assets_and_snapshot_api_use_existing_auth(tmp_path):
         assert status == 200
         assert headers["content-type"].startswith("text/html")
         assert b"NEXUS SEED" in body and b"/cockpit/app.js" in body
+        assert "script-src 'self'" in headers["content-security-policy"]
+        assert "'unsafe-inline'" not in headers["content-security-policy"]
 
         status, headers, body = await get_path(
             server.bound_port, "/cockpit/styles.css"
@@ -405,6 +407,60 @@ def test_capability_assistance_ui_uses_existing_control_boundaries():
     assert "function capabilityAssistanceCard" in APP_JS
     assert "自動解決で試したこと" in APP_JS
     assert "必要な対応" in APP_JS
-    assert "onclick=\"review(" in APP_JS
-    assert "sendCommand(`/pause ${id}`" in APP_JS
+    assert 'data-action="${esc(action)}"' in APP_JS
+    assert 'app.addEventListener("click"' in APP_JS
+    assert 'action==="review-approve"' in APP_JS
+    assert "sendCommand(`/pause ${workId}`" in APP_JS
     assert "fetch(\"/control\"" in APP_JS
+    assert " onclick=" not in APP_JS
+
+
+async def test_cockpit_goal_buttons_map_to_authorized_control_commands(tmp_path):
+    runtime = Runtime(tmp_path / "goal-buttons.db")
+    bootstrap_control(runtime)
+    runtime.control_store.save_identity(
+        HumanIdentity(
+            identity_id="operator",
+            display_name="Operator",
+            permissions=("command.*",),
+        )
+    )
+    goal = Goal(
+        title="Operate from Cockpit",
+        objective="Verify Goal controls",
+        owner_identity_id="operator",
+    )
+    runtime.control_store.save_goal(goal)
+    server = await WebhookServer(
+        WebhookIngress(runtime.ingress, token=TOKEN),
+        console=runtime.console,
+        control_identity_id="operator",
+        cockpit=CockpitService(runtime, phase6_enabled=False, master_id="operator"),
+    ).start()
+    try:
+        status, result = await post_control(
+            server.bound_port,
+            f"/goal pause {goal.id}",
+            message_id="goal-pause",
+        )
+        assert status == 200 and result["status"] == "EXECUTED"
+        assert runtime.control_store.get_goal(goal.id).status is GoalStatus.PAUSED
+
+        status, result = await post_control(
+            server.bound_port,
+            f"/goal resume {goal.id}",
+            message_id="goal-resume",
+        )
+        assert status == 200 and result["status"] == "EXECUTED"
+        assert runtime.control_store.get_goal(goal.id).status is GoalStatus.ACTIVE
+
+        status, result = await post_control(
+            server.bound_port,
+            f"/goal cancel {goal.id}",
+            message_id="goal-cancel",
+        )
+        assert status == 200 and result["status"] == "EXECUTED"
+        assert runtime.control_store.get_goal(goal.id).status is GoalStatus.CANCELLED
+    finally:
+        await server.stop()
+        runtime.close()

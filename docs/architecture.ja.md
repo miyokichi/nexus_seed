@@ -1039,4 +1039,36 @@ Plane、CLIは変わりません。Self question回答だけは追加Control sur
 `self_question_answered`を発行し、通常のPhase 6 projection ProcessがObservationと
 StateDeltaを通して解決します。UIがWorld StateやSQLiteへ直接書く経路はありません。
 
+## Project Situation Projection
+
+Project Situationは、既存の永続状態から毎回再構成するapplication/domain
+projectionです。Core primitive、Project Store、Project Runtime、別Goal system、
+agent loopではありません。
+
+```text
+明示project_id / Work.project
+  -> Goal -> Intention
+  -> Work -> Process / Continuation / Review
+  -> Event correlation / causation / provenance
+  -> World State / StateDelta history
+  -> ProjectSituation (read-only)
+```
+
+所属判定は保守的です。既存`WorkRequirement.project`、明示的な
+`project_id`/`project` metadata、Goal/Work/IntentionのID参照、既存の因果・
+provenance linkだけを使用します。文章の類似やLLM推測によってProject所属を
+確定しません。Project metadataがない既存データは従来どおり処理され、
+このprojectionでは未所属のままです。
+
+`overall_status`は決定論的です。Work・Goal・依存関係・失敗のhard blockerが
+あれば`BLOCKED`、pending Reviewまたは明示的にproject-scopedな未回答質問が
+あれば`NEEDS_ATTENTION`、未完了のGoal/Intention/Workがあれば`ACTIVE`、
+全Goalがterminalなら`COMPLETED`、それ以外は`IDLE`です。短いsummaryも
+派生表示であり、Event・StateDelta・Work status・Reviewの監査事実を置換しません。
+
+`GET /projects`と`GET /projects/{project_id}/situation`は既存HTTP bearer tokenを
+再利用します。Cockpit、HTTP caller、`RuntimeServices.get_project_situation()`を
+使うProcess/LLM handlerは同じprojection関数を読みます。読み取りはSQLiteを
+変更せず、再起動後も同じ永続source recordから再構成します。
+
 Phase 7は実装していません。
