@@ -27,6 +27,7 @@ _COMMANDS = {
     "reject": ("review.reject", "review"),
     "context": ("work.context", "work"),
     "trace": ("work.trace", "work"),
+    "answer": ("self.question.answer", "self_question"),
 }
 
 

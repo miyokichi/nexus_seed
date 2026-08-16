@@ -1112,4 +1112,37 @@ after the resulting work drains, the existing Runtime is idle rather than
 polling in a busy loop. Phase 6 process failure is isolated as an ordinary
 failed activation and does not disable Phase 5G command processing.
 
+## Human Interface / Cockpit
+
+Cockpit is an optional application-layer projection served at `/cockpit` on
+the existing authenticated HTTP listener. It is not a Runtime or a seventh
+primitive. `CockpitService.snapshot()` reads the Goal, Work, Process,
+Continuation, Provider, Event, StateDelta and Action stores plus the existing
+Self/Master/Intention projections. Snapshot compilation has no write path.
+
+```text
+existing durable stores + projections + trace links
+  -> read-only CockpitService
+  -> /cockpit/api/snapshot
+  -> browser Overview / Being / Activity / Work / Reviews / Providers / System
+
+browser operation -> existing POST /control -> ConsoleService
+  -> schema + target + HumanIdentity permission validation
+  -> existing Event / Process / StateDelta / Action / Review boundaries
+```
+
+Activity is a regenerable grouping by existing Event correlation/causation and
+provenance ids. It never creates an Activity table. Human-readable errors are
+presentation records paired with raw errors in drill-down details; they never
+change audit facts. The API uses the configured webhook bearer token. Static
+HTML contains no state and may load before authentication; snapshot and
+control data remain authenticated.
+
+`NEXUS_SEED_COCKPIT_ENABLED=false` removes the Cockpit routes while leaving
+Runtime, webhook, Control Plane and CLI untouched. Self-question answers are
+the only added control surface: `/answer <question-id> answer="..."` is an
+authorized Phase 5G Command that emits `self_question_answered`; the ordinary
+Phase 6 projection Process resolves the question through Observation and
+StateDelta. The UI never writes World State or SQLite directly.
+
 Phase 7 is not implemented.

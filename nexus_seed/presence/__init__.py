@@ -14,6 +14,7 @@ from .models import (
     MasterClaim,
     MasterProjection,
     SelfProjection,
+    self_question_id,
     intention_id_for_goal,
 )
 from .projections import (
@@ -34,6 +35,7 @@ __all__ = [
     "MasterClaim",
     "MasterProjection",
     "SelfProjection",
+    "self_question_id",
     "get_experience_trace",
     "get_intention",
     "get_intentions",

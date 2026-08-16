@@ -994,4 +994,33 @@ durable Eventです。有限のProcess連鎖がdrainされた後はbusy loopを�
 戻ります。Phase 6 Processが失敗しても通常のfailed activationとして隔離され、Phase 5G Control
 Planeは利用可能です。
 
+## Human Interface / Cockpit
+
+Cockpitは既存の認証付きHTTP listenerの`/cockpit`で提供する、任意のapplication-layer
+projectionです。新Runtimeでも7番目のprimitiveでもありません。`CockpitService.snapshot()`は
+Goal、Work、Process、Continuation、Provider、Event、StateDelta、Actionの既存Storeと、
+Self/Master/Intention projectionを読みます。snapshot生成には書き込み経路がありません。
+
+```text
+既存durable store + projection + trace link
+  -> read-only CockpitService
+  -> /cockpit/api/snapshot
+  -> Overview / Being / Activity / Work / Reviews / Providers / System
+
+ブラウザ操作 -> 既存 POST /control -> ConsoleService
+  -> schema + target + HumanIdentity permission validation
+  -> 既存Event / Process / StateDelta / Action / Review境界
+```
+
+Activityは既存Eventのcorrelation/causationとprovenance idを使う再生成可能なグループであり、
+Activity tableは追加しません。人間向けerrorは詳細内のraw errorと常に対になり、監査事実を
+書き換えません。API認証は設定済みWebhook bearer tokenを再利用します。静的HTMLは状態を
+含まないため認証前にも配信できますが、snapshotとcontrol dataは認証が必要です。
+
+`NEXUS_SEED_COCKPIT_ENABLED=false`ではCockpit routeだけが消え、Runtime、Webhook、Control
+Plane、CLIは変わりません。Self question回答だけは追加Control surfaceで、
+`/answer <question-id> answer="..."`が認可済みPhase 5G Commandとして
+`self_question_answered`を発行し、通常のPhase 6 projection ProcessがObservationと
+StateDeltaを通して解決します。UIがWorld StateやSQLiteへ直接書く経路はありません。
+
 Phase 7は実装していません。

@@ -24,6 +24,7 @@ _ENV_NAMES = (
     "NEXUS_SEED_LOG_LEVEL",
     "NEXUS_SEED_CONTROL_IDENTITY",
     "NEXUS_SEED_CONTROL_PERMISSIONS",
+    "NEXUS_SEED_COCKPIT_ENABLED",
     "NEXUS_SEED_LLM_ENABLED",
     "NEXUS_SEED_LLM_PROVIDER",
     "NEXUS_SEED_LLM_BASE_URL",
@@ -101,6 +102,15 @@ def test_remote_listen_requires_webhook_token(tmp_path):
 
     with pytest.raises(ApplicationConfigurationError, match="TOKEN is required"):
         AppSettings.from_env(env_file)
+
+
+def test_cockpit_defaults_on_and_can_be_disabled(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    write_env(env_file, tmp_path / "data")
+    assert AppSettings.from_env(env_file).cockpit_enabled is True
+
+    monkeypatch.setenv("NEXUS_SEED_COCKPIT_ENABLED", "false")
+    assert AppSettings.from_env(env_file).cockpit_enabled is False
 
 
 def test_once_and_llm_check_are_mutually_exclusive():

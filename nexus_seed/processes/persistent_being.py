@@ -22,6 +22,7 @@ from ..presence.models import (
     IntentionRecord,
     IntentionStatus,
     intention_id_for_goal,
+    self_question_id,
 )
 from ..presence.projections import MASTER_CATEGORIES
 from ..work.work_requirement import WorkStatus
@@ -46,6 +47,7 @@ SELF_MASTER_STATE = ProcessDefinition(
         "master_claim_observed",
         "master_claim_inferred",
         "master_claim_confirmed",
+        "self_question_answered",
     ),
     metadata={"role": "self_master_state_projection"},
 )
@@ -105,6 +107,69 @@ async def maintain_self_master_state(ctx: ProcessContext) -> ProcessResult:
 
     assert ctx.event is not None and ctx.services is not None
     payload = ctx.event.payload
+    if ctx.event.type == "self_question_answered":
+        question_id = str(payload.get("question_id") or "")
+        answer = str(payload.get("answer") or "").strip()
+        current_questions = ctx.services.get_current_state("self", "unresolved_questions")
+        raw_questions = current_questions.value if current_questions is not None else []
+        questions = (
+            list(raw_questions)
+            if isinstance(raw_questions, (list, tuple))
+            else ([raw_questions] if raw_questions else [])
+        )
+        matched = [item for item in questions if self_question_id(item) == question_id]
+        if len(matched) != 1 or not answer:
+            return ctx.fail("Self question answer requires one current question and an answer")
+        remaining = [item for item in questions if self_question_id(item) != question_id]
+        emitted: list[Event] = []
+        question_event = _propose_fact(
+            ctx,
+            entity="self",
+            attribute="unresolved_questions",
+            value=remaining,
+            confidence=1.0,
+            predicate="self_question_resolved",
+            reason="authorized Master answer received through Control Plane",
+        )
+        if question_event is not None:
+            emitted.append(question_event)
+        current_beliefs = ctx.services.get_current_state("self", "beliefs")
+        raw_beliefs = current_beliefs.value if current_beliefs is not None else []
+        beliefs = (
+            list(raw_beliefs)
+            if isinstance(raw_beliefs, (list, tuple))
+            else ([raw_beliefs] if raw_beliefs else [])
+        )
+        beliefs.append(
+            {
+                "question_id": question_id,
+                "question": matched[0],
+                "answer": answer,
+                "claim_status": ClaimStatus.CONFIRMED.value,
+                "source_event_id": str(ctx.event.id),
+            }
+        )
+        belief_event = _propose_fact(
+            ctx,
+            entity="self",
+            attribute="beliefs",
+            value=beliefs,
+            confidence=1.0,
+            predicate="self_belief_confirmed",
+            reason="authorized Master answer received through Control Plane",
+        )
+        if belief_event is not None:
+            emitted.append(belief_event)
+        emitted.append(
+            ctx.new_event(
+                "self_question_resolved",
+                {"question_id": question_id, "source_event_id": str(ctx.event.id)},
+            )
+        )
+        return ctx.complete(
+            output={"question_id": question_id, "resolved": True},
+            emitted_events=emitted,
+        )
     if ctx.event.type == "self_state_observed":
         attribute = str(payload.get("attribute") or "").strip()
         allowed = {

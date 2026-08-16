@@ -27,6 +27,7 @@ Processが担う役割として表現します。
 - 内部Process、Directory Skill、外部Agentを統合するPhase 5E Provider Federation
 - 認証・認可された明示Command、永続Goal、Work制御、監査履歴を備えたPhase 5G Control Plane
 - feature flagで無効化できるPhase 6 Self/Master projection、永続Intention、Attention、Experience/Reflection、自発活動
+- Overview、Being、因果Activity、Work、Review、Provider、Systemを表示する認証付きHuman Cockpit
 
 `AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
 Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
@@ -65,6 +66,7 @@ NEXUS_SEED_DATA_DIR=C:/Users/user/AppData/Local/nexus-seed
 NEXUS_SEED_WEBHOOK_HOST=127.0.0.1
 NEXUS_SEED_WEBHOOK_PORT=8787
 NEXUS_SEED_WEBHOOK_TOKEN=十分に長い任意の文字列
+NEXUS_SEED_COCKPIT_ENABLED=true
 ```
 
 OpenAI API互換のローカルLLMを使う場合は次も設定します。
@@ -114,6 +116,12 @@ nexus-seed
 durable delivery、retry/timer、Capability acquisitionがすべて登録され、1秒ごとに
 Runtimeがtickします。終了は`Ctrl+C`です。同じコマンドで再起動するとSQLiteから
 未完了処理を復旧します。
+
+ブラウザで`http://127.0.0.1:8787/cockpit`を開きます。データ取得時にWebhookと同じTokenを
+入力します。Tokenはブラウザのtab単位session storageだけに保持されます。Cockpitは既存の
+projectionとtraceを読み、操作はすべてPhase 5Gの`/control`へ送ります。
+`NEXUS_SEED_COCKPIT_ENABLED=false`にするとCockpit routeだけを無効化でき、Runtime、Webhook、
+CLIの挙動は変わりません。
 
 ### 5. タスクを投入
 

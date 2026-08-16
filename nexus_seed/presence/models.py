@@ -6,6 +6,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import hashlib
+import json
 from typing import Any
 
 from ..core.event import utcnow
@@ -51,6 +53,15 @@ def intention_id_for_goal(goal_id: uuid.UUID | str) -> uuid.UUID:
     """Return the stable logical Intention id beneath one durable Goal."""
 
     return uuid.uuid5(INTENTION_NAMESPACE, str(goal_id))
+
+
+def self_question_id(question: Any) -> str:
+    """Return a stable UI/control identity for one unresolved Self question."""
+
+    encoded = json.dumps(
+        question, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:20]
 
 
 @dataclass(frozen=True, slots=True)

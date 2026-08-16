@@ -20,6 +20,7 @@ from typing import Any
 from .adapters.webhook import WebhookIngress, WebhookServer
 from .backends.action import LocalFileActionBackend
 from .backends.base import BackendRequest
+from .cockpit import CockpitService
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
 from .operations import (
     OperationalCommandError,
@@ -61,6 +62,8 @@ class AppSettings:
     control_permissions: tuple[str, ...] = ("command.*",)
     #: Phase 6 is on by default; False restores the complete Phase 5G wiring.
     phase6_enabled: bool = True
+    #: Human Interface Layer; False removes every Cockpit HTTP route.
+    cockpit_enabled: bool = True
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -98,16 +101,18 @@ class AppSettings:
                 "control identity and at least one control permission are required"
             )
         phase6_enabled = _read_bool("NEXUS_SEED_PHASE6_ENABLED", True)
+        cockpit_enabled = _read_bool("NEXUS_SEED_COCKPIT_ENABLED", True)
         return cls(
-            data_dir,
-            host,
-            port,
-            token,
-            tick_seconds,
-            log_level,
-            identity_id,
-            permissions,
-            phase6_enabled,
+            data_dir=data_dir,
+            host=host,
+            port=port,
+            webhook_token=token,
+            tick_seconds=tick_seconds,
+            log_level=log_level,
+            control_identity_id=identity_id,
+            control_permissions=permissions,
+            phase6_enabled=phase6_enabled,
+            cockpit_enabled=cockpit_enabled,
         )
 
 
@@ -364,12 +369,23 @@ async def run(args: argparse.Namespace) -> int:
             return 0
 
         ingress = WebhookIngress(runtime.ingress, token=settings.webhook_token)
+        cockpit = (
+            CockpitService(
+                runtime,
+                phase6_enabled=settings.phase6_enabled,
+                master_id=settings.control_identity_id,
+                control_enabled=runtime.console is not None,
+            )
+            if settings.cockpit_enabled
+            else None
+        )
         server = await WebhookServer(
             ingress,
             host=settings.host,
             port=settings.port,
             console=runtime.console,
             control_identity_id=settings.control_identity_id,
+            cockpit=cockpit,
         ).start()
         _print_started(runtime, settings, server.bound_port)
 
@@ -560,6 +576,8 @@ def _print_started(runtime: Runtime, settings: AppSettings, bound_port: int) -> 
     print("NEXUS SEED is running")
     print(f"  webhook: http://{settings.host}:{bound_port}/ingress/webhook")
     print(f"  control: http://{settings.host}:{bound_port}/control")
+    if settings.cockpit_enabled:
+        print(f"  cockpit: http://{settings.host}:{bound_port}/cockpit")
     print(f"  token:   {token_state}")
     print(f"  database: {settings.data_dir / 'nexus_seed.db'}")
     print(f"  LLM:     {llm_state}")

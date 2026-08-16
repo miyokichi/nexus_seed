@@ -13,6 +13,7 @@ from ..backends.base import BackendRequest
 from ..capabilities.models import CapabilityRequirement
 from ..core.event import Event, utcnow
 from ..core.process import ProcessStatus
+from ..presence.models import self_question_id
 from ..work.work_requirement import WorkRequirement, WorkStatus
 from .models import (
     Command,
@@ -55,6 +56,7 @@ PERMISSIONS = {
     "goal.resume": "command.goal.resume",
     "goal.cancel": "command.goal.cancel",
     "goal.evaluate": "command.goal.evaluate",
+    "self.question.answer": "command.self.answer",
 }
 
 
@@ -250,6 +252,12 @@ class ConsoleService:
             self._goal(command.target_id)
         elif command.target_type == "review":
             self._review(command.target_id)
+        elif command.target_type == "self_question":
+            if not getattr(self.runtime, "_phase6_bootstrapped", False):
+                raise CommandValidationError("Self questions require Phase 6 to be enabled")
+            self._self_question(command.target_id)
+            if not str(command.arguments.get("answer") or "").strip():
+                raise CommandValidationError("answer is required")
         if command.command_type == "work.priority":
             WorkPriority(str(command.arguments.get("priority", "")).upper())
         if command.command_type == "work.deadline":
@@ -281,6 +289,7 @@ class ConsoleService:
             "goal.resume": self._goal_status,
             "goal.cancel": self._goal_status,
             "goal.evaluate": self._evaluate_goal,
+            "self.question.answer": self._answer_self_question,
         }
         return handlers[command.command_type](command)
 
@@ -580,6 +589,24 @@ class ConsoleService:
         event = self._event("goal_evaluation_requested", command, {"goal_id": str(goal.id)})
         return self._executed(command, "goal evaluation requested", [("goal", goal.id)], [event])
 
+    def _answer_self_question(self, command: Command) -> CommandResult:
+        question = self._self_question(command.target_id)
+        event = self._event(
+            "self_question_answered",
+            command,
+            {
+                "question_id": command.target_id,
+                "question": question,
+                "answer": str(command.arguments["answer"]).strip(),
+            },
+        )
+        return self._executed(
+            command,
+            "Self question answer submitted",
+            [("self_question", command.target_id)],
+            [event],
+        )
+
     def _work_request(self, args: dict[str, Any]) -> StructuredWorkRequest:
         objective = str(args.get("objective") or "").strip()
         if not objective:
@@ -623,6 +650,17 @@ class ConsoleService:
         if goal is None:
             raise CommandValidationError(f"goal target {value!r} was not found or is ambiguous")
         return goal
+
+    def _self_question(self, value):
+        entry = self.runtime.state_store.get_current("self", "unresolved_questions")
+        raw = entry.value if entry is not None else []
+        questions = list(raw) if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+        matches = [question for question in questions if self_question_id(question) == str(value)]
+        if len(matches) != 1:
+            raise CommandValidationError(
+                f"Self question target {value!r} was not found or is ambiguous"
+            )
+        return matches[0]
 
     def _reviews(self) -> list[dict[str, Any]]:
         reviews = []

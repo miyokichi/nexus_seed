@@ -972,6 +972,32 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **167.** Phase 6 restart, retry and delivery reuse existing durability/idempotency guarantees.
 - **168.** A Phase 6 activation failure does not make the Phase 5G Runtime unavailable.
 
+## Done in Human Interface / Cockpit
+
+- Cockpit is an optional Human Interface Layer at `/cockpit`, not a Runtime,
+  primitive, Memory, Goal system, Work system, or Review system.
+- `CockpitService` compiles a read-only snapshot from existing stores, Phase 6
+  projections and trace links. Activity groups causal Event chains and reveals
+  Process names only in drill-down details.
+- Human-readable error text is a presentation paired with, never substituted
+  for, the raw error/audit facts.
+- Every mutation from the UI is an explicit command to the existing Phase 5G
+  `/control` endpoint. Self-question answers become an authorized Command,
+  durable Event, and ordinary Phase 6 StateDelta pipeline.
+- `NEXUS_SEED_COCKPIT_ENABLED=false` removes Cockpit routes. Webhook, Control,
+  Runtime and CLI remain available.
+
+## Human Interface invariants (keep them)
+
+- **169.** Cockpit is a projection/interface layer and adds no Core primitive.
+- **170.** Reading a Cockpit snapshot never writes SQLite or changes Runtime state.
+- **171.** Cockpit Activity groups existing causal records; it is not a new journal.
+- **172.** Human-readable summaries never replace raw trace or audit facts.
+- **173.** Every Cockpit mutation passes through the existing Control Plane.
+- **174.** Cockpit never writes Core or World State directly.
+- **175.** Cockpit failure or disablement does not disable Runtime, CLI, ingress, or Control.
+- **176.** Cockpit authentication reuses the configured HTTP shared-secret boundary.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

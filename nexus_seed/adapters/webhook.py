@@ -7,8 +7,8 @@ Three layers, deliberately separable:
   no transport, so the whole contract is testable without a socket.
 * :class:`WebhookServer` — a minimal asyncio HTTP/1.1 endpoint over it.
 
-The server is stdlib-only on purpose: the library has zero dependencies, and a
-web framework would be a large amount of machinery for one POST route.  It is
+The server transport is stdlib-only on purpose: a web framework would be a
+large amount of machinery for these small HTTP routes.  It is
 an acceptance-grade endpoint, not a production deployment (spec §77).
 
 **A webhook never waits for the work it causes** (spec §29).  The HTTP request
@@ -25,6 +25,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from ..core.event import utcnow
 from ..ingress.models import IngressEnvelope, IngressStatus
@@ -82,7 +83,9 @@ class WebhookResponse:
     """What the endpoint answers, independent of HTTP plumbing."""
 
     status_code: int
-    body: dict = field(default_factory=dict)
+    body: Any = field(default_factory=dict)
+    content_type: str = "application/json; charset=utf-8"
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class WebhookIngress:
@@ -215,12 +218,14 @@ class WebhookServer:
         port: int = 0,
         console=None,
         control_identity_id: str = "local-operator",
+        cockpit=None,
     ) -> None:
         self.ingress = ingress
         self.host = host
         self.port = port
         self.console = console
         self.control_identity_id = control_identity_id
+        self.cockpit = cockpit
         self._server: asyncio.AbstractServer | None = None
 
     @property
@@ -278,9 +283,12 @@ class WebhookServer:
         length = int(headers.get("content-length") or 0)
         raw_body = await reader.readexactly(length) if length else b""
 
+        clean_path = path.split("?", 1)[0]
+        if method.upper() == "GET" and clean_path.startswith("/cockpit"):
+            return self._cockpit_response(clean_path, headers)
         if method.upper() != "POST":
-            return WebhookResponse(405, {"error": "only POST is supported"})
-        if path.split("?", 1)[0] == "/control":
+            return WebhookResponse(405, {"error": "only POST is supported outside Cockpit"})
+        if clean_path == "/control":
             if self.console is None:
                 return WebhookResponse(404, {"error": "control endpoint is disabled"})
             if not self.ingress.authorize(_token_from(headers)):
@@ -313,6 +321,45 @@ class WebhookServer:
 
         return await self.ingress.handle(adapter_id, body, token=_token_from(headers))
 
+    def _cockpit_response(
+        self, path: str, headers: dict[str, str]
+    ) -> WebhookResponse:
+        """Serve the optional Human Interface without changing Runtime state."""
+
+        if self.cockpit is None:
+            return WebhookResponse(404, {"error": "cockpit is disabled"})
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": (
+                "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
+                "style-src 'self'; script-src 'self'; frame-ancestors 'none'"
+            ),
+        }
+        if path in {"/cockpit", "/cockpit/", "/cockpit/index.html"}:
+            from ..cockpit.assets import INDEX_HTML
+
+            return WebhookResponse(
+                200, INDEX_HTML, "text/html; charset=utf-8", security_headers
+            )
+        if path == "/cockpit/styles.css":
+            from ..cockpit.assets import STYLES_CSS
+
+            return WebhookResponse(
+                200, STYLES_CSS, "text/css; charset=utf-8", security_headers
+            )
+        if path == "/cockpit/app.js":
+            from ..cockpit.assets import APP_JS
+
+            return WebhookResponse(
+                200, APP_JS, "text/javascript; charset=utf-8", security_headers
+            )
+        if path == "/cockpit/api/snapshot":
+            if not self.ingress.authorize(_token_from(headers)):
+                return WebhookResponse(401, {"error": "unauthorized"})
+            return WebhookResponse(200, self.cockpit.snapshot(), headers=security_headers)
+        return WebhookResponse(404, {"error": "unknown cockpit path"})
+
 
 def _adapter_id_from_path(path: str) -> str | None:
     """Extract ``{adapter_id}`` from ``/ingress/{adapter_id}``."""
@@ -332,7 +379,14 @@ def _token_from(headers: dict[str, str]) -> str | None:
 
 
 def _http_response(response: WebhookResponse) -> bytes:
-    body = json.dumps(response.body).encode("utf-8")
+    if isinstance(response.body, bytes):
+        body = response.body
+    elif isinstance(response.body, str) and not response.content_type.startswith(
+        "application/json"
+    ):
+        body = response.body.encode("utf-8")
+    else:
+        body = json.dumps(response.body, ensure_ascii=False).encode("utf-8")
     reason = {
         200: "OK",
         202: "Accepted",
@@ -345,8 +399,9 @@ def _http_response(response: WebhookResponse) -> bytes:
     }.get(response.status_code, "OK")
     head = (
         f"HTTP/1.1 {response.status_code} {reason}\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n\r\n"
+        f"Content-Type: {response.content_type}\r\n"
+        + "".join(f"{name}: {value}\r\n" for name, value in response.headers.items())
+        + f"Content-Length: {len(body)}\r\n"
+        + "Connection: close\r\n\r\n"
     )
     return head.encode("latin-1") + body

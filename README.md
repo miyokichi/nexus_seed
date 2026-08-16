@@ -27,6 +27,7 @@ roles of a Process—not additional core abstractions.
 - Phase 5E provider federation for local Processes, directory Skills, and external Agents
 - Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
 - Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
+- Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, and System health
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
@@ -51,6 +52,7 @@ NEXUS_SEED_DATA_DIR=C:/Users/user/AppData/Local/nexus-seed
 NEXUS_SEED_WEBHOOK_HOST=127.0.0.1
 NEXUS_SEED_WEBHOOK_PORT=8787
 NEXUS_SEED_WEBHOOK_TOKEN=replace-this-token
+NEXUS_SEED_COCKPIT_ENABLED=true
 
 NEXUS_SEED_LLM_ENABLED=true
 NEXUS_SEED_LLM_PROVIDER=openai_compatible
@@ -65,6 +67,12 @@ nexus-seed --once
 nexus-seed --check-llm
 nexus-seed
 ```
+
+Open `http://127.0.0.1:8787/cockpit`. The browser asks for the same webhook
+token and keeps it only in tab-scoped session storage. Cockpit reads existing
+projections and traces; controls are submitted exclusively through the Phase
+5G `/control` endpoint. Set `NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
+Cockpit routes without changing Runtime, webhook, or CLI behavior.
 
 Submit a natural-language task from another terminal. The command reads the
 webhook URL and token from `.env`:
@@ -140,6 +148,7 @@ nexus_seed/autonomy/      Phase 5D sessions, policy, budget, trace
 nexus_seed/providers/     Phase 5E providers, delegation, skill import, trace
 nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
 nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
+nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
 tests/                    acceptance and restart-convergence tests
 ```
 
