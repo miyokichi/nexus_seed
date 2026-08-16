@@ -128,6 +128,15 @@ async def test_cockpit_assets_and_snapshot_api_use_existing_auth(tmp_path):
         assert headers["content-type"].startswith("text/html")
         assert b"NEXUS SEED" in body and b"/cockpit/app.js" in body
 
+        status, headers, body = await get_path(
+            server.bound_port, "/cockpit/styles.css"
+        )
+        assert status == 200
+        assert headers["content-type"].startswith("text/css")
+        assert b".shell{display:grid" in body
+        assert b".sidebar{position:sticky" in body
+        assert b".assistance-card{" in body
+
         status, _, body = await get_path(server.bound_port, "/cockpit/api/snapshot")
         assert status == 401
         assert json.loads(body)["error"] == "unauthorized"
