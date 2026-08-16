@@ -507,6 +507,10 @@ def _work_for(goal, template: dict, work_key: str) -> WorkRequirement:
         required_output_types=list(template.get("required_output_types") or ()),
         objective=objective,
         scope=dict(scope),
+        # Work generated for a Goal belongs to that Goal's project.  Recording it
+        # on the Work itself keeps the membership explicit for replanned and
+        # restarted Work rather than leaving it to be re-derived (Invariant 197).
+        project=goal.metadata.get("project_id"),
         human_priority=goal.priority.value,
         deadline=goal.deadline,
         constraints=goal.constraints.to_dict(),

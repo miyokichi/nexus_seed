@@ -14,6 +14,7 @@ from ..capabilities.models import CapabilityRequirement
 from ..core.event import Event, utcnow
 from ..core.process import ProcessStatus
 from ..presence.models import self_question_id
+from ..projects.lifecycle import attach_project, project_id_of
 from ..work.work_requirement import WorkRequirement, WorkStatus
 from .models import (
     Command,
@@ -547,10 +548,16 @@ class ConsoleService:
             success_criteria=list(args.get("success_criteria") or args.get("success") or ()),
             metadata=_dict(args.get("metadata")),
         )
+        # Creating a Goal is creating its Project.  Only the association is
+        # written: the Goal remains the source of title, objective and status,
+        # and the derived id keeps the mapping one-to-one across restarts.
+        project_id = attach_project(goal)
         self.store.save_goal(goal)
         command.target_type = "goal"
         command.target_id = str(goal.id)
-        event = self._event("goal_created", command, {"goal_id": str(goal.id)})
+        event = self._event(
+            "goal_created", command, {"goal_id": str(goal.id), "project_id": project_id}
+        )
         return self._executed(command, "goal created", [("goal", goal.id)], [event], data=self._goal_data(goal))
 
     def _show_goal(self, command: Command) -> CommandResult:
@@ -723,6 +730,7 @@ class ConsoleService:
     def _goal_data(self, goal: Goal, detail: bool = False) -> dict[str, Any]:
         data = {"id": str(goal.id), "title": goal.title, "objective": goal.objective,
                 "status": goal.status.value, "priority": goal.priority.value,
+                "project_id": project_id_of(goal),
                 "deadline": goal.deadline.isoformat() if goal.deadline else None}
         if detail:
             data.update({"scope": goal.scope, "constraints": goal.constraints.to_dict(),

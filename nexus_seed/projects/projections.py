@@ -1,9 +1,11 @@
 """Project-scoped read projections over existing NEXUS SEED stores.
 
-Association is intentionally conservative: only explicit ``project`` /
-``project_id`` metadata, a Goal/Work/Intention identifier link, or an existing
-causal/provenance link is followed.  Text similarity and LLM inference never
-assign a record to a project.
+A Project is one root Goal plus the Work that Goal generates, reconstructed
+here from the records those two already leave behind.  Association is
+intentionally conservative: only explicit ``project`` / ``project_id``
+metadata, a Goal/Work/Intention identifier link, or an existing causal /
+provenance link is followed.  Text similarity and LLM inference never assign a
+record to a project.
 """
 
 from __future__ import annotations
@@ -19,7 +21,13 @@ from ..core.process import ProcessStatus
 from ..presence.models import IntentionStatus, self_question_id
 from ..presence.projections import get_intentions
 from ..work.work_requirement import WorkStatus
-from .models import ProjectOverallStatus, ProjectSituation, ProjectSituationSummary
+from .lifecycle import root_goal as _root_goal
+from .models import (
+    Project,
+    ProjectOverallStatus,
+    ProjectSituation,
+    ProjectSituationSummary,
+)
 
 
 ACTIVE_WORK = frozenset(
@@ -95,12 +103,15 @@ def get_project_summaries(runtime) -> list[ProjectSituationSummary]:
             title=item.title,
             status=item.overall_status,
             active_goals=len(item.active_goals),
-            active_work=len(item.active_work),
-            blocked_work=len(item.blocked_work),
+            active_work=len(item.remaining_tasks),
+            blocked_work=len(item.blocked_tasks),
             pending_reviews=len(item.pending_reviews),
             needs_attention=item.overall_status
             in {ProjectOverallStatus.BLOCKED, ProjectOverallStatus.NEEDS_ATTENTION},
             updated_at=item.updated_at,
+            root_goal_id=item.project.root_goal_id if item.project else None,
+            objective=item.objective,
+            completed_work=item.completed_total,
         )
         for item in get_project_situations(runtime, recent_limit=1)
     ]
@@ -243,17 +254,17 @@ def _compile(
         processes=project_processes,
         reviews=reviews,
     )
-    hard_blockers = [item for item in blockers if item["severity"] == "blocked"]
-    if hard_blockers:
-        status = ProjectOverallStatus.BLOCKED
-    elif reviews or questions:
-        status = ProjectOverallStatus.NEEDS_ATTENTION
-    elif active_goals or current_intentions or active_work:
-        status = ProjectOverallStatus.ACTIVE
-    elif goals and all(goal.status.terminal for goal in goals):
-        status = ProjectOverallStatus.COMPLETED
-    else:
-        status = ProjectOverallStatus.IDLE
+    root = _root_goal(project_id, goals)
+    status = project_status(
+        root=root,
+        goals=goals,
+        works=works,
+        active_work=active_work,
+        current_intentions=current_intentions,
+        blockers=blockers,
+        reviews=reviews,
+        questions=questions,
+    )
 
     recent_events = [_event(item) for item in reversed(events[-recent_limit:])]
     recent_changes = _recent_changes(events, history, works, recent_limit)
@@ -270,8 +281,15 @@ def _compile(
         ],
     ]
     updated_at = max(timestamps) if timestamps else None
-    title = str(descriptor.get("title") or project_id)
-    objective = str(descriptor.get("objective") or "")
+    # The root Goal names the project.  Explicit descriptor metadata still wins,
+    # so a project assembled by hand before the Goal-rooted lifecycle keeps the
+    # title it was given.
+    title = str(
+        descriptor.get("title") or (root.title if root is not None else "") or project_id
+    )
+    objective = str(
+        descriptor.get("objective") or (root.objective if root is not None else "")
+    )
     summary = _summary(
         title,
         status,
@@ -280,11 +298,32 @@ def _compile(
         reviews=len(reviews),
         latest_change=recent_changes[0]["summary"] if recent_changes else None,
     )
+    project = Project(
+        project_id=project_id,
+        root_goal_id=str(root.id) if root is not None else None,
+        title=title,
+        objective=objective,
+        status=status,
+        created_at=root.created_at if root is not None else None,
+        updated_at=updated_at,
+    )
+    current_intention = next(
+        (
+            _intention(item)
+            for item in current_intentions
+            if root is None or item.goal_id == root.id
+        ),
+        None,
+    )
     return ProjectSituation(
         project_id=project_id,
         title=title,
         objective=objective,
         overall_status=status,
+        project=project,
+        goal=_goal(root) if root is not None else None,
+        current_intention=current_intention,
+        completed_total=len(completed_work),
         active_goals=tuple(_goal(item) for item in active_goals),
         current_intentions=tuple(_intention(item) for item in current_intentions),
         active_work=tuple(_work(item) for item in active_work),
@@ -300,6 +339,59 @@ def _compile(
         updated_at=updated_at,
         summary=summary,
     )
+
+
+def project_status(
+    *,
+    root,
+    goals,
+    works,
+    active_work,
+    current_intentions,
+    blockers,
+    reviews,
+    questions,
+) -> ProjectOverallStatus:
+    """Derive the one project status these durable facts imply.
+
+    The order is the whole rule, and it is fixed so the same facts always give
+    the same answer:
+
+    1. ``CANCELLED`` — the root Goal was cancelled; nothing below it matters.
+    2. ``PAUSED`` — the root Goal is paused, so its Work is deliberately idle.
+    3. ``BLOCKED`` — something hard stops progress (blocked Goal, Intention,
+       Work, unresolved dependency or failed Work).
+    4. ``NEEDS_ATTENTION`` — a human decision is pending: a Review or an
+       unresolved question.
+    5. ``ACTIVE`` — Work is under way.
+    6. ``PLANNING`` — the root Goal is active but has generated no Work yet.
+    7. ``COMPLETED`` — every Goal is terminal and no Work is outstanding.
+    8. ``IDLE`` — anything else, including a project with no Goal at all.
+
+    A project is never given a status of its own to keep in step with the Goal:
+    pausing, resuming or cancelling the Goal through the Control Plane is
+    already the whole of the project lifecycle (Invariant 200).
+    """
+
+    if root is not None and root.status is GoalStatus.CANCELLED:
+        return ProjectOverallStatus.CANCELLED
+    if root is not None and root.status is GoalStatus.PAUSED:
+        return ProjectOverallStatus.PAUSED
+    if goals and all(goal.status is GoalStatus.CANCELLED for goal in goals):
+        return ProjectOverallStatus.CANCELLED
+    if any(item["severity"] == "blocked" for item in blockers):
+        return ProjectOverallStatus.BLOCKED
+    if reviews or questions:
+        return ProjectOverallStatus.NEEDS_ATTENTION
+    if active_work:
+        return ProjectOverallStatus.ACTIVE
+    if root is not None and root.status is GoalStatus.ACTIVE and not works:
+        return ProjectOverallStatus.PLANNING
+    if [goal for goal in goals if goal.status is GoalStatus.ACTIVE] or current_intentions:
+        return ProjectOverallStatus.ACTIVE
+    if goals and all(goal.status.terminal for goal in goals):
+        return ProjectOverallStatus.COMPLETED
+    return ProjectOverallStatus.IDLE
 
 
 def _project_events(events, *, project_id, related_ids, source_event_ids):
@@ -697,4 +789,5 @@ __all__ = [
     "get_project_situation",
     "get_project_situations",
     "get_project_summaries",
+    "project_status",
 ]

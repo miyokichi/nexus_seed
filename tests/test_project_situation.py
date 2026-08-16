@@ -272,7 +272,8 @@ async def test_project_http_api_is_authenticated_and_read_only(tmp_path):
         status, body = await _get(server.bound_port, "/projects", token=TOKEN)
         assert status == 200
         assert body["projects"][0]["project_id"] == "project-a"
-        assert body["projects"][0]["status"] == "ACTIVE"
+        # A Goal that has not generated Work yet is still being planned.
+        assert body["projects"][0]["status"] == "PLANNING"
 
         status, body = await _get(
             server.bound_port, "/projects/project-a/situation", token=TOKEN

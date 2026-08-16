@@ -13,13 +13,52 @@ from typing import Any
 
 
 class ProjectOverallStatus(str, Enum):
-    """Deterministic status derived from existing Goal/Work/Review state."""
+    """Deterministic status derived from existing Goal/Work/Review state.
 
-    ACTIVE = "ACTIVE"
+    The root Goal's own lifecycle outranks everything below it: a paused or
+    cancelled Goal describes the project regardless of what its Work happens to
+    be doing.  See ``projections.project_status`` for the full priority order.
+    """
+
+    CANCELLED = "CANCELLED"
+    PAUSED = "PAUSED"
     BLOCKED = "BLOCKED"
     NEEDS_ATTENTION = "NEEDS_ATTENTION"
-    IDLE = "IDLE"
+    ACTIVE = "ACTIVE"
+    PLANNING = "PLANNING"
     COMPLETED = "COMPLETED"
+    IDLE = "IDLE"
+
+
+@dataclass(frozen=True, slots=True)
+class Project:
+    """The thin management record: one root Goal, named and dated by that Goal.
+
+    Nothing here is stored separately.  ``title`` and ``objective`` are the root
+    Goal's own, and ``status`` is derived, so a Goal renamed or paused through
+    the Control Plane is immediately described correctly here.
+    """
+
+    project_id: str
+    root_goal_id: str | None
+    title: str
+    objective: str
+    status: ProjectOverallStatus
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the stable JSON representation of the project record."""
+
+        return {
+            "project_id": self.project_id,
+            "root_goal_id": self.root_goal_id,
+            "title": self.title,
+            "objective": self.objective,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +69,9 @@ class ProjectSituation:
     title: str
     objective: str
     overall_status: ProjectOverallStatus
+    project: Project | None = None
+    goal: dict[str, Any] | None = None
+    current_intention: dict[str, Any] | None = None
     active_goals: tuple[dict[str, Any], ...] = ()
     current_intentions: tuple[dict[str, Any], ...] = ()
     active_work: tuple[dict[str, Any], ...] = ()
@@ -42,6 +84,27 @@ class ProjectSituation:
     recent_changes: tuple[dict[str, Any], ...] = ()
     updated_at: datetime | None = None
     summary: str = ""
+    #: Every satisfied Work, counted before ``recently_completed_work`` is
+    #: trimmed for display, so a compact summary still reports the real total.
+    completed_total: int = 0
+
+    @property
+    def remaining_tasks(self) -> tuple[dict[str, Any], ...]:
+        """The Work still to be done for the root Goal."""
+
+        return self.active_work
+
+    @property
+    def blocked_tasks(self) -> tuple[dict[str, Any], ...]:
+        """The Work that cannot currently proceed."""
+
+        return self.blocked_work
+
+    @property
+    def completed_tasks(self) -> tuple[dict[str, Any], ...]:
+        """The Work that has been satisfied."""
+
+        return self.recently_completed_work
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON representation used by HTTP and LLM callers."""
@@ -51,11 +114,18 @@ class ProjectSituation:
             "title": self.title,
             "objective": self.objective,
             "overall_status": self.overall_status.value,
+            "project": self.project.to_dict() if self.project else None,
+            "goal": self.goal,
+            "current_intention": self.current_intention,
+            "remaining_tasks": list(self.remaining_tasks),
+            "blocked_tasks": list(self.blocked_tasks),
+            "completed_tasks": list(self.completed_tasks),
             "active_goals": list(self.active_goals),
             "current_intentions": list(self.current_intentions),
             "active_work": list(self.active_work),
             "blocked_work": list(self.blocked_work),
             "recently_completed_work": list(self.recently_completed_work),
+            "completed_total": self.completed_total,
             "pending_reviews": list(self.pending_reviews),
             "recent_events": list(self.recent_events),
             "unresolved_questions": list(self.unresolved_questions),
@@ -79,6 +149,9 @@ class ProjectSituationSummary:
     pending_reviews: int
     needs_attention: bool
     updated_at: datetime | None = None
+    root_goal_id: str | None = None
+    objective: str = ""
+    completed_work: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON representation for ``GET /projects``."""
@@ -87,9 +160,15 @@ class ProjectSituationSummary:
             "project_id": self.project_id,
             "title": self.title,
             "status": self.status.value,
+            "root_goal_id": self.root_goal_id,
+            "objective": self.objective,
             "active_goals": self.active_goals,
             "active_work": self.active_work,
             "blocked_work": self.blocked_work,
+            "completed_work": self.completed_work,
+            "remaining_tasks": self.active_work,
+            "blocked_tasks": self.blocked_work,
+            "completed_tasks": self.completed_work,
             "pending_reviews": self.pending_reviews,
             "needs_attention": self.needs_attention,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -97,6 +176,7 @@ class ProjectSituationSummary:
 
 
 __all__ = [
+    "Project",
     "ProjectOverallStatus",
     "ProjectSituation",
     "ProjectSituationSummary",

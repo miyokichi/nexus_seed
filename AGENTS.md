@@ -1068,6 +1068,41 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **194.** LLM absence, failure or malformed output degrades to labelled deterministic facts and leaves Runtime untouched.
 - **195.** Project Chat reuses the Cockpit authentication boundary and disappears with Cockpit without disabling Runtime.
 
+## Done in Goal-Centric Project Lifecycle
+
+- A Project is one root Goal plus the Work that Goal generates. One Work is
+  already a Project; no Project store, Runtime or Core primitive exists.
+- `/goal create` creates the Project with the Goal. The only thing written is
+  the Goal's own `project_id`, derived from the Goal id, so creation, restart
+  and re-evaluation all converge on the same single Project. An explicitly
+  supplied `project_id` is still honoured, so the Goal API is unchanged.
+- `Project.title` / `objective` / lifecycle are read from the root Goal.
+  Nothing about the Goal is copied, so renaming, pausing, resuming or
+  cancelling it through the Control Plane needs no project-side update.
+- Work generated for a Goal carries that `project_id`, and Work reached through
+  its `goal_id` belongs to the same Project. Replanned, restarted and
+  later-discovered Work converge on it; no LLM inference moves Work.
+- `project_status` is a fixed ladder over existing facts:
+  `CANCELLED` > `PAUSED` > `BLOCKED` > `NEEDS_ATTENTION` > `ACTIVE` >
+  `PLANNING` > `COMPLETED` > `IDLE`. The root Goal's lifecycle outranks its
+  Work, and the same facts always give the same status.
+- `ProjectSituation` now leads with `project`, `goal` and `current_intention`,
+  and names its Work `remaining_tasks` / `blocked_tasks` / `completed_tasks`
+  beside the existing fields. Cockpit lists auto-created Projects and opens
+  Goal, Intention, remaining/blocked/completed Work, recent activity and the
+  read-only Project Chat.
+
+## Goal-Centric Project invariants (keep them)
+
+- **196.** A Project is a Goal-rooted projection, not a Core primitive and not a stored entity.
+- **197.** One Goal has exactly one Project, derived from the Goal id and idempotent across restart and re-evaluation.
+- **198.** A Project never copies a Goal, Intention or Work; it references them and reads them.
+- **199.** The root Goal is the source of a Project's title and objective.
+- **200.** A Project has no lifecycle of its own; Goal pause/resume/cancel through the Control Plane is the whole of it.
+- **201.** Project status is derived from existing Goal/Work/Review facts in a fixed priority order.
+- **202.** Work belongs to the Project of the Goal it was generated for; membership is never assigned by inference.
+- **203.** Goals created outside the Control Plane stay unassigned rather than being given a Project at read time.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,
@@ -1078,6 +1113,8 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - Guidance Thread: turning a Project Chat request into an authorized Control
   Plane change (Work cancellation, prioritisation, direction) is deliberately
   unbuilt. Project Chat explains; it never acts.
+- Manual project creation (a Project without a Goal) is deliberately unbuilt.
+  Goal creation is the one path that starts a Project.
 - Capability `description` becomes usable for LLM planning; `tags` for search.
   Both are stored already and deliberately unused by matching.
 - Compensating actions (undoing a completed node's side effects) remain

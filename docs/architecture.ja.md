@@ -1039,11 +1039,49 @@ Plane、CLIは変わりません。Self question回答だけは追加Control sur
 `self_question_answered`を発行し、通常のPhase 6 projection ProcessがObservationと
 StateDeltaを通して解決します。UIがWorld StateやSQLiteへ直接書く経路はありません。
 
+## Goal中心のProject
+
+Projectは「1つのroot Goal + そのGoalが生成するWork集合」です。Workが1件でも
+Projectとして成立します。Project Store、Project Runtime、新しいCore primitiveは
+ありません。Goalを作ることがProjectを作ることです。
+
+```text
+/goal create
+  -> Goal idから導出したproject_idを付けてGoalを保存
+  -> goal_created（project_idを含む）
+  -> evaluate_goal
+  -> Intention / Work（同じproject_idを持つ）
+  -> CockpitのProjects一覧に表示
+```
+
+識別子をGoal idから導出するため、対応は1対1かつidempotentです。作成の再実行、
+再起動、Goal再評価のいずれからも同じProjectへ収束します。呼び出し側が明示した
+`project_id`はそのまま優先されるので既存Goal APIは変わりません。Control Planeを
+通さずに保存されたGoalは、読み取り時にProjectを与えず未所属のままにします。
+
+保存するのは関連付けだけです。title / objective / lifecycleはroot Goalから読むため、
+`/goal pause` / `/goal resume` / `/goal cancel`がそのままProject lifecycleになります。
+Project側に競合するstate machineはなく、Goalを改名しても古い値が残りません。
+Goalのために生成したWorkはproject_idを持ち、`goal_id`から辿れるWorkも同じProjectに
+属します。replan後・restart後・後から判明したWorkも、推測なしで同じProjectへ
+収束します。
+
+`project_status`は既存事実に対する固定順の導出です。
+
+```text
+CANCELLED > PAUSED > BLOCKED > NEEDS_ATTENTION > ACTIVE > PLANNING > COMPLETED > IDLE
+```
+
+root Goalのlifecycleが最優先です（pausedなGoalは、Workの状態に関わらずProjectを
+説明します）。次にhard blocker、人間の判断待ち、進行中Work、そしてWork未生成の
+active Goalが`PLANNING`です。同じ永続事実からは常に同じstatusになります。
+
 ## Project Situation Projection
 
 Project Situationは、既存の永続状態から毎回再構成するapplication/domain
 projectionです。Core primitive、Project Store、Project Runtime、別Goal system、
-agent loopではありません。
+agent loopではありません。先頭に`project`、root `goal`、`current_intention`を置き、
+Workは`remaining_tasks` / `blocked_tasks` / `completed_tasks`として示します。
 
 ```text
 明示project_id / Work.project

@@ -52,6 +52,18 @@ def compact_situation(situation: ProjectSituation) -> dict[str, Any]:
         "overall_status": situation.overall_status.value,
         "summary": situation.summary,
         "updated_at": situation.updated_at.isoformat() if situation.updated_at else None,
+        # The root Goal is what the project *is*, so it is stated once at the
+        # top rather than left to be inferred from the goal list below.
+        "root_goal": (
+            _pick(situation.goal, ("id", "title", "objective", "status", "priority", "deadline"))
+            if situation.goal
+            else None
+        ),
+        "current_intention": (
+            _pick(situation.current_intention, ("id", "focus", "status", "reason"))
+            if situation.current_intention
+            else None
+        ),
         "active_goals": [
             _pick(item, ("id", "title", "objective", "status", "priority", "deadline"))
             for item in situation.active_goals[:LIST_LIMIT]
@@ -136,16 +148,24 @@ def deterministic_answer(situation: ProjectSituation) -> str:
     """
 
     lines = [situation.summary or f"{situation.title} の状況を読み込みました。"]
-    if situation.active_goals:
+    if situation.goal:
+        lines.append(
+            f"Goal: {situation.goal['title']}（{situation.goal['status']}）"
+        )
+    elif situation.active_goals:
         titles = "、".join(item["title"] for item in situation.active_goals[:3])
         lines.append(f"進行中のGoal: {titles}")
-    if situation.current_intentions:
+    if situation.current_intention:
+        lines.append(f"現在のIntention: {situation.current_intention['focus']}")
+    elif situation.current_intentions:
         focuses = "、".join(item["focus"] for item in situation.current_intentions[:3])
         lines.append(f"現在のIntention: {focuses}")
-    if situation.active_work:
-        lines.append(f"進行中のWork: {_work_lines(situation.active_work)}")
-    if situation.blocked_work:
-        lines.append(f"停止中のWork: {_work_lines(situation.blocked_work)}")
+    if situation.remaining_tasks:
+        lines.append(f"残りのWork: {_work_lines(situation.remaining_tasks)}")
+    if situation.blocked_tasks:
+        lines.append(f"停止中のWork: {_work_lines(situation.blocked_tasks)}")
+    if situation.completed_total:
+        lines.append(f"完了したWork: {situation.completed_total}件")
     if situation.blockers:
         summaries = "、".join(
             str(item.get("summary") or item.get("type")) for item in situation.blockers[:3]

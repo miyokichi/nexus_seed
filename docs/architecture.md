@@ -1165,10 +1165,53 @@ authorized Phase 5G Command that emits `self_question_answered`; the ordinary
 Phase 6 projection Process resolves the question through Observation and
 StateDelta. The UI never writes World State or SQLite directly.
 
+## Goal-centric Projects
+
+A Project is one root Goal plus the Work that Goal generates. One Work already
+makes a Project; there is no Project store, no Project Runtime and no new Core
+primitive. Creating the Goal is creating the Project:
+
+```text
+/goal create
+  -> Goal saved with its derived project_id
+  -> goal_created (carrying project_id)
+  -> evaluate_goal
+  -> Intention / Work, each carrying the same project_id
+  -> Cockpit lists the Project
+```
+
+The identifier is derived from the Goal id, which is what makes the mapping
+one-to-one and idempotent: re-running creation, restarting, or re-evaluating
+the Goal all arrive at the same Project. An explicit `project_id` supplied by
+the caller is honoured instead, so the existing Goal API is unchanged, and a
+Goal saved outside the Control Plane is still left unassigned rather than given
+a Project at read time.
+
+Only the association is written. Title, objective and lifecycle are read from
+the root Goal, so `/goal pause`, `/goal resume` and `/goal cancel` *are* the
+project lifecycle — there is no second state machine to keep in step, and
+nothing to go stale when the Goal is renamed. Work generated for the Goal
+carries the project id, and Work reached through its `goal_id` belongs to the
+same Project, so replanned, restarted and later-discovered Work converge there
+without inference.
+
+`project_status` is a fixed ladder over facts that already exist:
+
+```text
+CANCELLED > PAUSED > BLOCKED > NEEDS_ATTENTION > ACTIVE > PLANNING > COMPLETED > IDLE
+```
+
+The root Goal's own lifecycle outranks its Work — a paused Goal describes the
+project regardless of what its Work is doing — then hard blockers, then pending
+human decisions, then Work in flight, then a Goal that has generated no Work
+yet. The same durable facts always produce the same status.
+
 ## Project Situation Projection
 
 Project Situation is a regenerable application/domain projection, not a Core
-primitive, Project store, Runtime, Goal system, or agent loop. It joins the
+primitive, Project store, Runtime, Goal system, or agent loop. It leads with
+the `project`, its root `goal` and the `current_intention`, and names the Work
+`remaining_tasks` / `blocked_tasks` / `completed_tasks`. It joins the
 existing durable records without copying them:
 
 ```text

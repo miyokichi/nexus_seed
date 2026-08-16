@@ -28,7 +28,7 @@ roles of a Process—not additional core abstractions.
 - Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
 - Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
 - Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, System health, and aggregated Capability Assistance
-- Read-only Project Situation projections over existing Goals, Intentions, Work, Events, World State, and Reviews
+- Goal-centric Projects: creating a Goal starts its Project, and its Work, status, and situation are derived from existing records
 - Read-only Project Chat that explains one project in natural language from its Project Situation
 
 `AUTO` never skips safety checks. It still goes through the existing validators,
@@ -80,8 +80,25 @@ when automatic acquisition is waiting for review or cannot continue. Set
 `NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
 Cockpit routes without changing Runtime, webhook, or CLI behavior.
 
-Project Situation uses explicit project association only. Work already accepts
-`project=project-a`; Goals can use `metadata={"project_id":"project-a", ...}`.
+A Project is one Goal plus the Work that Goal generates — one Work is already a
+Project. Creating a Goal creates its Project:
+
+```powershell
+nexus-seed control '/goal create title="Runtime health" objective="Runtime と LLM の状態を把握する" priority=HIGH'
+```
+
+The command answers with the `project_id` it derived from the Goal id, and the
+Project appears in the Cockpit Projects view immediately. Only that association
+is stored: the title, objective and lifecycle stay on the Goal, so
+`/goal pause`, `/goal resume` and `/goal cancel` are the whole project
+lifecycle. Work generated for the Goal joins the same Project, and replanned or
+restarted Work stays there. Project status is derived in a fixed order —
+`CANCELLED`, `PAUSED`, `BLOCKED`, `NEEDS_ATTENTION`, `ACTIVE`, `PLANNING`,
+`COMPLETED`, `IDLE` — so the same facts always read the same way.
+
+Explicit association still works for Work (`project=project-a`) and Goals
+(`metadata={"project_id":"project-a", ...}`), and a Goal saved outside the
+Control Plane stays unassigned rather than being given a Project at read time.
 No Project table or Project Runtime is created. Authenticated callers can read:
 
 ```text
