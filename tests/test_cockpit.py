@@ -7,6 +7,7 @@ import json
 
 from nexus_seed.adapters.webhook import WebhookIngress, WebhookServer
 from nexus_seed.cockpit import CockpitService, humanize_error
+from nexus_seed.cockpit.assets import APP_JS
 from nexus_seed.control.models import HumanIdentity
 from nexus_seed.core.event import Event
 from nexus_seed.processes.control import bootstrap_control
@@ -192,3 +193,9 @@ def test_human_error_translation_keeps_raw_fact_separate():
     assert translated["title"] == "LLMの解釈結果を採用できませんでした"
     assert "World State更新は行われていません" in translated["message"]
     assert translated["raw_error"] == raw
+
+
+def test_cockpit_refresh_is_manual_only():
+    assert '$("#refresh").onclick=load' in APP_JS
+    assert "setTimeout(load" not in APP_JS
+    assert "state.timer" not in APP_JS

@@ -119,7 +119,8 @@ Runtimeがtickします。終了は`Ctrl+C`です。同じコマンドで再起�
 
 ブラウザで`http://127.0.0.1:8787/cockpit`を開きます。データ取得時にWebhookと同じTokenを
 入力します。Tokenはブラウザのtab単位session storageだけに保持されます。Cockpitは既存の
-projectionとtraceを読み、操作はすべてPhase 5Gの`/control`へ送ります。
+projectionとtraceを読み、操作はすべてPhase 5Gの`/control`へ送ります。表示は自動更新
+されません。最新状態の取得は右上の更新ボタンで明示的に行います。
 `NEXUS_SEED_COCKPIT_ENABLED=false`にするとCockpit routeだけを無効化でき、Runtime、Webhook、
 CLIの挙動は変わりません。
 

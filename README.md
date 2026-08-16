@@ -71,7 +71,8 @@ nexus-seed
 Open `http://127.0.0.1:8787/cockpit`. The browser asks for the same webhook
 token and keeps it only in tab-scoped session storage. Cockpit reads existing
 projections and traces; controls are submitted exclusively through the Phase
-5G `/control` endpoint. Set `NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
+5G `/control` endpoint. The view does not auto-refresh; use the refresh button
+to request a new snapshot. Set `NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
 Cockpit routes without changing Runtime, webhook, or CLI behavior.
 
 Submit a natural-language task from another terminal. The command reads the
