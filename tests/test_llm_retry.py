@@ -25,6 +25,16 @@ def proposal_dict(confidence):
     }
 
 
+def no_change_dict(confidence=0.95):
+    return {
+        "subject": "D1_CD",
+        "predicate": "unchanged",
+        "confidence": confidence,
+        "rationale": "No durable fact changed.",
+        "proposed_state_deltas": [],
+    }
+
+
 async def test_backend_failure_then_success(tmp_path):
     clock = ManualClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
     runtime = Runtime(tmp_path / "retry.db", clock=clock)
@@ -43,7 +53,75 @@ async def test_backend_failure_then_success(tmp_path):
 
     final = runtime.process_store.get_instance(instance.id)
     assert final.status is ProcessStatus.COMPLETED
+    assert final.last_error is None
     assert runtime.state_store.get("D1_CD", "target") == 45
+    runtime.close()
+
+
+async def test_explicit_no_change_contract_completes_without_state_delta(tmp_path):
+    runtime = Runtime(tmp_path / "no-change.db")
+    bootstrap_semantic(runtime)
+    backend = FakeLLMBackend(default=proposal_response(no_change_dict()))
+    bootstrap_llm_interpreter(runtime, backend)
+
+    await runtime.submit_event(Event("human_message", "user", {"text": "Nothing changed."}))
+
+    instance = [
+        i
+        for i in runtime.process_store.all_instances()
+        if i.definition_name == "interpret_event_llm"
+    ][0]
+    assert instance.status is ProcessStatus.COMPLETED
+    assert instance.local_state["output"]["decision"] == "ACCEPT"
+    assert runtime.get_proposals()[0].proposed_state_deltas == []
+    assert len(runtime.observation_store.all()) == 1
+    assert runtime.state_delta_store.all() == []
+
+    request = backend.calls[0]
+    assert "proposed_state_deltas" in request.output_schema["required"]
+    delta_schema = request.output_schema["properties"]["proposed_state_deltas"]
+    assert delta_schema["type"] == "array"
+    assert "minItems" not in delta_schema
+    assert '"proposed_state_deltas": []' in request.instruction
+    assert "Never invent a state change" in request.instruction
+    runtime.close()
+
+
+async def test_missing_delta_field_retries_then_clears_stale_process_error(tmp_path):
+    clock = ManualClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    runtime = Runtime(tmp_path / "missing-then-empty.db", clock=clock)
+    bootstrap_semantic(runtime)
+    missing = {
+        "subject": "D1_CD",
+        "predicate": "unchanged",
+        "confidence": 0.95,
+        "rationale": "No durable fact changed.",
+    }
+    backend = FakeLLMBackend(
+        script=[proposal_response(missing), proposal_response(no_change_dict())]
+    )
+    bootstrap_llm_interpreter(runtime, backend)
+
+    await runtime.submit_event(Event("human_message", "user", {"text": "Nothing changed."}))
+    instance = [
+        i
+        for i in runtime.process_store.all_instances()
+        if i.definition_name == "interpret_event_llm"
+    ][0]
+    assert instance.status is ProcessStatus.RETRY_WAIT
+    assert "missing or invalid required field" in (instance.last_error or "")
+    assert runtime.state_delta_store.all() == []
+
+    clock.advance(10)
+    await runtime.tick()
+
+    final = runtime.process_store.get_instance(instance.id)
+    assert final.status is ProcessStatus.COMPLETED
+    assert final.last_error is None
+    invocations = runtime.get_llm_invocations(instance.id)
+    assert [invocation.success for invocation in invocations] == [False, True]
+    assert runtime.state_delta_store.all() == []
+    runtime.close()
 
 
 async def test_invalid_schema_exhausts_retries_then_fails(tmp_path):

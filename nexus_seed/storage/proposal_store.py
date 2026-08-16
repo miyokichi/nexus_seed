@@ -85,6 +85,9 @@ class ProposalStore:
             proposed_state_deltas=[
                 ProposedStateDelta.from_dict(d) for d in body.get("proposed_state_deltas", [])
             ],
+            proposed_state_deltas_declared=isinstance(
+                body.get("proposed_state_deltas"), list
+            ),
             confidence=row["confidence"],
             rationale=body.get("rationale"),
             source_event_id=_uuid(row["source_event_id"]),

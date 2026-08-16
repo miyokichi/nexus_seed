@@ -7,6 +7,7 @@ from nexus_seed.intelligence.proposal import (
     ProposalDecision,
     ProposedStateDelta,
 )
+from nexus_seed.intelligence.validation import validate_proposal
 from nexus_seed.storage.database import Database
 from nexus_seed.storage.proposal_store import ProposalStore
 
@@ -60,3 +61,24 @@ def test_store_roundtrip_and_decision(tmp_path):
 
     store.update_decision(proposal.id, ProposalDecision.ACCEPT)
     assert store.get(proposal.id).decision is ProposalDecision.ACCEPT
+
+
+def test_explicit_no_change_contract_survives_store_roundtrip(tmp_path):
+    store = ProposalStore(Database(tmp_path / "no-change-prop.db"))
+    proposal = InterpretationProposal.from_output(
+        {
+            "subject": "D1_CD",
+            "predicate": "unchanged",
+            "confidence": 0.95,
+            "rationale": "No durable fact changed.",
+            "proposed_state_deltas": [],
+        }
+    )
+    assert proposal is not None
+    store.save(proposal)
+
+    restored = store.get(proposal.id)
+    assert restored is not None
+    assert restored.proposed_state_deltas == []
+    validation = validate_proposal(restored, current_value=lambda _entity, _attribute: None)
+    assert validation.schema_ok is True

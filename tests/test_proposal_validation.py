@@ -47,6 +47,34 @@ def test_schema_fail_no_deltas():
     assert result.schema_ok is False
 
 
+def test_explicit_empty_state_delta_array_is_valid():
+    proposal = InterpretationProposal.from_output(
+        {
+            "subject": "D1_CD",
+            "predicate": "unchanged",
+            "confidence": 0.95,
+            "rationale": "No durable fact changed.",
+            "proposed_state_deltas": [],
+        }
+    )
+
+    assert proposal is not None
+    result = validate_proposal(proposal, current_value=_lookup({}))
+    assert result.schema_ok is True
+    assert result.consistency_ok is True
+
+
+def test_missing_state_delta_field_is_still_invalid():
+    proposal = InterpretationProposal.from_output(
+        {"subject": "D1_CD", "predicate": "unchanged", "confidence": 0.95}
+    )
+
+    assert proposal is not None
+    result = validate_proposal(proposal, current_value=_lookup({}))
+    assert result.schema_ok is False
+    assert "missing or invalid required field proposed_state_deltas" in result.reasons
+
+
 def test_consistency_fail_on_old_value_mismatch():
     result = validate_proposal(
         _proposal(deltas=[ProposedStateDelta("D1_CD", "target", 50, 45, "nm", 0.9)]),

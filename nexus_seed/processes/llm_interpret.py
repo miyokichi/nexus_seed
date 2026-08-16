@@ -40,24 +40,43 @@ BACKEND_NAME = "llm"
 INSTRUCTION = (
     "Read the message and report what changed in the world as structured data. "
     "Return subject, predicate, confidence (0-1), rationale, and "
-    "proposed_state_deltas (entity, attribute, old_value, new_value, unit, confidence)."
+    "proposed_state_deltas (entity, attribute, old_value, new_value, unit, confidence). "
+    "Always include proposed_state_deltas. If no state change is warranted, return "
+    '"proposed_state_deltas": []. Never invent a state change to make the array non-empty.'
 )
 
 PROPOSAL_SCHEMA = {
-    "subject": "str",
-    "predicate": "str",
-    "confidence": "float",
-    "rationale": "str",
-    "proposed_state_deltas": [
-        {
-            "entity": "str",
-            "attribute": "str",
-            "old_value": "any",
-            "new_value": "any",
-            "unit": "str|null",
-            "confidence": "float",
-        }
-    ],
+    "type": "object",
+    "required": ["subject", "confidence", "proposed_state_deltas"],
+    "properties": {
+        "subject": {"type": "string", "minLength": 1},
+        "predicate": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "rationale": {"type": ["string", "null"]},
+        "proposed_state_deltas": {
+            "type": "array",
+            "description": (
+                "Required. Use an empty array when no state change is warranted; "
+                "never invent a delta."
+            ),
+            "items": {
+                "type": "object",
+                "required": ["entity", "attribute", "confidence"],
+                "properties": {
+                    "entity": {"type": "string", "minLength": 1},
+                    "attribute": {"type": "string", "minLength": 1},
+                    "old_value": {},
+                    "new_value": {},
+                    "unit": {"type": ["string", "null"]},
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                },
+            },
+        },
+    },
 }
 
 DEFAULT_POLICY = InterpretationPolicy(accept_threshold=0.85, review_threshold=0.60)

@@ -297,6 +297,12 @@ flowchart LR
   `ctx.backends`. Real LLM output is parsed as strict JSON first. If that fails,
   the output is repaired once with `json-repair` and parsed again before
   entering the unchanged proposal validation and policy boundary.
+- **No-change contract.** `proposed_state_deltas` is a required response field,
+  but its array may be empty. An explicit empty array means that the
+  interpretation found no durable state change; it may record an accepted
+  Observation but emits no `StateDelta`. A missing or malformed field follows
+  the existing bounded retry path and can never be filled with an invented
+  delta. Failed attempts remain in the invocation journal.
 - **Policy, not Runtime.** `InterpretationPolicy` (thresholds) decides
   ACCEPT/REVIEW/REJECT from confidence; a **state conflict overrides confidence**
   and forces at least REVIEW. Schema/parse failures are **retryable** (Phase 2A

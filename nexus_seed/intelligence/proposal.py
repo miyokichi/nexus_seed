@@ -68,6 +68,7 @@ class InterpretationProposal:
     predicate: str
     extracted: dict = field(default_factory=dict)
     proposed_state_deltas: list[ProposedStateDelta] = field(default_factory=list)
+    proposed_state_deltas_declared: bool = field(default=False, repr=False, compare=False)
     confidence: float = 0.0
     rationale: str | None = None
     source_event_id: uuid.UUID | None = None
@@ -102,7 +103,10 @@ class InterpretationProposal:
         if not isinstance(data, dict):
             return None
         deltas_raw = data.get("proposed_state_deltas")
-        if not isinstance(deltas_raw, list):
+        deltas_declared = isinstance(deltas_raw, list) and all(
+            isinstance(delta, dict) for delta in deltas_raw
+        )
+        if not deltas_declared:
             deltas_raw = []
         try:
             deltas = [ProposedStateDelta.from_dict(d) for d in deltas_raw if isinstance(d, dict)]
@@ -113,6 +117,7 @@ class InterpretationProposal:
             predicate=data.get("predicate", ""),
             extracted=data.get("extracted", {}) if isinstance(data.get("extracted"), dict) else {},
             proposed_state_deltas=deltas,
+            proposed_state_deltas_declared=deltas_declared,
             confidence=_as_float(data.get("confidence")),
             rationale=data.get("rationale"),
             source_event_id=source_event_id,

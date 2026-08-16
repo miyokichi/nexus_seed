@@ -474,6 +474,9 @@ class Executor:
                     instance.status = ProcessStatus.COMPLETED
                     if result.output is not None:
                         instance.local_state["output"] = result.output
+                # A prior retry remains in its durable attempt journal.  It is
+                # no longer the current process error after a successful commit.
+                instance.last_error = None
                 instance.pending_event_id = None
                 instance.updated_at = self.clock.now()
                 self.process_store.save_instance(instance)

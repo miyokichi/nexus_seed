@@ -45,9 +45,12 @@ def validate_proposal(
     if not (0.0 <= proposal.confidence <= 1.0):
         result.schema_ok = False
         result.reasons.append(f"confidence {proposal.confidence} out of [0,1]")
-    if not proposal.proposed_state_deltas:
+    if (
+        not proposal.proposed_state_deltas
+        and not proposal.proposed_state_deltas_declared
+    ):
         result.schema_ok = False
-        result.reasons.append("no proposed_state_deltas")
+        result.reasons.append("missing or invalid required field proposed_state_deltas")
     for delta in proposal.proposed_state_deltas:
         if not delta.entity or not delta.attribute:
             result.schema_ok = False

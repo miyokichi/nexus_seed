@@ -295,6 +295,11 @@ flowchart LR
   handler は `ctx.backends` から到達します。実 LLM の出力はまず厳格な JSON として
   解析します。失敗した場合に限り `json-repair` で一度修復して再解析し、その後は
   従来どおり proposal の検証・Policy 境界を通します。
+- **状態変更なしの契約。** `proposed_state_deltas` は応答の必須フィールドですが、配列は
+  空でも構いません。明示的な空配列は永続的な状態変更がないという解釈を表し、受理された
+  Observation は記録可能ですが `StateDelta` は生成しません。フィールドの欠落・型不正は
+  既存の bounded retry へ進み、穴埋めのための Delta を捏造しません。失敗した試行は
+  Invocation journal に残ります。
 - **Runtime ではなく Policy。** `InterpretationPolicy`(閾値)が confidence から
   ACCEPT/REVIEW/REJECT を決めます。**状態競合は confidence を上書きし**、最低でも REVIEW を
   強制します。スキーマ/パース失敗は**リトライ可能**(Phase 2A のリトライ)で、部分的な
