@@ -118,9 +118,9 @@ nexus-seed --check-llm
 nexus-seed
 ```
 
-起動時にWebhook URL、DBパス、LLM接続設定が表示されます。Phase 1〜5EのProcess、
-durable delivery、retry/timer、Capability acquisitionがすべて登録され、1秒ごとに
-Runtimeがtickします。終了は`Ctrl+C`です。同じコマンドで再起動するとSQLiteから
+起動時にWebhook URL、DBパス、LLM接続設定が表示されます。Phase 1〜6のProcess、
+Control Plane、Goal-driven orchestration、durable delivery、retry/timer、
+Capability acquisitionがすべて登録され、1秒ごとにRuntimeがtickします。終了は`Ctrl+C`です。同じコマンドで再起動するとSQLiteから
 未完了処理を復旧します。
 
 ブラウザで`http://127.0.0.1:8787/cockpit`を開きます。データ取得時にWebhookと同じTokenを
@@ -170,6 +170,16 @@ Thread履歴は`project_chat_threads` / `project_chat_messages`に保存され�
 World Stateにはなりません。LLM未接続時やLLMの出力が不正な場合は、projectionの確定事実
 だけを`LLM_UNAVAILABLE` / `LLM_FAILED` / `LLM_INVALID`と明示して返し、Runtimeには影響
 しません。
+
+Goal / Project / World / Work / Capability / Execution / Evaluationは一本の
+ループです。Goalを作るとProjectが立ち上がり、`evaluate_goal`がcriteriaと現在の
+World Stateから必要なWorkを生成し、Capability不足のWorkは有界なAcquisitionへ入り、
+実行はProvider境界を通り、結果は通常のStateDeltaとしてWorldへ戻ってGoalを再評価し、
+Projectが完了します。自動Acquisitionが続けられない場合は
+`human_intervention_required`を発行し、何を目指していたか・どのTaskで止まったか・
+何のCapabilityが足りないか・何を試したか・人間は何を提供すればよいかを明示します
+（Cockpitからも確認できます）。どのmoduleがループのどこを担当するかは
+[機能棚卸し](docs/architecture-inventory.ja.md)にまとめています。
 
 ### 5. タスクを投入
 
@@ -343,6 +353,7 @@ tests/                    受入テストと再起動収束テスト
 - [詳細アーキテクチャとPhase履歴](docs/architecture.ja.md)
 - [機能棚卸し（どのmoduleがループのどこか）](docs/architecture-inventory.ja.md)
 - [Detailed architecture (English)](docs/architecture.md)
+- [Architecture inventory (English)](docs/architecture-inventory.md)
 - [開発時に守るInvariant](AGENTS.md)
 
 現在の実装範囲には既定ON・Phase 5G互換flag付きの**Phase 6 — Persistent Being**を含みます。Phase 7には進んでいません。

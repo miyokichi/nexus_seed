@@ -134,6 +134,18 @@ the model returns unusable output — the reply is a deterministic summary of th
 projection, labelled `LLM_UNAVAILABLE`, `LLM_FAILED` or `LLM_INVALID`, and
 Runtime is unaffected.
 
+Goal, Project, World, Work, Capability, Execution and Evaluation are one loop:
+creating a Goal makes the Project, `evaluate_goal` turns its criteria plus
+current World State into Work, blocked Work enters bounded Capability
+Acquisition, execution runs through the Provider boundary, and results return
+to the world as ordinary StateDeltas that re-evaluate the Goal until the
+Project completes. When automatic acquisition cannot continue, NEXUS SEED emits
+`human_intervention_required` naming the Goal, the Task that stopped, the
+missing Capability, what was already tried and what a person can supply — it is
+also visible in the Cockpit. See
+[the architecture inventory](docs/architecture-inventory.md) for which module
+owns which part of that loop.
+
 Submit a natural-language task from another terminal. The command reads the
 webhook URL and token from `.env`:
 
@@ -223,6 +235,7 @@ tests/                    acceptance and restart-convergence tests
 - [Detailed architecture and phase history](docs/architecture.md)
 - [Architecture inventory: every module, in one area of the loop](docs/architecture-inventory.md)
 - [詳細アーキテクチャ（日本語）](docs/architecture.ja.md)
+- [機能棚卸し（日本語）](docs/architecture-inventory.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)
 
 Current implementation includes default-on **Phase 6 — Persistent Being** with
