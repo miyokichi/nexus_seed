@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -22,6 +23,9 @@ from .models import (
     ProviderStatus,
     local_provider,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderUnavailableError(RuntimeError):
@@ -145,6 +149,38 @@ class ProviderRegistry:
             return False
         return provider.kind is ProviderKind.INTERNAL or provider.adapter_name in self.adapters
 
+    async def cancel_invocation(self, invocation_id) -> bool:
+        """Mark one external delegation cancelled and tell the provider if it can.
+
+        Remote cancellation is best effort: NEXUS SEED owns durability, so the
+        journal is updated whether or not the external executor cooperates.
+        """
+        invocation = self.store.get_invocation(invocation_id)
+        if invocation is None:
+            return False
+        if invocation.status in {
+            ProviderInvocationStatus.COMPLETED,
+            ProviderInvocationStatus.FAILED,
+            ProviderInvocationStatus.CANCELLED,
+        }:
+            return False
+        provider = self.store.get_provider(invocation.provider_id)
+        adapter = self.adapters.get(provider.adapter_name) if provider else None
+        cancel = getattr(adapter, "cancel", None)
+        if cancel is not None and invocation.external_run_id:
+            try:
+                await cancel(invocation.external_run_id)
+            except Exception:
+                logger.warning(
+                    "provider cancel failed for invocation %s",
+                    invocation.id,
+                    exc_info=True,
+                )
+        invocation.status = ProviderInvocationStatus.CANCELLED
+        invocation.completed_at = datetime.now(invocation.started_at.tzinfo)
+        self.store.save_invocation(invocation)
+        return True
+
     async def execute(self, definition, ctx, internal_handler):
         """Select and execute Internal/Skill/Agent under one Process lifecycle."""
 
@@ -198,7 +234,7 @@ class ProviderRegistry:
         if existing is not None:
             return self._from_existing(definition, ctx, existing)
 
-        request = self._request(definition, ctx, binding, provider, invocation_key)
+        request = self._request(definition, ctx, binding, provider, invocation_key, work)
         invocation = ProviderInvocation(
             id=request.invocation_id,
             provider_id=provider.id,
@@ -392,9 +428,17 @@ class ProviderRegistry:
             saved_process_state={"provider_invocation_id": str(invocation.id)},
         )
 
-    def _request(self, definition, ctx, binding, provider, key):
+    def _request(self, definition, ctx, binding, provider, key, work=None):
         capabilities = self._capabilities_for(definition)
         relevant_context = ctx.view.to_snapshot_dict() if ctx.view else {}
+        metadata = (definition.metadata or {})
+        correlation = {"provider_id": str(provider.id)}
+        if ctx.instance.work_requirement_id is not None:
+            correlation["work_requirement_id"] = str(ctx.instance.work_requirement_id)
+        if work is not None and work.project:
+            correlation["project_id"] = str(work.project)
+        if work is not None and work.goal_id is not None:
+            correlation["goal_id"] = str(work.goal_id)
         return DelegationRequest(
             invocation_id=uuid.uuid4(),
             process_instance_id=ctx.instance.id,
@@ -402,23 +446,32 @@ class ProviderRegistry:
             process_definition={
                 "name": definition.name,
                 "version": definition.version,
-                "description": (definition.metadata or {}).get("description", ""),
+                "description": metadata.get("description", ""),
+                # The semantic output contract, so an external executor can be
+                # told what shape to return instead of guessing.
+                "output_types": sorted(self._declared_output_types(definition)),
+                "output_schema": metadata.get("output_schema") or {},
+                "instructions": metadata.get("instructions", ""),
             },
             required_capabilities=[c.name for c in capabilities],
-            objective=(definition.metadata or {}).get("objective", definition.name),
+            objective=metadata.get("objective", definition.name),
             typed_inputs=dict(ctx.instance.input.get("inputs") or ctx.instance.input),
             relevant_context=relevant_context,
             constraints=[
                 *list((binding.metadata or {}).get("constraints") or []),
-                *list(((ctx.services.get_work_requirement(ctx.instance.work_requirement_id).constraints
-                        if ctx.services and ctx.instance.work_requirement_id and
-                        ctx.services.get_work_requirement(ctx.instance.work_requirement_id)
-                        else {}).get("additional") or [])),
+                *list(((work.constraints if work else {}) or {}).get("additional") or []),
             ],
             allowed_permissions=list(binding.required_permissions),
             idempotency_key=key,
-            metadata={"provider_id": str(provider.id)},
+            metadata=correlation,
         )
+
+    def _declared_output_types(self, definition) -> set[str]:
+        """Return every output type this definition and its capabilities declare."""
+        declared = set((definition.metadata or {}).get("output_types") or ())
+        for capability in self._capabilities_for(definition):
+            declared.update(capability.output_types)
+        return declared
 
     def _capabilities_for(self, definition):
         if self.capabilities is None:
@@ -431,9 +484,7 @@ class ProviderRegistry:
         forbidden = {"world_state_update", "state_delta", "actions", "action_instruction"}
         if forbidden.intersection(result.metadata):
             raise DelegationValidationError("external result contains forbidden mutation intent")
-        declared = set((definition.metadata or {}).get("output_types") or ())
-        for capability in self._capabilities_for(definition):
-            declared.update(capability.output_types)
+        declared = self._declared_output_types(definition)
         for item in result.typed_outputs:
             if not isinstance(item, dict) or not item.get("type"):
                 raise DelegationValidationError("every typed output must declare a type")

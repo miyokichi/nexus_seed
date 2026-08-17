@@ -1140,6 +1140,57 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **209.** Self-extension is part of Capability resolution, not a separate loop, and a failed acquisition ends in a human request rather than unbounded retries.
 - **210.** Agents are Processes or ExecutionProviders; no Agent is a Core primitive.
 
+## Done in External Agent Runtime (A2A provider + Skill loading)
+
+- `A2AAgentAdapter` is a generic ProviderAdapter: it converts one
+  `DelegationRequest` into an A2A `message/send`, polls `tasks/get` to a
+  terminal state (`completed` / `failed` / `canceled`), and converts artifacts
+  back into a `DelegationResult`. It selects no skills, runs no tools and
+  imports nothing from any agent product. No product-specific provider class
+  exists; a different remote agent is a configuration change only.
+- Durability stays here and execution goes there. The adapter keeps no task
+  database: a lost remote task is re-run by the existing Continuation/retry
+  policy. Blocking + polling only — SSE and push notification are not built.
+- Transport failure before the task starts raises
+  `ProviderUnavailableBeforeStart` (so the existing failover rule applies); any
+  failure after it started is a journaled failed attempt. Timeout and
+  `input-required` send a best-effort `tasks/cancel` and then fail. Agent Card
+  problems are provider problems, never a CapabilityGap.
+- Structured output is never guessed. When a definition declares an
+  `output_schema`, it is sent, and a text-only answer fails instead of being
+  parsed or repaired into JSON. Untyped data takes the declared output type
+  only when exactly one is declared; otherwise the ambiguity is an error.
+- `SkillLoader` scans ordered roots and produces a `SkillCatalog`
+  (`get` / `list` / `find_by_capability`). It is not a second durable registry:
+  registration still goes through `SkillImporter` into the Capability registry,
+  a ProcessDefinition and a ProviderBinding. `skill.json` gained `enabled`,
+  `instruction`, `capabilities` shorthand and optional `input_schema` /
+  `output_schema`; unknown manifest fields are rejected rather than ignored.
+- Precedence is positional (project-local > user/global > built-in). A
+  duplicate inside one root is always an error; across roots the first wins and
+  records what it shadows, or `on_duplicate: error` refuses. One malformed
+  package is a reported failure, not a failed startup — unless `strict`.
+- `SkillImporter.import_descriptor` can bind a Skill to an
+  already-registered provider, which is how a cognitive Skill reaches an
+  external agent without ever naming an endpoint. A Skill whose permissions the
+  provider does not declare stays ineligible and says so.
+- `federation_config.py` is application wiring (like `llm_config.py`), reading
+  `NEXUS_SEED_A2A_ENABLED` / `NEXUS_SEED_A2A_CONFIG` / `NEXUS_SEED_SKILL_ROOTS`
+  plus a JSON file of providers, capability→provider bindings and skill roots.
+  URLs and token env-var names live in provider records only.
+- Five starter Skills ship in `skills/`. They state responsibilities, not large
+  prompts, and each one explicitly refuses to name a provider or commit state.
+
+## External Agent Runtime invariants (keep them)
+
+- **211.** Skill / Capability / Provider / Work stay four distinct things: how to think, what can be done, where it runs, what must be done.
+- **212.** A Skill never names an endpoint, model, or a remote runtime's own skills; a remote runtime's advertised skills never establish a Capability here.
+- **213.** NEXUS SEED owns durability; the remote agent owns execution. No second durable task store is added for external work.
+- **214.** External integration is the A2A protocol boundary only — no product-specific import, provider class, REST endpoint or submodule.
+- **215.** Typed output is required or refused, never inferred: a missing structure is a provider failure.
+- **216.** Skill precedence is deterministic and stated; identical names are never resolved arbitrarily.
+- **217.** Loading a Skill never bypasses the permission and installation boundaries that Phase 5E established for imported Skills.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,
@@ -1161,6 +1212,10 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - Office / PDF / OCR extractors (the registry is ready for them); further
   adapters (mail, Slack, GitHub, browser); further ExecutionBackends (Shell /
   Claude Code / OpenClaw / MCP); `resource_links`.
+- A2A streaming/SSE and push notification; automatic propagation of a Work
+  cancellation into `tasks/cancel` (the hook exists as
+  `Runtime.cancel_provider_invocation`, the Control Plane does not call it
+  yet); Skill self-modification or generation.
 - Carried over, still open: hierarchical permissions; compensating actions;
   external action exactly-once; OS-level daemonisation of `watch_files`;
   `adapter_errors` journal; large-file streaming hash; production webhook

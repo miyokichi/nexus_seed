@@ -62,7 +62,7 @@ Goal -> Project -> World -> Work/Task -> Capability -> Execution -> Evaluation -
 
 | Module | 役割 |
 | --- | --- |
-| `providers/*`, `storage/provider_store.py` | 内部Process・Directory Skill・外部AgentのProvider federation |
+| `providers/*`, `storage/provider_store.py` | 内部Process・Directory Skill・外部AgentのProvider federation（`providers/a2a.py`がA2A境界、`providers/skills.py`がSkillのloader/importer） |
 | `backends/base.py`, `backends/llm.py` | 交換可能な推論エンジン |
 | `backends/action.py`, `actions/*`, `processes/actions.py` | 外界に触れる唯一の経路（permission・risk付き） |
 | `storage/action_*.py` | Proposal / decision / execution |
@@ -87,7 +87,8 @@ Evaluationは専用moduleを持ちません。既存の3つの仕組みの組み
 `delivery/*`と`storage/event_delivery_store.py`（durable delivery）・
 `context/*`（宣言に基づくactivation view）・`storage/database.py`と汎用store
 （`event` / `process` / `continuation` / `timer` / `join` / `activation` /
-`context_snapshot` / `llm_invocation` / `adapter_checkpoint`）・`llm_config.py`。
+`context_snapshot` / `llm_invocation` / `adapter_checkpoint`）・`llm_config.py`・
+`federation_config.py`（外部Agent RuntimeとSkill rootの設定）。
 
 ## Interface / Adapter
 

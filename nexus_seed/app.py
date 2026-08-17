@@ -21,6 +21,7 @@ from .adapters.webhook import WebhookIngress, WebhookServer
 from .backends.action import LocalFileActionBackend
 from .backends.base import BackendRequest
 from .cockpit import CockpitService
+from .federation_config import configure_external_agents
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
 from .operations import (
     OperationalCommandError,
@@ -43,6 +44,8 @@ from .processes.semantic import bootstrap_semantic
 from .processes.work_intelligence import bootstrap_work_intelligence
 from .resources.scope import ResourceScope
 from .runtime.runtime import Runtime
+
+logger = logging.getLogger(__name__)
 
 
 class ApplicationConfigurationError(ValueError):
@@ -147,6 +150,31 @@ def bootstrap_application(
     )
     runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)
+    _configure_external_agents(runtime, env_file=env_file)
+
+
+def _configure_external_agents(runtime: Runtime, *, env_file: str | Path) -> None:
+    """Register configured A2A agents and the Skills routed to them.
+
+    Skill problems are reported, never fatal: one malformed package must not
+    stop the runtime from starting with the rest of its capabilities.
+    """
+    report = configure_external_agents(runtime, env_file=env_file)
+    if report is None:
+        return
+    for failure in report.catalog.failures:
+        logger.error("skill package rejected: %s", failure)
+    for name, error in report.card_errors.items():
+        logger.warning("A2A provider %s did not publish an agent card: %s", name, error)
+    if report.unroutable:
+        logger.warning(
+            "no provider configured for skills: %s", ", ".join(report.unroutable)
+        )
+    logger.info(
+        "external agent runtime: %d provider(s), %d skill(s) registered",
+        len(report.providers),
+        len(report.imported),
+    )
 
 
 def build_runtime(settings: AppSettings, *, env_file: str | Path = ".env") -> Runtime:

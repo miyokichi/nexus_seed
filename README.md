@@ -32,6 +32,8 @@ roles of a Process—not additional core abstractions.
 - Read-only Project Chat that explains one project in natural language from its Project Situation
 - One Goal-driven loop — Goal, Project, World, Work, Capability, Execution, Evaluation — with a thin coordinator that reports where each Goal stands and asks for help when it cannot continue
 
+- External Agent Runtime delegation over A2A, with directory Skills as reusable cognitive procedures
+
 `AUTO` never skips safety checks. It still goes through the existing validators,
 scoped grants, ActionProposal boundary, verification, activation, and
 reconciliation. Runtime/core/policy changes and unrestricted shell or network
@@ -209,6 +211,129 @@ python -m nexus_seed.demo
 pytest
 ```
 
+## External Agent Runtime
+
+NEXUS SEED does not need to contain an LLM agent harness. LLM-based cognitive
+work can be delegated through the A2A `ExecutionProvider` to an external,
+stateless Agent Runtime that runs in its own process and its own repository.
+
+```text
+NEXUS SEED                       External Agent Runtime
+  World State / Goal / Project
+  Work / Capability / Skill        LLM
+  Provider selection      ──A2A──▶ Tool
+  Durable execution                Agent loop
+        ▲                             │
+        └────── typed result ─────────┘
+```
+
+The split of responsibility is fixed: **durability is NEXUS SEED, execution is
+the remote agent**. If a remote task store is lost, the existing Continuation
+and retry policy re-runs the delegation — nothing here keeps a second durable
+task database. Only blocking `message/send` + `tasks/get` polling is
+implemented; SSE and push notifications are deliberately out of scope.
+
+### Four words that are not interchangeable
+
+```text
+Skill       a reusable cognitive procedure — how to think
+Provider    an execution mechanism        — where it runs
+Capability  what can be done
+Work        what must be done
+```
+
+A Skill never names an endpoint, a model or a remote agent's own skills. A
+provider never decides what should be thought about. Swapping one A2A agent for
+another is a configuration change, not a Core change.
+
+### Skills
+
+A Skill is a directory holding a machine-readable contract and an instruction
+body:
+
+```text
+skills/
+  world_event_interpretation/
+    skill.json     capabilities, typed ports, permissions, output_schema
+    SKILL.md       the cognitive procedure given to the agent
+```
+
+`SkillLoader` scans the configured roots, validates each package and produces a
+catalog; `SkillImporter` registers each Skill as an ordinary ProcessDefinition
+with its Capabilities and a ProviderBinding. Natural language never establishes
+a capability claim — only `skill.json` does. Roots are searched in order, so a
+project-local Skill shadows a user/global one deterministically, and a
+duplicate inside a single root is always an error.
+
+Five starting Skills ship in [`skills/`](skills/):
+`world_event_interpretation`, `project_planning`, `work_generation`,
+`work_assignment`, `goal_evaluation`.
+
+### Configuration
+
+Copy [`a2a.example.json`](a2a.example.json), then set in `.env`:
+
+```ini
+NEXUS_SEED_A2A_ENABLED=true
+NEXUS_SEED_A2A_CONFIG=./a2a.json
+```
+
+```json
+{
+  "providers": {
+    "observer_agent": { "type": "a2a", "url": "http://127.0.0.1:8801" }
+  },
+  "bindings": {
+    "world_event_interpretation": { "provider": "observer_agent" }
+  },
+  "skills": { "roots": ["./skills", "~/.nexus_seed/skills"] }
+}
+```
+
+Bindings map a **capability** to a provider. Tokens are named by environment
+variable (`token_env`) and never stored in the database.
+
+### Running against a separate agent process
+
+Any agent that answers A2A works. Little Agent is used below only as an
+example — it lives in a **separate repository** and is never a Python
+dependency of this project:
+
+```text
+C:/dev/
+  nexus-seed/
+  little-agent/
+```
+
+```powershell
+# terminal 1 — the external agent, in its own project
+little-agent --serve-a2a --agent observer --port 8801
+
+# terminal 2 — NEXUS SEED
+python -m nexus_seed.app
+```
+
+Then submit an Observation and follow it through:
+
+```text
+Observation
+   → world_event_interpretation Skill
+   → A2A provider (http://127.0.0.1:8801)
+   → external agent (LLM + tools)
+   → structured DataPart
+   → StateDelta candidate
+```
+
+Check the result with the Cockpit's Providers page, or:
+
+```powershell
+python -m nexus_seed.app status
+```
+
+A provider that does not answer is recorded as a provider problem — work is
+marked `BLOCKED_PROVIDER` and re-offered when the provider returns. It is never
+reported as a missing Capability.
+
 ## Repository layout
 
 ```text
@@ -220,13 +345,14 @@ nexus_seed/extension/     Phase 5A capability gaps and acquisition proposals
 nexus_seed/construction/  Phase 5B sandboxed construction and verification
 nexus_seed/installation/  Phase 5C reviewed activation and rollback
 nexus_seed/autonomy/      Phase 5D sessions, policy, budget, trace
-nexus_seed/providers/     Phase 5E providers, delegation, skill import, trace
+nexus_seed/providers/     Phase 5E providers, delegation, A2A, skill loading, trace
 nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
 nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
 nexus_seed/projects/      read-only Project Situation models and projections
 nexus_seed/chat/          read-only Project Chat context, guards, and answers
 nexus_seed/orchestration/ Goal-loop status and the human-intervention request
 nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
+skills/                   directory Skills: skill.json contract + SKILL.md procedure
 tests/                    acceptance and restart-convergence tests
 ```
 

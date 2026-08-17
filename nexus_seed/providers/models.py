@@ -220,6 +220,9 @@ class SkillDescriptor:
     instructions: str
     resources: list[str] = field(default_factory=list)
     execution_kind: str = "EXTERNAL_SKILL"
+    enabled: bool = True
+    input_schema: dict = field(default_factory=dict)
+    output_schema: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -234,6 +237,9 @@ class SkillDescriptor:
             "instructions": self.instructions,
             "resources": self.resources,
             "execution_kind": self.execution_kind,
+            "enabled": self.enabled,
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
             "metadata": self.metadata,
         }
 

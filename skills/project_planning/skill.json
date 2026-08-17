@@ -1,0 +1,31 @@
+{
+  "name": "project_planning",
+  "version": "1",
+  "description": "Propose how one Goal could be pursued as a Project, as candidates only.",
+  "capabilities": ["project_planning"],
+  "input_ports": ["goal", "world_state"],
+  "output_ports": ["project_plan_candidate"],
+  "required_permissions": [],
+  "instruction": "SKILL.md",
+  "enabled": true,
+  "output_schema": {
+    "type": "object",
+    "required": ["project_plan_candidates"],
+    "properties": {
+      "project_plan_candidates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["objective", "rationale"],
+          "properties": {
+            "objective": { "type": "string" },
+            "rationale": { "type": "string" },
+            "success_criteria": { "type": "array", "items": { "type": "string" } },
+            "risks": { "type": "array", "items": { "type": "string" } },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    }
+  }
+}

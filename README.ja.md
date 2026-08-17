@@ -35,6 +35,8 @@ Processが担う役割として表現します。
 - Project Situationだけを根拠にProjectの状況を自然言語で説明するread-only Project Chat
 - Goal / Project / World / Work / Capability / Execution / Evaluationを一本のループとして統合し、各Goalの現在地と「自力で進めない」ことを報告する薄いGoal-driven orchestration
 
+- A2A経由で外部Agent Runtimeへ認知処理を委譲するExecution Providerと、再利用可能な認知手順としてのDirectory Skill
+
 `AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
 Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
 unrestricted shell/networkは引き続き禁止です。
@@ -327,6 +329,127 @@ python -m nexus_seed.demo
 pytest
 ```
 
+## 外部Agent Runtime
+
+NEXUS SEED自身がLLM agent harnessを持つ必要はありません。LLMを使う認知処理は、
+A2A `ExecutionProvider` を通じて、別プロセス・別リポジトリで動く外部の
+stateless Agent Runtimeへ委譲できます。
+
+```text
+NEXUS SEED                        外部Agent Runtime
+  World State / Goal / Project
+  Work / Capability / Skill         LLM
+  Provider選択            ──A2A──▶  Tool
+  Durable execution                 Agent loop
+        ▲                              │
+        └────── 構造化された結果 ───────┘
+```
+
+責務分離は固定です。**Durabilityは NEXUS SEED、Executionは外部Agent**。
+remote側のtask storeが揮発しても、既存のContinuationとretry policyで再実行され
+ます。ここに2つ目の永続task管理機構は作りません。実装するのはblocking
+`message/send` + `tasks/get` pollingのみで、SSEやpush notificationは対象外です。
+
+### 混同してはいけない4語
+
+```text
+Skill       再利用可能な認知手順 — どう考えるか
+Provider    実行機構             — どこで実行するか
+Capability  何ができるか
+Work        何をやるべきか
+```
+
+Skillはendpoint・model・remote Agent側のSkill名を一切指定しません。Providerは
+「何を考えるか」を決めません。あるA2A Agentを別のAgentへ置き換えても、
+設定変更だけで済み、Coreの変更は不要です。
+
+### Skill
+
+Skillは、機械可読なcontractと認知手順本文を持つディレクトリです。
+
+```text
+skills/
+  world_event_interpretation/
+    skill.json     capability、typed port、permission、output_schema
+    SKILL.md       Agentへ渡す認知手順
+```
+
+`SkillLoader` が設定されたrootを走査して検証しcatalogを作り、`SkillImporter`
+が各Skillを通常のProcessDefinition・Capability・ProviderBindingとして登録し
+ます。Capabilityの主張を成立させるのは `skill.json` だけで、自然言語からは
+決して導出しません。rootは指定順に探索されるため、project-localなSkillが
+user/globalのSkillを決定論的に上書きします。1つのroot内での同名重複は常に
+エラーです。
+
+初期Skillとして5つを [`skills/`](skills/) に同梱しています。
+`world_event_interpretation` / `project_planning` / `work_generation` /
+`work_assignment` / `goal_evaluation`。
+
+### 設定
+
+[`a2a.example.json`](a2a.example.json) をコピーし、`.env` に次を設定します。
+
+```ini
+NEXUS_SEED_A2A_ENABLED=true
+NEXUS_SEED_A2A_CONFIG=./a2a.json
+```
+
+```json
+{
+  "providers": {
+    "observer_agent": { "type": "a2a", "url": "http://127.0.0.1:8801" }
+  },
+  "bindings": {
+    "world_event_interpretation": { "provider": "observer_agent" }
+  },
+  "skills": { "roots": ["./skills", "~/.nexus_seed/skills"] }
+}
+```
+
+bindingsは **Capability** とProviderの対応です。tokenは環境変数名
+(`token_env`) で指定し、DBには保存しません。
+
+### 別プロセスのAgentと動かす
+
+A2Aに応答するAgentであれば何でも使えます。以下ではlittle-agentを例にします。
+little-agentは**別リポジトリ**であり、本プロジェクトのPython依存には決して
+追加しません。
+
+```text
+C:/dev/
+  nexus-seed/
+  little-agent/
+```
+
+```powershell
+# ターミナル1 — 外部Agent（別プロジェクト）
+little-agent --serve-a2a --agent observer --port 8801
+
+# ターミナル2 — NEXUS SEED
+python -m nexus_seed.app
+```
+
+Observationを投入すると、次の経路で処理されます。
+
+```text
+Observation
+   → world_event_interpretation Skill
+   → A2A Provider (http://127.0.0.1:8801)
+   → little-agent observer（LLM + Tool）
+   → 構造化DataPart
+   → StateDelta候補
+```
+
+結果はCockpitのProvidersページか、次のコマンドで確認できます。
+
+```powershell
+python -m nexus_seed.app status
+```
+
+応答しないProviderはProvider側の問題として記録され、Workは
+`BLOCKED_PROVIDER` となり、Provider復帰時に再提示されます。Capability不足と
+して扱われることはありません。
+
 ## ディレクトリ構成
 
 ```text
@@ -338,13 +461,14 @@ nexus_seed/extension/     Phase 5AのCapability gapと取得提案
 nexus_seed/construction/  Phase 5BのSandbox内構築と検証
 nexus_seed/installation/  Phase 5Cの承認付きActivationとrollback
 nexus_seed/autonomy/      Phase 5DのSession、Policy、Budget、Trace
-nexus_seed/providers/     Phase 5EのProvider、委譲、Skill import、Trace
+nexus_seed/providers/     Phase 5EのProvider、委譲、A2A、Skill読み込み、Trace
 nexus_seed/control/       Phase 5GのCommand、Identity、Goal、認可
 nexus_seed/presence/      Phase 6のSelf/Master/Intention projectionとExperience trace
 nexus_seed/projects/      read-onlyなProject Situationのmodelとprojection
 nexus_seed/chat/          read-onlyなProject Chatのcontext、guard、回答生成
 nexus_seed/orchestration/ Goalループの現在地と人間への介入要求
 nexus_seed/cockpit/       人間向けread modelと依存なしWeb UI
+skills/                   Directory Skill: skill.json契約とSKILL.md認知手順
 tests/                    受入テストと再起動収束テスト
 ```
 

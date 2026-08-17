@@ -63,7 +63,7 @@ them. Interface / Adapter is how people and the outside world reach the loop.
 
 | Module | Role |
 | --- | --- |
-| `providers/*`, `storage/provider_store.py` | Provider federation: internal Processes, directory Skills, external Agents |
+| `providers/*`, `storage/provider_store.py` | Provider federation: internal Processes, directory Skills, external Agents (`providers/a2a.py` is the A2A boundary, `providers/skills.py` the Skill loader/importer) |
 | `backends/base.py`, `backends/llm.py` | Swappable reasoning engines |
 | `backends/action.py`, `actions/*`, `processes/actions.py` | The only path that touches the outside world, with permissions and risk |
 | `storage/action_*.py` | Proposals, decisions, executions |
@@ -89,7 +89,8 @@ why it was easy to miss:
 `context/*` (declared per-activation views) ·
 `storage/database.py` and the generic stores (`event`, `process`,
 `continuation`, `timer`, `join`, `activation`, `context_snapshot`,
-`llm_invocation`, `adapter_checkpoint`) · `llm_config.py`.
+`llm_invocation`, `adapter_checkpoint`) · `llm_config.py` ·
+`federation_config.py` (external Agent Runtime and Skill-root wiring).
 
 ## Interface / Adapter
 

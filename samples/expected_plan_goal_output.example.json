@@ -1,0 +1,49 @@
+{
+  "works": [
+    {
+      "id": "inspect_sales_data",
+      "title": "売上データを確認する",
+      "description": "sample_sales.csv の期間、列、欠損、店舗・カテゴリ構成を確認し、分析可能な状態か判断する。",
+      "required_capabilities": [
+        "tabular_data_read",
+        "data_validation"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "quantify_sales_drop",
+      "title": "7月の売上低下を定量化する",
+      "description": "2026年6月と7月を比較し、店舗・カテゴリ別に売上差分と寄与度を算出する。",
+      "required_capabilities": [
+        "tabular_analysis",
+        "aggregation"
+      ],
+      "depends_on": [
+        "inspect_sales_data"
+      ]
+    },
+    {
+      "id": "identify_primary_driver",
+      "title": "主要因を特定する",
+      "description": "売上低下への寄与が大きい店舗・カテゴリを特定し、数量変化との関係を整理する。",
+      "required_capabilities": [
+        "analytical_reasoning"
+      ],
+      "depends_on": [
+        "quantify_sales_drop"
+      ]
+    },
+    {
+      "id": "summarize_findings",
+      "title": "結論と追加調査点を整理する",
+      "description": "データから言える主要因と、データだけでは判断できず追加調査が必要な点を分けて整理する。",
+      "required_capabilities": [
+        "reporting",
+        "analytical_reasoning"
+      ],
+      "depends_on": [
+        "identify_primary_driver"
+      ]
+    }
+  ]
+}

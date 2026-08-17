@@ -1,0 +1,80 @@
+{
+  "parts": [
+    {
+      "kind": "data",
+      "data": {
+        "instruction": "次のGoalを達成するために必要なWork候補を計画してください。実行はせず、計画だけを返してください。",
+        "context": {
+          "goal": {
+            "goal_id": "goal-sales-drop-001",
+            "title": "売上低下の主要因を特定する",
+            "description": "sample_sales.csv を分析し、2026年7月の売上低下の主要因を特定して説明できる状態にする。",
+            "success_criteria": [
+              "2026年7月の売上低下がどの店舗・商品群に由来するか示せる",
+              "主要因をデータに基づいて説明できる",
+              "追加調査が必要な点を分離できる"
+            ]
+          },
+          "available_inputs": [
+            {
+              "name": "sample_sales.csv",
+              "type": "text/csv",
+              "description": "2026年5月〜7月の店舗・商品カテゴリ別の販売数量と売上"
+            }
+          ],
+          "constraints": [
+            "存在しないデータを前提にしない",
+            "必要な分析・検証・結論化をWorkとして分ける"
+          ]
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "works": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "required_capabilities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "depends_on": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "title",
+                  "description",
+                  "required_capabilities",
+                  "depends_on"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "works"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

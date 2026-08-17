@@ -1,0 +1,32 @@
+{
+  "name": "work_generation",
+  "version": "1",
+  "description": "Propose the Work a Goal still needs, given World State and existing Work.",
+  "capabilities": ["work_generation"],
+  "input_ports": ["goal", "world_state", "work_inventory"],
+  "output_ports": ["work_candidate"],
+  "required_permissions": [],
+  "instruction": "SKILL.md",
+  "enabled": true,
+  "output_schema": {
+    "type": "object",
+    "required": ["work_candidates"],
+    "properties": {
+      "work_candidates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["work_type", "reason"],
+          "properties": {
+            "work_type": { "type": "string" },
+            "reason": { "type": "string" },
+            "required_capabilities": { "type": "array", "items": { "type": "string" } },
+            "related_entities": { "type": "array", "items": { "type": "string" } },
+            "priority": { "type": "integer" },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    }
+  }
+}

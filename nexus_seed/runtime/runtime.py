@@ -478,6 +478,31 @@ class Runtime:
             source, adapter, allowed_permissions=allowed_permissions
         )
 
+    def import_skill_catalog(
+        self,
+        catalog,
+        *,
+        adapter: DirectorySkillAdapter | None = None,
+        provider_for=None,
+        allowed_permissions: tuple[str, ...] = (),
+    ):
+        """Register a loaded Skill catalog through the same safety pipeline.
+
+        ``provider_for`` maps each Skill to an already-registered provider id,
+        which is how a cognitive Skill reaches an external Agent Runtime
+        without ever naming an endpoint itself.
+        """
+        return SkillImporter(self).import_catalog(
+            catalog,
+            adapter=adapter,
+            provider_for=provider_for,
+            allowed_permissions=allowed_permissions,
+        )
+
+    async def cancel_provider_invocation(self, invocation_id) -> bool:
+        """Cancel one external delegation, telling the provider on a best-effort basis."""
+        return await self.providers.cancel_invocation(invocation_id)
+
     def register_provider_binding(self, binding: ProviderBinding):
         """Bind a provider to one semantic ProcessDefinition.
 

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "External Agent Runtime configuration.",
+    "A provider is where a Skill runs; a Skill never names an endpoint."
+  ],
+
+  "providers": {
+    "planner_agent": {
+      "type": "a2a",
+      "url": "http://127.0.0.1:8802",
+      "poll_interval_seconds": 1,
+      "timeout_seconds": 600,
+      "trust_level": 0.5,
+      "priority": 100,
+      "permissions": [],
+      "verify_agent_card": true
+    }
+  },
+
+  "bindings": {
+    "project_planning": {
+      "provider": "planner_agent"
+    }
+  },
+
+  "skills": {
+    "roots": ["./skills", "~/.nexus_seed/skills"],
+    "on_duplicate": "override",
+    "strict": false,
+    "allowed_permissions": []
+  }
+}
