@@ -19,6 +19,24 @@ from ..work.work_requirement import WorkRequirement, WorkStatus
 GOAL_DECOMPOSITION_PROPOSED = "goal_decomposition_proposed"
 GOAL_DECOMPOSITION_FAILED = "goal_decomposition_failed"
 RESERVED_INTERNAL_CAPABILITIES = frozenset({"advance_human_goal"})
+
+#: Emitted by :class:`~nexus_seed.providers.registry.ProviderRegistry` when an
+#: external delegation completes.  Goal decomposition listens for the subset of
+#: those that were its own request, and ignores every other one.
+PROVIDER_EXECUTION_COMPLETED = "provider_execution_completed"
+#: The competence that proposes what Work a Goal still needs.  When some
+#: process provides it *and* has an eligible execution provider, decomposition
+#: goes through the ordinary Work path instead of calling an LLM directly.
+WORK_GENERATION_CAPABILITY = "work_generation"
+#: The typed output that competence returns.
+WORK_CANDIDATE_OUTPUT_TYPE = "work_candidate"
+#: ``WorkRequirement.metadata["source"]`` marking the delegation request
+#: itself, kept distinct from ``goal_decomposition`` (the Work it produces).
+GOAL_DECOMPOSITION_REQUEST_SOURCE = "goal_decomposition_request"
+#: Stable semantic key of that request, so its ``work_key`` is derived once per
+#: Goal and re-evaluation finds the existing row instead of making another.
+GOAL_DECOMPOSITION_REQUEST_KEY = "goal_decomposition_request"
+GOAL_DECOMPOSITION_WORK_TYPE = "goal_decomposition"
 _SYMBOL = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 GOAL_DECOMPOSITION_SCHEMA = {
     "type": "object",
@@ -83,6 +101,7 @@ EVALUATE_GOAL = ProcessDefinition(
         "work_satisfied",
         "work_failed",
         GOAL_DECOMPOSITION_PROPOSED,
+        PROVIDER_EXECUTION_COMPLETED,
     ),
     metadata={"role": "goal_evaluator"},
 )
@@ -100,6 +119,11 @@ async def evaluate_goal(ctx: ProcessContext) -> ProcessResult:
     """Evaluate structured criteria and emit missing Work, never an Action."""
 
     assert ctx.event is not None and ctx.services is not None
+    if ctx.event.type == PROVIDER_EXECUTION_COMPLETED:
+        # Most external delegations have nothing to do with a Goal.  Answering
+        # only for our own request keeps this Process out of everyone else's
+        # provider lifecycle.
+        return _decomposition_from_provider(ctx)
     requested_id = _uuid(ctx.event.payload.get("goal_id"))
     if requested_id:
         goal = ctx.services.get_goal(requested_id)
@@ -241,7 +265,238 @@ async def _evaluate_decomposed_goal(
             GOAL_DECOMPOSITION_PROPOSED,
             {"goal_id": str(goal.id), "work": deterministic, "source": "goal_metadata"},
         )], [], False
+    delegated = _delegate_goal_decomposition(ctx, goal)
+    if delegated is not None:
+        return delegated
     return await _propose_goal_decomposition(ctx, goal)
+
+
+def _delegate_goal_decomposition(
+    ctx: ProcessContext, goal
+) -> tuple[list, list[str], bool] | None:
+    """Ask for decomposition as ordinary Work when a competence can do it.
+
+    This adds no execution path of its own.  It states a need — one
+    WorkRequirement wanting ``work_generation`` — and lets the existing
+    matcher, spawner, ProviderSelector and ProviderRegistry decide where that
+    need is met.  ``None`` means no such competence is currently usable, and is
+    the *only* condition under which the caller falls back to calling an LLM
+    backend directly.
+    """
+
+    assert ctx.services is not None
+    template = _decomposition_request_template(goal)
+    work_key = _goal_work_key(goal.id, template)
+    if ctx.services.get_work_requirement_by_key(work_key) is not None:
+        # The delegation was already requested.  Whatever became of it —
+        # running, satisfied, or failed at the provider — it is that request's
+        # outcome that stands.  Re-deciding here would either duplicate the
+        # Work or quietly re-do the same decomposition through a different
+        # executor after execution had already started (Invariant: no silent
+        # failover once a provider was selected).
+        return [], [], False
+    if not _work_generation_available(ctx):
+        return None
+
+    requirement = _work_for(goal, template, work_key)
+    ctx.add_work_requirement(requirement)
+    return [
+        ctx.new_event(
+            "goal_work_generated",
+            {"goal_id": str(goal.id), "work_requirement_id": str(requirement.id)},
+        ),
+        ctx.new_event(
+            "work_review_required"
+            if requirement.status is WorkStatus.WAITING_REVIEW
+            else "work_required",
+            {"work_requirement_id": str(requirement.id)},
+        ),
+    ], [str(requirement.id)], False
+
+
+def _decomposition_request_template(goal) -> dict:
+    """The Work that asks for this Goal's decomposition, as a normal template."""
+
+    return {
+        "semantic_key": GOAL_DECOMPOSITION_REQUEST_KEY,
+        "objective": (
+            "Propose the Work this Goal still needs, as bounded work candidates. "
+            f"Goal: {goal.objective}"
+        ),
+        "work_type": GOAL_DECOMPOSITION_WORK_TYPE,
+        "required_capabilities": [WORK_GENERATION_CAPABILITY],
+        "required_output_types": [WORK_CANDIDATE_OUTPUT_TYPE],
+        "_source": GOAL_DECOMPOSITION_REQUEST_SOURCE,
+    }
+
+
+def _work_generation_available(ctx: ProcessContext) -> bool:
+    """Whether some enabled process can *actually run* ``work_generation`` now.
+
+    Deliberately :meth:`CapabilityMatcher.provides`, which already answers
+    "capable process, with an eligible execution provider" — the same question
+    ``work_matcher`` will ask a moment later, so the two cannot disagree.
+    """
+
+    matcher = ctx.services.get_capability_matcher() if ctx.services else None
+    if matcher is None:
+        return False
+    return matcher.provides(
+        CapabilityRequirement(WORK_GENERATION_CAPABILITY),
+        ctx.services.get_all_definitions(),
+    )
+
+
+def _decomposition_from_provider(ctx: ProcessContext) -> ProcessResult:
+    """Turn one completed ``work_generation`` delegation into a proposal.
+
+    The provider's typed output is translated into the *existing* proposal
+    shape and re-enters the ordinary path: validation, idempotency and Goal
+    association all stay where they already were.
+    """
+
+    assert ctx.event is not None and ctx.services is not None
+    invocation = _provider_invocation(ctx, ctx.event.payload.get("provider_invocation_id"))
+    requirement = _decomposition_request_for(ctx, invocation)
+    if requirement is None:
+        return ctx.complete(output={"goal_decomposition": False})
+    goal = ctx.services.get_goal(requirement.goal_id) if requirement.goal_id else None
+    if goal is None:
+        return ctx.complete(
+            output={"goal_decomposition": False, "reason": "goal no longer exists"}
+        )
+
+    snapshot = invocation.result_snapshot or {}
+    try:
+        templates = _work_candidate_templates(snapshot.get("typed_outputs") or [])
+    except ValueError as exc:
+        # A provider that answered the wrong shape is a provider failure, not a
+        # reason to decompose the Goal some other way.
+        return ctx.complete(
+            output={"goal_decomposition": True, "decomposed": False, "reason": str(exc)},
+            emitted_events=[ctx.new_event(
+                GOAL_DECOMPOSITION_FAILED,
+                {
+                    "goal_id": str(goal.id),
+                    "reason": str(exc),
+                    "provider_invocation_id": str(invocation.id),
+                    "work_requirement_id": str(requirement.id),
+                },
+            )],
+        )
+    return ctx.complete(
+        output={"goal_decomposition": True, "work_candidates": len(templates)},
+        emitted_events=[ctx.new_event(
+            GOAL_DECOMPOSITION_PROPOSED,
+            {
+                "goal_id": str(goal.id),
+                "work": templates,
+                "source": "provider",
+                "provider_invocation_id": str(invocation.id),
+            },
+        )],
+    )
+
+
+def _provider_invocation(ctx: ProcessContext, raw_id):
+    """Read one delegation journal record through the existing registry."""
+
+    registry = ctx.services.get_provider_registry() if ctx.services else None
+    invocation_id = _uuid(raw_id)
+    if registry is None or invocation_id is None:
+        return None
+    return registry.store.get_invocation(invocation_id)
+
+
+def _decomposition_request_for(ctx: ProcessContext, invocation):
+    """Return the decomposition request this invocation ran, or ``None``.
+
+    Both halves matter: the Work has to be one this Process asked for, *and*
+    the delegation has to have been for ``work_generation``.
+    """
+
+    if invocation is None:
+        return None
+    instance = ctx.services.get_process_instance(invocation.process_instance_id)
+    if instance is None or instance.work_requirement_id is None:
+        return None
+    requirement = ctx.services.get_work_requirement(instance.work_requirement_id)
+    if requirement is None:
+        return None
+    if requirement.metadata.get("source") != GOAL_DECOMPOSITION_REQUEST_SOURCE:
+        return None
+    if not any(
+        item.name == WORK_GENERATION_CAPABILITY
+        for item in requirement.required_capabilities
+    ):
+        return None
+    return requirement
+
+
+def _work_candidate_templates(typed_outputs) -> list[dict]:
+    """Map ``work_candidate`` outputs onto the existing proposal templates.
+
+    The Skill's contract names the same things by different words; only that
+    renaming happens here.  The result is handed to the existing
+    :func:`_validate_goal_decomposition`, which remains the single place that
+    decides whether an untrusted decomposition is acceptable.
+    """
+
+    candidates = []
+    for item in typed_outputs:
+        if not isinstance(item, dict) or str(item.get("type")) != WORK_CANDIDATE_OUTPUT_TYPE:
+            continue
+        value = item.get("value")
+        if isinstance(value, dict) and isinstance(value.get("work_candidates"), list):
+            candidates.extend(value["work_candidates"])
+        elif isinstance(value, dict):
+            candidates.append(value)
+        elif isinstance(value, list):
+            candidates.extend(value)
+    if not candidates:
+        raise ValueError(
+            f"provider returned no {WORK_CANDIDATE_OUTPUT_TYPE} output to decompose"
+        )
+
+    templates = []
+    keys: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            raise ValueError(f"{WORK_CANDIDATE_OUTPUT_TYPE}[{index}] must be an object")
+        work_type = str(candidate.get("work_type") or "").strip()
+        templates.append({
+            "semantic_key": _unique_semantic_key(
+                candidate.get("semantic_key") or work_type, keys
+            ),
+            # ``reason`` is this Skill's word for why the Work is needed, which
+            # is what a WorkRequirement records as its objective.
+            "objective": str(
+                candidate.get("objective") or candidate.get("reason") or ""
+            ).strip(),
+            "work_type": work_type,
+            "required_capabilities": candidate.get("required_capabilities") or [],
+            "available_input_types": candidate.get("available_input_types") or [],
+            "required_output_types": candidate.get("required_output_types") or [],
+            "completion_criteria": candidate.get("completion_criteria") or [],
+        })
+    return _validate_goal_decomposition(templates)
+
+
+def _unique_semantic_key(raw, used: set[str]) -> str:
+    """Keep two candidates for the same work type distinguishable.
+
+    Only uniqueness is settled here; whether the name is acceptable at all is
+    still :func:`_validate_goal_decomposition`'s decision.
+    """
+
+    base = str(raw or "").strip()
+    key = base
+    suffix = 2
+    while key in used:
+        key = f"{base}_{suffix}"
+        suffix += 1
+    used.add(key)
+    return key
 
 
 def _phase6_intention_path_enabled(ctx: ProcessContext) -> bool:
@@ -568,7 +823,11 @@ __all__ = [
     "EVALUATE_GOAL",
     "GOAL_DECOMPOSITION_FAILED",
     "GOAL_DECOMPOSITION_PROPOSED",
+    "GOAL_DECOMPOSITION_REQUEST_SOURCE",
+    "PROVIDER_EXECUTION_COMPLETED",
     "REVIEW_HUMAN_WORK",
+    "WORK_CANDIDATE_OUTPUT_TYPE",
+    "WORK_GENERATION_CAPABILITY",
     "bootstrap_control",
     "evaluate_goal",
     "review_human_work",

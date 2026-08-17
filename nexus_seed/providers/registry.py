@@ -454,7 +454,13 @@ class ProviderRegistry:
                 "instructions": metadata.get("instructions", ""),
             },
             required_capabilities=[c.name for c in capabilities],
-            objective=metadata.get("objective", definition.name),
+            # What *this* need is for, when the need says so.  A Skill is a
+            # reusable procedure and its definition can only state a generic
+            # objective; the WorkRequirement is the one that knows the job.
+            objective=(
+                (work.objective if work is not None and work.objective else None)
+                or metadata.get("objective", definition.name)
+            ),
             typed_inputs=dict(ctx.instance.input.get("inputs") or ctx.instance.input),
             relevant_context=relevant_context,
             constraints=[
