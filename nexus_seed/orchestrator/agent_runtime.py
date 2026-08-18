@@ -14,7 +14,14 @@ Two implementations ship:
   Nothing in the orchestrator changes when one replaces the other; that is the
   point of the interface.
 
-Messages an Agent sends back are *queued*, not delivered re-entrantly: the
+Handing a Project over and getting the answer are two steps, because a Project
+takes as long as it takes.  :meth:`deliver` returns a :class:`Dispatch` — what
+the Agent already answered, plus a ``handle`` to ask about later — and
+:meth:`collect` asks whether that handle has finished.  The orchestrator stores
+the handle, so a Project that is being worked on survives a restart of NEXUS
+SEED.
+
+Messages an Agent pushes are *queued*, not delivered re-entrantly: the
 orchestrator drains them after the current step, the same way the Runtime drains
 emitted events.
 """
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from .models import A2AMessage, A2AMessageType, ProjectAgentConfig
@@ -38,6 +46,34 @@ class AgentUnavailable(RuntimeError):
     are statements *by* a working Agent about its Project.  Confusing the two
     would block a Project for a restart of the agent process.
     """
+
+
+class RemoteWorkLost(AgentUnavailable):
+    """The Agent no longer knows the work NEXUS SEED handed it.
+
+    Not the same as being unreachable: the Agent answered, and its answer was
+    that the work is gone.  NEXUS SEED holds the durable Project, so this is
+    recoverable — the assignment can be handed over again, and *only* on this
+    answer, since anything vaguer could run the same work twice.
+    """
+
+
+@dataclass
+class Dispatch:
+    """The result of handing work to an Agent.
+
+    ``messages`` is what the Agent said straight away; ``handle`` is what to ask
+    about later.  An empty handle means there is nothing outstanding — either
+    the Agent answered at once, or it pushes its answers instead.
+    """
+
+    handle: str = ""
+    messages: list[A2AMessage] = field(default_factory=list)
+
+    @property
+    def pending(self) -> bool:
+        """Whether an answer is still owed under :attr:`handle`."""
+        return bool(self.handle)
 
 
 @runtime_checkable
@@ -60,8 +96,16 @@ class AgentRuntime(Protocol):
         """
         ...
 
-    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:
-        """Hand the agent a goal or an added task."""
+    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> Dispatch:
+        """Hand the agent a goal or an added task, without waiting it out."""
+        ...
+
+    async def collect(self, agent_id: str, handle: str) -> list[A2AMessage] | None:
+        """Return the answer for ``handle``, or ``None`` while it is still working."""
+        ...
+
+    async def abandon(self, agent_id: str, handle: str) -> None:
+        """Give up on one dispatch, without giving up on the Agent itself."""
         ...
 
     async def poll(self) -> list[A2AMessage]:
@@ -109,17 +153,30 @@ class InProcessAgentRuntime:
         """Re-adopt an agent that was recorded by an earlier run."""
         self.configs[config.agent_id] = config
 
-    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:
-        """Run the scripted behaviour and queue whatever it reports back."""
+    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> Dispatch:
+        """Run the scripted behaviour and queue whatever it reports back.
+
+        Nothing is outstanding afterwards: a scripted agent answers at once, so
+        the dispatch carries no handle and the messages are drained as usual.
+        """
         self.delivered.append((agent_id, envelope))
         config = self.configs.get(agent_id)
         if config is None or self.behaviour is None:
-            return
+            return Dispatch()
         produced = self.behaviour(config, envelope)
         if hasattr(produced, "__await__"):
             produced = await produced  # type: ignore[assignment]
         for message in produced or []:
             self.emit(message, config=config)
+        return Dispatch()
+
+    async def collect(self, agent_id: str, handle: str) -> list[A2AMessage] | None:
+        """Nothing is ever outstanding here; answers arrive through ``poll``."""
+        return []
+
+    async def abandon(self, agent_id: str, handle: str) -> None:
+        """Nothing is ever outstanding here, so there is nothing to give up on."""
+        return None
 
     def emit(self, message: A2AMessage, *, config: ProjectAgentConfig | None = None) -> A2AMessage:
         """Queue a message from an agent to NEXUS SEED."""
@@ -159,10 +216,20 @@ class ProjectAgentTransport(Protocol):
         """Make the Agent ready and return the endpoint it is reached at."""
         ...
 
-    async def send(
+    async def start(
         self, config: ProjectAgentConfig, envelope: dict[str, Any]
-    ) -> list[A2AMessage]:
-        """Delegate a goal or an added task and return what the Agent reported."""
+    ) -> Dispatch:
+        """Hand over a goal or an added task and return without waiting it out."""
+        ...
+
+    async def collect(
+        self, config: ProjectAgentConfig, handle: str
+    ) -> list[A2AMessage] | None:
+        """Return the answer for ``handle``, or ``None`` while it is still working."""
+        ...
+
+    async def abandon(self, handle: str) -> bool:
+        """Stop caring about a dispatch, telling the Agent if it will listen."""
         ...
 
     async def close(self, agent_id: str) -> None:
@@ -210,15 +277,33 @@ class A2AAgentRuntime:
         """Re-adopt an Agent recorded by an earlier run, without a remote call."""
         self.configs[config.agent_id] = config
 
-    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:
-        """Hand the whole Project (or one added Task) to the remote Agent."""
+    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> Dispatch:
+        """Hand the whole Project (or one added Task) to the remote Agent.
+
+        This returns as soon as the Agent has taken the work, not when it has
+        finished it: a Project runs for as long as it needs, and NEXUS SEED
+        stores the returned handle rather than holding a process open.
+        """
+        config = self._config(agent_id)
+        return await self.transport.start(config, envelope)
+
+    async def collect(self, agent_id: str, handle: str) -> list[A2AMessage] | None:
+        """Ask whether the Agent has finished the work under ``handle``."""
+        return await self.transport.collect(self._config(agent_id), handle)
+
+    async def abandon(self, agent_id: str, handle: str) -> None:
+        """Give up on one dispatch without giving up on the Agent."""
+        await self.transport.abandon(handle)
+
+    def _config(self, agent_id: str) -> ProjectAgentConfig:
+        """Return what this Agent was started with, or say it is unknown."""
         config = self.configs.get(agent_id)
         if config is None:
             raise AgentUnavailable(
                 f"agent {agent_id} is not known to this runtime; it must be "
                 "spawned or attached before work is delegated to it"
             )
-        self._outbox.extend(await self.transport.send(config, envelope))
+        return config
 
     async def poll(self) -> list[A2AMessage]:
         """Return and clear what the remote Agents have reported."""
@@ -265,8 +350,10 @@ __all__ = [
     "AgentRuntime",
     "AgentUnavailable",
     "Behaviour",
+    "Dispatch",
     "InProcessAgentRuntime",
     "ProjectAgentTransport",
+    "RemoteWorkLost",
     "completed_message",
     "escalation",
     "status_message",

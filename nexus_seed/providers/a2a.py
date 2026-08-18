@@ -57,8 +57,26 @@ TERMINAL_STATES = frozenset({"completed", "failed", "canceled", "rejected"})
 UNSUPPORTED_STATES = frozenset({"input-required", "auth-required"})
 
 
+#: JSON-RPC error code an A2A agent returns for a task it no longer knows.
+TASK_NOT_FOUND_CODE = -32001
+
+
 class A2AProtocolError(RuntimeError):
-    """The remote endpoint did not answer with a usable A2A response."""
+    """The remote endpoint did not answer with a usable A2A response.
+
+    ``code`` carries the JSON-RPC error code when the remote answered with one,
+    so a caller can tell "you asked about a task I have never heard of" from
+    "I could not be reached at all" without matching on message text.
+    """
+
+    def __init__(self, message: str, *, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+    @property
+    def task_not_found(self) -> bool:
+        """Whether the remote agent said the task does not exist."""
+        return self.code == TASK_NOT_FOUND_CODE
 
 
 @dataclass(frozen=True)
@@ -194,7 +212,11 @@ class A2AClient:
         if payload.get("error"):
             error = payload["error"]
             message = error.get("message") if isinstance(error, dict) else error
-            raise A2AProtocolError(f"{method} rejected: {message}")
+            code = error.get("code") if isinstance(error, dict) else None
+            raise A2AProtocolError(
+                f"{method} rejected: {message}",
+                code=code if isinstance(code, int) else None,
+            )
         result = payload.get("result")
         if not isinstance(result, dict):
             raise A2AProtocolError(f"{method} returned no result object")
@@ -212,10 +234,23 @@ class A2ATaskUnfinished(RuntimeError):
     another provider — the caller decides what a failed attempt means for it.
     """
 
-    def __init__(self, reason: str, *, state: str = "", task_id: str | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        state: str = "",
+        task_id: str | None = None,
+        code: int | None = None,
+    ) -> None:
         super().__init__(reason)
         self.state = state
         self.task_id = task_id
+        self.code = code
+
+    @property
+    def task_not_found(self) -> bool:
+        """Whether the remote agent has forgotten the task entirely."""
+        return self.code == TASK_NOT_FOUND_CODE
 
 
 def task_state(task: dict) -> str:
@@ -267,7 +302,9 @@ async def await_task(
         try:
             task = await asyncio.to_thread(client.call, "tasks/get", {"id": task_id})
         except A2AProtocolError as exc:
-            raise A2ATaskUnfinished(str(exc), state=state, task_id=task_id) from exc
+            raise A2ATaskUnfinished(
+                str(exc), state=state, task_id=task_id, code=exc.code
+            ) from exc
     return task
 
 

@@ -13,7 +13,9 @@ they end — and it is the only thing allowed to create a Project.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import timedelta
 from typing import Any
 
 from ..backends.base import ExecutionBackend
@@ -21,14 +23,22 @@ from ..storage.database import Database
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
 from .a2a_gateway import A2AGateway
 from .agent_manager import AgentManager
-from .agent_runtime import AgentRuntime, AgentUnavailable, InProcessAgentRuntime
+from .agent_runtime import (
+    AgentRuntime,
+    AgentUnavailable,
+    InProcessAgentRuntime,
+    RemoteWorkLost,
+)
 from .context_manager import ContextManager
+from ..core.event import utcnow
 from .models import (
     BLOCKING_ESCALATIONS,
     A2AMessage,
     A2AMessageType,
     Agent,
+    AgentAssignment,
     AgentStatus,
+    AssignmentStatus,
     Project,
     ProjectStatus,
     RoutingAction,
@@ -41,6 +51,17 @@ logger = logging.getLogger("nexus_seed.orchestrator")
 
 #: Safety valve so a misbehaving agent cannot spin the drain loop forever.
 MAX_DRAIN_ROUNDS = 100
+
+#: How many times one hand-over is attempted before NEXUS SEED stops asking.
+MAX_DISPATCH_ATTEMPTS = 5
+
+#: First retry gap, doubling per attempt up to :data:`RETRY_MAX_SECONDS`.
+RETRY_BASE_SECONDS = 5.0
+RETRY_MAX_SECONDS = 300.0
+
+#: How long an Agent may hold a hand-over before NEXUS SEED gives up on it.
+#: A Project Agent owns a whole Goal, so this is generous by design.
+ASSIGNMENT_TIMEOUT_SECONDS = 3600.0
 
 
 class ProjectOrchestrator:
@@ -58,9 +79,17 @@ class ProjectOrchestrator:
         available_skills: tuple[str, ...] = (),
         a2a_endpoint: str | None = None,
         default_constraints: dict[str, Any] | None = None,
+        max_dispatch_attempts: int = MAX_DISPATCH_ATTEMPTS,
+        retry_base_seconds: float = RETRY_BASE_SECONDS,
+        retry_max_seconds: float = RETRY_MAX_SECONDS,
+        assignment_timeout_seconds: float = ASSIGNMENT_TIMEOUT_SECONDS,
     ) -> None:
         self.db = db_path if isinstance(db_path, Database) else Database(db_path)
         self.agent_runtime = agent_runtime or InProcessAgentRuntime()
+        self.max_dispatch_attempts = max_dispatch_attempts
+        self.retry_base_seconds = retry_base_seconds
+        self.retry_max_seconds = retry_max_seconds
+        self.assignment_timeout_seconds = assignment_timeout_seconds
 
         self.project_store = ProjectStore(self.db)
         self.agent_store = AgentStore(self.db)
@@ -164,12 +193,7 @@ class ProjectOrchestrator:
             return None
 
         if decision.action is RoutingAction.ADD_TASK_TO_PROJECT:
-            task = self.projects.add_task(project, decision.proposed_task or "")
-            agent = await self.assign_agent(project)
-            if agent is None:
-                return project
-            await self.delegate(project, agent, task=task)
-            return project
+            return await self.add_task(project, decision.proposed_task or "")
 
         # UPDATE_PROJECT: management-level framing only.
         if decision.reason:
@@ -177,6 +201,26 @@ class ProjectOrchestrator:
         if priority:
             self.projects.set_priority(project, priority)
         return project
+
+    async def add_task(self, project: Project, description: str) -> Project:
+        """Give a Project one more Task, and send it to the Agent that owns it.
+
+        This is also how a person unblocks a Project: a follow-up instruction is
+        another Task for the same Goal, so whatever was in the way is recorded
+        as resolved and the *same* Agent is asked to carry on.
+        """
+        task = self.projects.add_task(project, description)
+        agent = await self.assign_agent(project)
+        if agent is None:
+            return project
+        if project.current_blockers:
+            self.projects.resolve_blockers(project, by=f"task {task['id']}")
+        if project.status is not ProjectStatus.ACTIVE:
+            self.projects.activate(project)
+        if agent.status is AgentStatus.IDLE:
+            self.agents.set_status(agent, AgentStatus.RUNNING)
+        await self.delegate(project, agent, task=task)
+        return self.projects.get(project.id) or project
 
     async def start_project(
         self,
@@ -196,9 +240,11 @@ class ProjectOrchestrator:
         agent = await self.assign_agent(project)
         if agent is None:
             return project
-        if await self.delegate(project, agent):
-            self.projects.activate(project)
-        return project
+        # ACTIVE the moment it has an Agent to work on it: whether the hand-over
+        # got through this second is the Agent's state, not the Project's.
+        self.projects.activate(project)
+        await self.delegate(project, agent)
+        return self.projects.get(project.id) or project
 
     # --- delegation ---------------------------------------------------------
 
@@ -222,19 +268,196 @@ class ProjectOrchestrator:
     ) -> bool:
         """Hand the Goal (or one added Task) over.  ``False`` if unreachable.
 
+        This returns once the Agent has *taken* the work, not once it has done
+        it: a Project runs for as long as it needs, and what is outstanding is
+        recorded on the Agent so :meth:`reconcile` can pick it up later — after
+        a restart if need be.
+
         Same rule as assignment: an unreachable Agent is recorded on the Agent
         and retried later, never written onto the Project as a blocker.
         """
+        assignment = AgentAssignment(
+            kind="ADD_TASK" if task is not None else "ASSIGN_GOAL",
+            task_id=(task or {}).get("id"),
+        )
+        return await self.hand_over(project, agent, assignment)
+
+    async def hand_over(
+        self, project: Project, agent: Agent, assignment: AgentAssignment
+    ) -> bool:
+        """Send one hand-over and record how it went.  ``False`` if unreachable."""
+        assignment.attempts += 1
+        envelope = self.gateway.envelope(project, assignment)
         try:
-            if task is None:
-                await self.gateway.assign_goal(project, agent)
-            else:
-                await self.gateway.add_task(project, agent, task)
+            dispatch = await self.gateway.deliver(project, agent, envelope)
         except AgentUnavailable as exc:
-            self.agents.record_unavailable(agent, str(exc))
+            self._unavailable(agent, assignment, str(exc))
             return False
+
+        assignment.handle = dispatch.handle
+        assignment.status = (
+            AssignmentStatus.DISPATCHED if dispatch.pending else AssignmentStatus.ANSWERED
+        )
+        assignment.dispatched_at = utcnow()
+        assignment.next_attempt_at = None
+        assignment.error = ""
+        self.agents.record_assignment(agent, assignment)
         self.agents.clear_unavailable(agent)
+        for message in self.gateway.record(dispatch.messages):
+            await self.handle_message(message)
         return True
+
+    def _unavailable(
+        self, agent: Agent, assignment: AgentAssignment, reason: str
+    ) -> None:
+        """Record a hand-over that did not get through, and when to try again.
+
+        Bounded on purpose: NEXUS SEED retries a few times with a widening gap
+        and then stops asking.  Never a busy loop, and never a Project failure —
+        the Project keeps its status and a person can send it on its way again.
+        """
+        exhausted = assignment.attempts >= self.max_dispatch_attempts
+        assignment.status = (
+            AssignmentStatus.UNAVAILABLE if exhausted else AssignmentStatus.PENDING
+        )
+        assignment.error = reason
+        assignment.next_attempt_at = (
+            None if exhausted else utcnow() + timedelta(seconds=self._backoff(assignment))
+        )
+        self.agents.record_assignment(agent, assignment)
+        self.agents.record_unavailable(agent, reason)
+        logger.warning(
+            "project %s hand-over attempt %d failed (%s): %s",
+            agent.project_id,
+            assignment.attempts,
+            "giving up for now" if exhausted else f"retry at {assignment.next_attempt_at}",
+            reason,
+        )
+
+    def _backoff(self, assignment: AgentAssignment) -> float:
+        """Seconds to wait before the next attempt, widening but capped."""
+        return min(
+            self.retry_base_seconds * (2 ** (assignment.attempts - 1)),
+            self.retry_max_seconds,
+        )
+
+    # --- converging with the Agents ----------------------------------------
+
+    async def reconcile(self) -> list[A2AMessage]:
+        """Bring every live Project back in step with its Agent.
+
+        The one loop that moves Projects forward outside a request: it re-adopts
+        Agents this process has never seen, asks whether outstanding hand-overs
+        have finished, retries the ones that never got through, and hands over
+        again when an Agent has forgotten the work.  It is idempotent and reads
+        everything from SQLite, so calling it after a restart *is* recovery —
+        there is no second reconciliation path to keep in step with this one.
+        """
+        handled: list[A2AMessage] = []
+        for project in self.projects.live():
+            agent = self.agents.for_project(project.id)
+            if agent is None:
+                continue
+            assignment = agent.assignment
+            if assignment is None or not assignment.is_open:
+                continue
+            handled.extend(await self._advance(project, agent, assignment))
+        handled.extend(await self.drain())
+        return handled
+
+    async def _advance(
+        self, project: Project, agent: Agent, assignment: AgentAssignment
+    ) -> list[A2AMessage]:
+        """Move one Project's outstanding hand-over along by one step."""
+        try:
+            await self.agents.reattach(project, agent)
+        except AgentUnavailable as exc:
+            logger.warning("cannot reach the runtime holding %s: %s", agent.agent_id, exc)
+            return []
+
+        if assignment.status is AssignmentStatus.DISPATCHED:
+            return await self._answer(project, agent, assignment)
+        # UNAVAILABLE means the retry budget is spent, so reconcile stops asking.
+        # The Project keeps its Agent and its status, and the next thing a person
+        # sends it starts a fresh hand-over.
+        if assignment.status is AssignmentStatus.PENDING and assignment.due(utcnow()):
+            await self.hand_over(project, agent, assignment)
+        return []
+
+    async def _answer(
+        self, project: Project, agent: Agent, assignment: AgentAssignment
+    ) -> list[A2AMessage]:
+        """Ask whether a dispatched hand-over has finished, and act on the answer."""
+        try:
+            messages = await self.gateway.collect(agent, assignment.handle)
+        except RemoteWorkLost as exc:
+            # The Agent answered, and its answer was that the work is gone.
+            # NEXUS SEED holds the durable Project, so it can safely be handed
+            # over again — and only here, where nothing can still be running.
+            logger.info("project %s: %s; handing it over again", project.id, exc)
+            assignment.status = AssignmentStatus.PENDING
+            assignment.handle = ""
+            self.agents.record_assignment(agent, assignment)
+            await self.hand_over(project, agent, assignment)
+            return []
+        except AgentUnavailable as exc:
+            self._unavailable(agent, assignment, str(exc))
+            return []
+
+        if messages is None:
+            if self._overdue(assignment):
+                await self.gateway.abandon(agent, assignment.handle)
+                self._unavailable(
+                    agent,
+                    assignment,
+                    f"agent did not answer within {self.assignment_timeout_seconds}s",
+                )
+            return []
+
+        assignment.status = AssignmentStatus.ANSWERED
+        self.agents.record_assignment(agent, assignment)
+        self.agents.clear_unavailable(agent)
+        for message in messages:
+            await self.handle_message(message)
+        return list(messages)
+
+    def _overdue(self, assignment: AgentAssignment) -> bool:
+        """Whether a dispatched hand-over has been outstanding for too long."""
+        if assignment.dispatched_at is None:
+            return False
+        return (
+            utcnow() - assignment.dispatched_at
+        ).total_seconds() >= self.assignment_timeout_seconds
+
+    async def settle(
+        self, project_id: str, *, timeout: float = 1800.0, interval: float = 2.0
+    ) -> Project | None:
+        """Reconcile until ``project_id`` stops being worked on, or time runs out.
+
+        For a caller that wants to watch one Project through — a command line, a
+        test.  A resident NEXUS SEED never needs this: its tick reconciles.
+        """
+        deadline = utcnow() + timedelta(seconds=timeout)
+        while True:
+            project = self.projects.get(project_id)
+            if project is None or not self.is_working(project):
+                return project
+            if utcnow() >= deadline:
+                logger.info("stopped waiting on project %s", project_id)
+                return project
+            await asyncio.sleep(interval)
+            await self.reconcile()
+
+    def is_working(self, project: Project) -> bool:
+        """Whether this Project has a hand-over an Agent has not answered yet."""
+        if not project.is_live:
+            return False
+        agent = self.agents.for_project(project.id)
+        assignment = agent.assignment if agent is not None else None
+        return assignment is not None and assignment.status in (
+            AssignmentStatus.PENDING,
+            AssignmentStatus.DISPATCHED,
+        )
 
     # --- messages from agents ---------------------------------------------
 
@@ -368,4 +591,11 @@ class ProjectOrchestrator:
         self.close()
 
 
-__all__ = ["MAX_DRAIN_ROUNDS", "ProjectOrchestrator"]
+__all__ = [
+    "ASSIGNMENT_TIMEOUT_SECONDS",
+    "MAX_DISPATCH_ATTEMPTS",
+    "MAX_DRAIN_ROUNDS",
+    "RETRY_BASE_SECONDS",
+    "RETRY_MAX_SECONDS",
+    "ProjectOrchestrator",
+]

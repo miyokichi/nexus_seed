@@ -91,6 +91,22 @@ class Project:
         """Whether this project still needs an Agent."""
         return self.status in LIVE_STATUSES
 
+    @property
+    def current_blockers(self) -> list[dict[str, Any]]:
+        """What is in the way *now*.
+
+        A blocker is never deleted — once something has stopped a Project, that
+        it happened is part of the Project's history.  Resolving one records
+        when and by what, and leaves it in :attr:`blockers`.
+        """
+        return [blocker for blocker in self.blockers if not blocker.get("resolved_at")]
+
+    def task(self, task_id: str | None) -> dict[str, Any] | None:
+        """Return the Task with ``task_id``, or ``None``."""
+        if not task_id:
+            return None
+        return next((task for task in self.tasks if task.get("id") == task_id), None)
+
     def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON representation of this project."""
         return {
@@ -103,6 +119,7 @@ class Project:
             "parent_project_id": self.parent_project_id,
             "summary": self.summary,
             "blockers": list(self.blockers),
+            "current_blockers": self.current_blockers,
             "tasks": list(self.tasks),
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -117,7 +134,9 @@ class Project:
             "priority": self.priority,
             "summary": self.summary,
             "open_tasks": [task.get("description", "") for task in self.tasks],
-            "blockers": [blocker.get("reason", "") for blocker in self.blockers],
+            "blockers": [
+                blocker.get("reason", "") for blocker in self.current_blockers
+            ],
         }
 
 
@@ -129,6 +148,104 @@ class AgentStatus(str, Enum):
     IDLE = "IDLE"
     STOPPED = "STOPPED"
     FAILED = "FAILED"
+
+
+class AssignmentStatus(str, Enum):
+    """How far one hand-over to an Agent has got."""
+
+    #: Decided, not yet accepted by the Agent Runtime.
+    PENDING = "PENDING"
+    #: The Agent has the work; NEXUS SEED is waiting for the answer.
+    DISPATCHED = "DISPATCHED"
+    #: The Agent answered; nothing is outstanding.
+    ANSWERED = "ANSWERED"
+    #: Could not be handed over, and the retry budget is spent.  This says
+    #: nothing about whether the Goal can be reached.
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+#: Assignment states that still need NEXUS SEED to do something about them.
+OPEN_ASSIGNMENTS = frozenset(
+    {AssignmentStatus.PENDING, AssignmentStatus.DISPATCHED, AssignmentStatus.UNAVAILABLE}
+)
+
+
+@dataclass
+class AgentAssignment:
+    """What an Agent currently owes NEXUS SEED, and how the hand-over went.
+
+    Kept on the Agent record rather than in a table of its own: an Agent owns
+    exactly one Project and has at most one outstanding hand-over, so this *is*
+    the Agent's current state.  It carries no copy of the Project — ``kind``
+    and ``task_id`` are enough to rebuild what was sent from the Project itself.
+
+    ``handle`` is what the Agent Runtime gave back to ask about later.  Storing
+    it is what lets a Project being worked on outlive the NEXUS SEED process.
+    """
+
+    kind: str = "ASSIGN_GOAL"
+    task_id: str | None = None
+    status: AssignmentStatus = AssignmentStatus.PENDING
+    handle: str = ""
+    attempts: int = 0
+    dispatched_at: datetime | None = None
+    next_attempt_at: datetime | None = None
+    error: str = ""
+
+    @property
+    def is_open(self) -> bool:
+        """Whether NEXUS SEED still has something to do about this hand-over."""
+        return self.status in OPEN_ASSIGNMENTS
+
+    def due(self, now: datetime) -> bool:
+        """Whether a retry of this hand-over may be attempted at ``now``."""
+        return self.next_attempt_at is None or now >= self.next_attempt_at
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the JSON form stored on the Agent record."""
+        return {
+            "kind": self.kind,
+            "task_id": self.task_id,
+            "status": self.status.value,
+            "handle": self.handle,
+            "attempts": self.attempts,
+            "dispatched_at": _iso(self.dispatched_at),
+            "next_attempt_at": _iso(self.next_attempt_at),
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "AgentAssignment | None":
+        """Rebuild an assignment from an Agent's metadata, or ``None``."""
+        if not isinstance(data, dict) or not data:
+            return None
+        try:
+            status = AssignmentStatus(data.get("status"))
+        except ValueError:
+            return None
+        return cls(
+            kind=str(data.get("kind") or "ASSIGN_GOAL"),
+            task_id=data.get("task_id"),
+            status=status,
+            handle=str(data.get("handle") or ""),
+            attempts=int(data.get("attempts") or 0),
+            dispatched_at=_parse(data.get("dispatched_at")),
+            next_attempt_at=_parse(data.get("next_attempt_at")),
+            error=str(data.get("error") or ""),
+        )
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _parse(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -143,6 +260,19 @@ class Agent:
     agent_id: str = field(default_factory=new_agent_id)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
+
+    @property
+    def assignment(self) -> AgentAssignment | None:
+        """The hand-over this Agent is currently working on, if any."""
+        return AgentAssignment.from_dict(self.metadata.get("assignment"))
+
+    def with_assignment(self, assignment: AgentAssignment | None) -> "Agent":
+        """Record (or clear) the current hand-over on this Agent."""
+        metadata = {k: v for k, v in self.metadata.items() if k != "assignment"}
+        if assignment is not None:
+            metadata["assignment"] = assignment.to_dict()
+        self.metadata = metadata
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable JSON representation of this agent."""
@@ -304,12 +434,15 @@ class A2AMessage:
 
 __all__ = [
     "AGENT_ID_PREFIX",
+    "OPEN_ASSIGNMENTS",
     "PROJECT_ID_PREFIX",
     "A2AMessage",
     "A2AMessageType",
     "BLOCKING_ESCALATIONS",
     "Agent",
+    "AgentAssignment",
     "AgentStatus",
+    "AssignmentStatus",
     "LIVE_STATUSES",
     "Project",
     "ProjectAgentConfig",

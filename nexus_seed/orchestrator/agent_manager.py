@@ -14,7 +14,14 @@ from typing import Any
 from ..core.event import utcnow
 from ..storage.orchestrator_store import AgentStore
 from .agent_runtime import AgentRuntime, AgentUnavailable
-from .models import Agent, AgentStatus, Project, ProjectAgentConfig, new_agent_id
+from .models import (
+    Agent,
+    AgentAssignment,
+    AgentStatus,
+    Project,
+    ProjectAgentConfig,
+    new_agent_id,
+)
 
 logger = logging.getLogger("nexus_seed.orchestrator.agent_manager")
 
@@ -115,6 +122,15 @@ class AgentManager:
         """Record a new agent status."""
         agent.status = status
         return self.store.save(agent)
+
+    def record_assignment(self, agent: Agent, assignment: AgentAssignment) -> Agent:
+        """Record what this Agent currently owes NEXUS SEED."""
+        agent.with_assignment(assignment)
+        return self.store.save(agent)
+
+    async def reattach(self, project: Project, agent: Agent) -> None:
+        """Make sure the runtime can talk to an Agent read back from the database."""
+        await self.runtime.attach(self.build_config(project, agent))
 
     def record_unavailable(self, agent: Agent, reason: str) -> Agent:
         """Record that an Agent could not be reached, keeping it as the owner.

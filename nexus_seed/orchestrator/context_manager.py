@@ -4,6 +4,14 @@ The router must decide "does this belong to something already running?", so it
 needs the live projects and their state — but not the whole database.  This
 builds one compact, regenerable :class:`RoutingContext` per decision, in a fixed
 order so the same facts always read the same way.
+
+Live means every project that still needs an Agent, so a BLOCKED or
+WAITING_HUMAN one is offered too: a person answering what a project is stuck on
+must reach *that* project rather than start a new one.
+
+What the user asked for before is already here, in compressed form — a project's
+goal is a request, and its open tasks are the follow-ups it has been given — so
+no separate history of requests is kept or replayed at the router.
 """
 
 from __future__ import annotations
@@ -46,6 +54,7 @@ class ContextManager:
         origin_project_id: str | None = None,
     ) -> RoutingContext:
         """Compile the context for one routing decision."""
+        # Ordered by priority, so the most urgent projects are read first.
         live = self.projects.live()
         active_projects = [project.to_routing_dict() for project in live]
 

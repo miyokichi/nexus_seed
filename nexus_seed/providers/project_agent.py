@@ -30,14 +30,14 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..orchestrator.agent_runtime import AgentUnavailable
+from ..orchestrator.agent_runtime import AgentUnavailable, Dispatch, RemoteWorkLost
 from ..orchestrator.models import A2AMessage, A2AMessageType, ProjectAgentConfig
 from .a2a import (
+    TERMINAL_STATES,
+    UNSUPPORTED_STATES,
     A2AClient,
     A2AEndpoint,
     A2AProtocolError,
-    A2ATaskUnfinished,
-    await_task,
     task_state,
 )
 from .skills import SkillCatalog
@@ -187,10 +187,16 @@ class A2AProjectAgentTransport:
         )
         return self.endpoint.url
 
-    async def send(
+    async def start(
         self, config: ProjectAgentConfig, envelope: dict[str, Any]
-    ) -> list[A2AMessage]:
-        """Delegate the project (or an added task) and return what came back."""
+    ) -> Dispatch:
+        """Hand the project (or an added task) over and come straight back.
+
+        A Project takes as long as it takes, so this waits only for the Agent
+        to *accept* the work.  The remote task id comes back as the dispatch
+        handle; NEXUS SEED stores it and asks about it later, which is what
+        lets a Project outlive the process that started it.
+        """
         assignment = self.assignment(config, envelope)
         params = _send_params(assignment, config)
         try:
@@ -199,25 +205,59 @@ class A2AProjectAgentTransport:
             raise AgentUnavailable(f"project agent unreachable: {exc}") from exc
 
         if str(result.get("kind") or "") == "message":
-            parts = result.get("parts") or []
-        else:
-            try:
-                task = await await_task(
-                    self.client,
-                    self.endpoint,
-                    result,
-                    clock=self._clock,
-                    cancel=self.cancel,
-                )
-            except A2ATaskUnfinished as exc:
-                raise AgentUnavailable(f"project agent did not answer: {exc}") from exc
-            state = task_state(task)
-            if state != "completed":
-                raise AgentUnavailable(
-                    f"project agent task {state}: {_error_text(task) or 'no reason given'}"
-                )
-            parts = _result_parts(task)
-        return _messages(parts, config)
+            # Answered without ever becoming a task; nothing to ask about later.
+            return Dispatch(messages=_messages(result.get("parts") or [], config))
+
+        handle = str(result.get("id") or "")
+        if task_state(result) in TERMINAL_STATES:
+            return Dispatch(messages=self._finished(result, config))
+        if not handle:
+            raise AgentUnavailable("project agent returned a task without an id")
+        logger.info(
+            "project %s handed to agent %s as remote task %s",
+            config.project_id,
+            config.agent_id,
+            handle,
+        )
+        return Dispatch(handle=handle)
+
+    async def collect(
+        self, config: ProjectAgentConfig, handle: str
+    ) -> list[A2AMessage] | None:
+        """Ask once whether ``handle`` has finished; ``None`` while it has not.
+
+        A single question, never a wait, and nothing about the dispatch is kept
+        here: the handle and the config both come from the caller, so an answer
+        is still readable by a NEXUS SEED that restarted while the Agent worked.
+        """
+        try:
+            task = await asyncio.to_thread(self.client.call, "tasks/get", {"id": handle})
+        except A2AProtocolError as exc:
+            if exc.task_not_found:
+                raise RemoteWorkLost(
+                    f"project agent no longer knows task {handle}"
+                ) from exc
+            raise AgentUnavailable(f"project agent unreachable: {exc}") from exc
+
+        state = task_state(task)
+        if state in UNSUPPORTED_STATES:
+            await self.abandon(handle)
+            raise AgentUnavailable(
+                f"project agent task needs {state}, which this channel cannot supply"
+            )
+        if state not in TERMINAL_STATES:
+            return None
+        return self._finished(task, config)
+
+    def _finished(self, task: dict[str, Any], config: ProjectAgentConfig) -> list[A2AMessage]:
+        """Read a terminal task, or say why it is not an answer."""
+        state = task_state(task)
+        if state != "completed":
+            raise AgentUnavailable(
+                f"project agent task {state}: {_error_text(task) or 'no reason given'}"
+            )
+        return _messages(_result_parts(task), config)
+
 
     def assignment(
         self, config: ProjectAgentConfig, envelope: dict[str, Any]
@@ -245,15 +285,20 @@ class A2AProjectAgentTransport:
             assignment["task"] = envelope.get("task") or {}
         return assignment
 
-    async def cancel(self, task_id: str | None) -> bool:
-        """Best-effort remote cancel; our own lifecycle never depends on it."""
-        if not task_id:
+    async def abandon(self, handle: str) -> bool:
+        """Stop caring about a dispatch, telling the Agent if it will listen.
+
+        Best effort by contract: NEXUS SEED owns its own lifecycle, so an Agent
+        that refuses, times out or has forgotten the task is logged and
+        otherwise ignored.
+        """
+        if not handle:
             return False
         try:
-            await asyncio.to_thread(self.client.call, "tasks/cancel", {"id": task_id})
+            await asyncio.to_thread(self.client.call, "tasks/cancel", {"id": handle})
             return True
         except Exception:  # noqa: BLE001 - a refused cancel must not break us
-            logger.warning("tasks/cancel failed for task %s", task_id, exc_info=True)
+            logger.warning("tasks/cancel failed for task %s", handle, exc_info=True)
             return False
 
     async def close(self, agent_id: str) -> None:

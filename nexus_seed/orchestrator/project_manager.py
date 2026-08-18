@@ -80,7 +80,9 @@ class ProjectManager:
         logger.info("project %s: %s -> %s", project.id, project.status.value, status.value)
         project.status = status
         if status in TERMINAL_STATUSES:
-            project.blockers = []
+            # Nothing is in the way of a finished Project, but that something
+            # once was stays in its history.
+            self._resolve(project, by=f"project {status.value.lower()}")
         return self.store.save(project)
 
     def assign_agent(self, project: Project, agent_id: str) -> Project:
@@ -129,10 +131,35 @@ class ProjectManager:
         ]
         return self.store.save(project)
 
-    def clear_blockers(self, project: Project) -> Project:
-        """Drop all recorded blockers (the project can proceed again)."""
-        project.blockers = []
+    def resolve_blockers(self, project: Project, *, by: str) -> Project:
+        """Mark what was in the way as no longer in the way, and keep it.
+
+        Blockers are audit, not just control state: "SAP access was missing,
+        and then a person said to proceed without it" is the interesting part,
+        so resolving records ``by`` and ``resolved_at`` rather than deleting.
+        """
+        resolved = self._resolve(project, by=by)
+        if resolved:
+            logger.info("project %s: %d blocker(s) resolved by %s", project.id, resolved, by)
         return self.store.save(project)
+
+    def clear_blockers(self, project: Project) -> Project:
+        """Mark every current blocker resolved (the project can proceed again)."""
+        return self.resolve_blockers(project, by="resolved")
+
+    @staticmethod
+    def _resolve(project: Project, *, by: str) -> int:
+        """Stamp every current blocker as resolved; return how many there were."""
+        now = utcnow().isoformat()
+        resolved = 0
+        blockers = []
+        for blocker in project.blockers:
+            if not blocker.get("resolved_at"):
+                blocker = {**blocker, "resolved_at": now, "resolved_by": by}
+                resolved += 1
+            blockers.append(blocker)
+        project.blockers = blockers
+        return resolved
 
     # --- lifecycle shorthands ---------------------------------------------
 

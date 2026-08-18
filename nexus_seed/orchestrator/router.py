@@ -24,14 +24,19 @@ logger = logging.getLogger("nexus_seed.orchestrator.router")
 
 INSTRUCTION = (
     "You route an incoming request for a project orchestrator.\n"
-    "Decide whether it belongs to one of the already active projects or is an "
-    "independent goal of its own.\n"
+    "Decide whether it belongs to one of the projects already under way or is "
+    "an independent goal of its own.\n"
     "- ADD_TASK_TO_PROJECT: it is more work for an existing project's goal. "
     "Set target_project_id and proposed_task.\n"
     "- CREATE_PROJECT: it is an independent goal. Set proposed_goal.\n"
     "- UPDATE_PROJECT: it only changes an existing project's framing or "
     "priority. Set target_project_id.\n"
     "- IGNORE: it needs no project work at all.\n"
+    "A project listed as BLOCKED or WAITING_HUMAN is waiting for a person. If "
+    "the request answers what one of them is waiting on — supplying what was "
+    "missing, dropping the requirement, or telling it how to proceed without "
+    "it — that is ADD_TASK_TO_PROJECT on that project, not a new goal. Read "
+    "each project's blockers to judge this.\n"
     "Judge by meaning, not by shared words. Answer with JSON only."
 )
 
