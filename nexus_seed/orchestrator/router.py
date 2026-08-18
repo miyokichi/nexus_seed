@@ -85,6 +85,13 @@ class ProjectRouter:
 
         decision = self._parse(result.parsed_output)
         if decision is None:
+            # Say what came back.  This is the one decision NEXUS SEED makes
+            # for itself, and "unusable output" with nothing else to go on
+            # leaves no way to tell a bad prompt from a bad model.
+            logger.warning(
+                "routing backend returned unusable output: %r",
+                result.parsed_output if result.parsed_output is not None else result.raw_output,
+            )
             return self._fallback(context, "routing backend returned unusable output")
         return self._validate(decision, context)
 
@@ -119,6 +126,11 @@ class ProjectRouter:
 
         if decision.action in (RoutingAction.ADD_TASK_TO_PROJECT, RoutingAction.UPDATE_PROJECT):
             if decision.target_project_id not in known:
+                logger.warning(
+                    "routing backend named project %r; known: %s",
+                    decision.target_project_id,
+                    sorted(known),
+                )
                 return self._fallback(
                     context,
                     f"{decision.action.value} named unknown project "
