@@ -222,6 +222,8 @@ class Runtime:
         # its own beyond the stores it reads.
         self.ingress = IngressService(self)
         self.resource_scope: ResourceScope | None = None
+        #: Set by application wiring when requests are routed to Projects.
+        self.project_orchestrator = None
         self.resource_service = ResourceService(self.resource_store)
         #: Extractors available to extraction processes.  Adding a format is a
         #: registration here, never a Runtime change (Invariant 38).
@@ -388,6 +390,7 @@ class Runtime:
             resource_store=self.resource_store,
             adapters=self.adapters,
             ingress=self.ingress,
+            project_orchestrator=None,
             capability_store=self.capability_store,
             plan_store=self.plan_store,
             decision_store=self.decision_store,
@@ -580,6 +583,15 @@ class Runtime:
                 )
             )
         return changed
+
+    def set_project_orchestrator(self, orchestrator) -> None:
+        """Give Processes a Project Orchestrator to hand incoming requests to.
+
+        In-memory like every other registration: the orchestrator's Projects
+        are durable, but which object serves them is application wiring.
+        """
+        self.project_orchestrator = orchestrator
+        self.executor.project_orchestrator = orchestrator
 
     def register_backend(self, name: str, backend: ExecutionBackend) -> None:
         """Register an execution backend under ``name`` (e.g. ``"llm"``).

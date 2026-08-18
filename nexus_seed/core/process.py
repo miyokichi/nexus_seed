@@ -469,6 +469,10 @@ class ProcessContext:
     adapters: object | None = None
     #: The ingress boundary, so an observer can take what it polled *in*.
     ingress: object | None = None
+    #: The Project Orchestrator, for the one Process that carries a request to
+    #: it.  A boundary a handler may drive, like ``ingress`` — deliberately not
+    #: on ``services``, which stays reads-only.
+    project_orchestrator: object | None = None
     context_snapshot_id: uuid.UUID | None = None
     activation_id: str | None = None
     logger: logging.Logger = field(

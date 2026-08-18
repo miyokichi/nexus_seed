@@ -33,9 +33,16 @@ from .operations import (
     submit_control_command,
 )
 from .control.models import HumanIdentity
-from .orchestrator import Agent, Project, RoutingDecision
+from .orchestrator import (
+    Agent,
+    AssignmentStatus,
+    Project,
+    ProjectOrchestrator,
+    RoutingDecision,
+)
 from .orchestrator_config import ProjectAgentConfigurationError, build_orchestrator
 from .processes.autonomy import bootstrap_autonomy
+from .processes.project_orchestration import bootstrap_project_orchestration
 from .orchestration import bootstrap_orchestration
 from .processes.control import bootstrap_control
 from .processes.extension import bootstrap_extension
@@ -70,6 +77,9 @@ class AppSettings:
     phase6_enabled: bool = True
     #: Human Interface Layer; False removes every Cockpit HTTP route.
     cockpit_enabled: bool = True
+    #: Route incoming messages to the Project Orchestrator.  False leaves a
+    #: ``human_message`` handled exactly as the pre-redesign application did.
+    project_orchestrator_enabled: bool = False
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -108,6 +118,9 @@ class AppSettings:
             )
         phase6_enabled = _read_bool("NEXUS_SEED_PHASE6_ENABLED", True)
         cockpit_enabled = _read_bool("NEXUS_SEED_COCKPIT_ENABLED", True)
+        orchestrator_enabled = _read_bool(
+            "NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED", False
+        )
         return cls(
             data_dir=data_dir,
             host=host,
@@ -119,6 +132,7 @@ class AppSettings:
             control_permissions=permissions,
             phase6_enabled=phase6_enabled,
             cockpit_enabled=cockpit_enabled,
+            project_orchestrator_enabled=orchestrator_enabled,
         )
 
 
@@ -153,6 +167,22 @@ def bootstrap_application(
     runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)
     _configure_external_agents(runtime, env_file=env_file)
+    _configure_project_orchestrator(runtime, settings, env_file=env_file)
+
+
+def _configure_project_orchestrator(
+    runtime: Runtime, settings: AppSettings, *, env_file: str | Path
+) -> ProjectOrchestrator | None:
+    """Give the runtime a Project Orchestrator, if the flag asks for one.
+
+    It shares the runtime's database, so Projects, Agents and the audited A2A
+    channel live beside everything else and are recovered the same way.
+    """
+    if not settings.project_orchestrator_enabled:
+        return None
+    orchestrator = build_orchestrator(runtime.db, env_file=env_file)
+    bootstrap_project_orchestration(runtime, orchestrator, enabled=True)
+    return orchestrator
 
 
 def _configure_external_agents(runtime: Runtime, *, env_file: str | Path) -> None:
@@ -235,6 +265,18 @@ def build_parser() -> argparse.ArgumentParser:
     project.add_argument("text", help="what you want done, in your own words")
     project.add_argument(
         "--priority", type=int, default=0, help="how urgent this is (higher runs first)"
+    )
+    project.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help="report as soon as the agent has taken the work, without waiting it out",
+    )
+    project.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=1800.0,
+        help="how long to watch the project before reporting (default: 1800)",
     )
     project.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
@@ -404,10 +446,15 @@ async def run(args: argparse.Namespace) -> int:
         return 0 if result.get("status") == "EXECUTED" else 1
 
     runtime = build_runtime(settings, env_file=args.env_file)
+    orchestrator = getattr(runtime, "project_orchestrator", None)
     server: WebhookServer | None = None
     try:
         await runtime.run_pending()
         await runtime.tick()
+        if orchestrator is not None:
+            # Recovery for Projects is the same loop that runs them: whatever an
+            # Agent did while NEXUS SEED was down is picked up here.
+            await orchestrator.reconcile()
         if args.check_llm:
             return await _check_llm(runtime)
         if args.once:
@@ -438,6 +485,8 @@ async def run(args: argparse.Namespace) -> int:
         while True:
             await asyncio.sleep(settings.tick_seconds)
             await runtime.tick()
+            if orchestrator is not None:
+                await orchestrator.reconcile()
     finally:
         if server is not None:
             await server.stop()
@@ -489,11 +538,12 @@ def _read_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _run_project(args: argparse.Namespace, settings: AppSettings) -> int:
-    """Route one request through the Project Orchestrator and report the result.
+    """Route one request through the Project Orchestrator and report where it got.
 
-    Blocking on purpose: the Project Agent is given the whole Goal and this
-    waits for what it reports back.  Everything it changes — the Project, its
-    Agent and the audited A2A channel — is written to SQLite as it happens, so
+    The explicit door into the orchestrator, so by default it watches the
+    Project through rather than reporting "accepted" — pass ``--no-wait`` for
+    the same hand-off a resident NEXUS SEED does.  Either way the Project, its
+    Agent and the audited A2A channel are written to SQLite as they change, so
     interrupting the wait loses the report, never the project.
     """
     _validate_data_dir(settings.data_dir)
@@ -503,6 +553,8 @@ async def _run_project(args: argparse.Namespace, settings: AppSettings) -> int:
     )
     try:
         decision, project = await orchestrator.submit(args.text, priority=args.priority)
+        if project is not None and args.wait:
+            project = await orchestrator.settle(project.id, timeout=args.wait_seconds)
         agent = (
             orchestrator.agents.for_project(project.id) if project is not None else None
         )
@@ -527,6 +579,11 @@ def _print_project(
                     "routing": decision.to_dict(),
                     "project": project.to_dict() if project else None,
                     "agent": agent.to_dict() if agent else None,
+                    "assignment": (
+                        agent.assignment.to_dict()
+                        if agent is not None and agent.assignment is not None
+                        else None
+                    ),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -544,13 +601,16 @@ def _print_project(
     print(f"Goal:    {project.goal}")
     if project.summary:
         print(f"Summary: {project.summary}")
-    for blocker in project.blockers:
+    for blocker in project.current_blockers:
         print(f"Blocked: {blocker['kind']} - {blocker['reason']}")
+    assignment = agent.assignment if agent else None
+    if assignment is not None and assignment.status is AssignmentStatus.DISPATCHED:
+        print("Working:  the agent has the project and has not answered yet")
     unavailable = (agent.metadata.get("unavailable") if agent else None) or {}
-    if unavailable:
+    if unavailable and (assignment is None or assignment.is_open):
         # The Project is untouched and still delegable; the runtime was not there.
         print(f"Agent unavailable: {unavailable.get('reason', '')}")
-        print("The project keeps its state; run the command again once the agent is up.")
+        print("The project keeps its state and the hand-over is retried.")
 
 
 def _print_operational_status(report: dict[str, Any], *, as_json: bool) -> None:
@@ -692,6 +752,14 @@ def _print_started(runtime: Runtime, settings: AppSettings, bound_port: int) -> 
     print(f"  token:   {token_state}")
     print(f"  database: {settings.data_dir / 'nexus_seed.db'}")
     print(f"  LLM:     {llm_state}")
+    orchestrator = getattr(runtime, "project_orchestrator", None)
+    if orchestrator is not None:
+        print(
+            "  projects: nexus-seed task goes to the Project Orchestrator "
+            f"({orchestrator.agent_runtime.name} agents)"
+        )
+    else:
+        print("  projects: orchestrator off (NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED)")
     print("Press Ctrl+C to stop. Durable work resumes on the next start.")
 
 

@@ -76,6 +76,7 @@ class Executor:
         resource_store=None,
         adapters=None,
         ingress=None,
+        project_orchestrator=None,
         capability_store=None,
         plan_store=None,
         decision_store=None,
@@ -122,6 +123,7 @@ class Executor:
         self.resource_store = resource_store
         self.adapters = adapters
         self.ingress = ingress
+        self.project_orchestrator = project_orchestrator
 
     async def execute(self, instance: ProcessInstance) -> ProcessResult:
         """Run one activation of ``instance`` and return its result."""
@@ -198,6 +200,7 @@ class Executor:
             backends=self.backends,
             adapters=self.adapters,
             ingress=self.ingress,
+            project_orchestrator=self.project_orchestrator,
             context_snapshot_id=snapshot_id,
             activation_id=key,
             logger=logging.getLogger(f"nexus_seed.process.{definition.name}"),
