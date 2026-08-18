@@ -182,7 +182,34 @@ def _configure_project_orchestrator(
         return None
     orchestrator = build_orchestrator(runtime.db, env_file=env_file)
     bootstrap_project_orchestration(runtime, orchestrator, enabled=True)
+    _stand_down_message_interpretation(runtime)
     return orchestrator
+
+
+def _stand_down_message_interpretation(runtime: Runtime) -> None:
+    """Stop a human message *also* being interpreted into World State.
+
+    With the orchestrator on, an incoming message is a request for Project
+    work, and that is the whole of what happens to it.  Leaving the earlier
+    interpreter triggered as well ran two LLM calls at once, on one event, for
+    two different answers: twice the wait, and on a small local model the two
+    prompts were observed interfering — the router was handed the
+    interpreter's answer and fell back to creating a project.
+
+    The definition stays registered and its handler stays bound; only its
+    trigger is stood down, so turning the flag off restores it exactly.
+    """
+    from .processes.llm_interpret import INTERPRET_LLM, interpret_event_llm
+
+    if runtime.get_definition(INTERPRET_LLM.name, INTERPRET_LLM.version) is None:
+        return  # the LLM is disabled; there is nothing interpreting anyway
+    runtime.register_process(
+        replace(INTERPRET_LLM, trigger_event_types=()), interpret_event_llm
+    )
+    logger.info(
+        "human messages are routed to Projects only; %s is not triggered by them",
+        INTERPRET_LLM.name,
+    )
 
 
 def _configure_external_agents(runtime: Runtime, *, env_file: str | Path) -> None:
