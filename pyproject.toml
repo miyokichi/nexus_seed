@@ -30,3 +30,6 @@ packages = ["nexus_seed"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: needs an external Project Agent running (see tests/integration)",
+]

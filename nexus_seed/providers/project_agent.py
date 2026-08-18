@@ -169,11 +169,6 @@ class A2AProjectAgentTransport:
         self.skills = dict(skills or {})
         self._clock = clock
 
-    @property
-    def url(self) -> str:
-        """The endpoint every Project Agent of this transport is reached at."""
-        return self.endpoint.url
-
     async def open(self, config: ProjectAgentConfig) -> str:
         """Check the remote runtime answers as an A2A agent and return its URL.
 
