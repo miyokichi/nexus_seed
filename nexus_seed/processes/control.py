@@ -87,7 +87,16 @@ generate_review_report), never a generic lifecycle phrase such as advance_human_
 fulfill_goal, manage_intention, or decompose_goal. Do not propose Actions, providers,
 permissions, Core changes, or capability acquisition. Capability matching and acquisition
 policy run later, after this proposal is validated. Prefer existing capabilities when they
-actually satisfy the work; otherwise name the precise missing competence truthfully."""
+actually satisfy the work; otherwise name the precise missing competence truthfully.
+One Work is one outcome, not one step. When several competences only make sense as a chain,
+each consuming what the last produced, list them all in required_capabilities of a single
+work item, ordered by that data flow. Work items are matched and started independently, so a
+chain split across several of them runs out of order with nothing to carry the intermediate
+result. Split into separate work items only when either could run first, or when one outcome
+stands on its own. State available_input_types and required_output_types as data type names
+(cleaned_dataframe, sales_trend_table, analysis_report) rather than activities, reusing a name
+exactly when it is the same thing: that is what links one capability's output to the next
+capability's input."""
 
 
 EVALUATE_GOAL = ProcessDefinition(

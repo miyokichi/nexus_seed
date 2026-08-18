@@ -1,73 +1,42 @@
 {
   "name": "perform_causal_analysis",
   "version": "1",
+  "description": "Isolate and rank the factors that account for a measured change, with the evidence for each.",
+  "capabilities": ["perform_causal_analysis"],
+  "input_ports": ["sales_trend_table"],
+  "output_ports": ["causal_factors_list"],
+  "required_permissions": [],
+  "instruction": "SKILL.md",
   "enabled": true,
-  "description": "Analyze a sales trend table to rank evidence-supported drivers of an observed sales decline without overstating causality.",
-  "instruction": "Use the provided sales trend evidence to identify and rank likely contributors to the decline. Distinguish observed contribution from proven causality and return only evidence-supported factors.",
-  "capabilities": [
-    "perform_causal_analysis"
-  ],
-  "input_types": [
-    "sales_trend_table"
-  ],
-  "output_types": [
-    "causal_factors_list"
-  ],
   "output_schema": {
     "type": "object",
+    "required": ["factors", "summary"],
     "properties": {
+      "summary": { "type": "string" },
+      "unexplained_share": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Fraction of the observed change no listed factor accounts for."
+      },
       "factors": {
         "type": "array",
+        "minItems": 1,
         "items": {
           "type": "object",
+          "required": ["factor", "evidence", "confidence"],
           "properties": {
-            "rank": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "factor": {
-              "type": "string",
-              "minLength": 1
-            },
-            "evidence": {
-              "type": "string",
-              "minLength": 1
-            },
-            "impact": {
-              "type": "string",
-              "minLength": 1
-            },
-            "confidence": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            }
-          },
-          "required": [
-            "rank",
-            "factor",
-            "evidence",
-            "impact",
-            "confidence"
-          ],
-          "additionalProperties": false
+            "factor": { "type": "string" },
+            "dimension": { "type": "string" },
+            "evidence": { "type": "array", "items": { "type": "string" } },
+            "contribution_percent": { "type": "number" },
+            "direction": { "type": "string", "enum": ["increase", "decrease"] },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
         }
       },
-      "summary": {
-        "type": "string"
-      },
-      "limitations": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      }
-    },
-    "required": [
-      "factors",
-      "summary",
-      "limitations"
-    ],
-    "additionalProperties": false
+      "ruled_out": { "type": "array", "items": { "type": "string" } },
+      "notes": { "type": "array", "items": { "type": "string" } }
+    }
   }
 }

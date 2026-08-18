@@ -1,54 +1,43 @@
 {
   "name": "compute_sales_metrics",
   "version": "1",
+  "description": "Compute sales metrics over a cleaned dataset and compare them against a baseline period.",
+  "capabilities": ["compute_sales_metrics"],
+  "input_ports": ["cleaned_dataframe"],
+  "output_ports": ["sales_trend_table"],
+  "required_permissions": [],
+  "instruction": "SKILL.md",
   "enabled": true,
-  "description": "Compute requested sales metrics and period comparisons from a cleaned dataset, producing a reusable trend-table artifact.",
-  "instruction": "Compute the requested sales metrics from the provided cleaned dataset, verify period comparisons, persist a trend-table artifact, and return concise calculation metadata.",
-  "capabilities": [
-    "compute_sales_metrics"
-  ],
-  "input_types": [
-    "cleaned_dataframe"
-  ],
-  "output_types": [
-    "sales_trend_table"
-  ],
   "output_schema": {
     "type": "object",
+    "required": ["path", "period", "metrics"],
     "properties": {
-      "artifact_path": {
+      "path": {
         "type": "string",
-        "minLength": 1
+        "description": "Workspace-relative path of the trend table written by this step."
       },
-      "metrics_computed": {
+      "period": { "type": "string" },
+      "baseline_period": { "type": "string" },
+      "grain": { "type": "string", "enum": ["daily", "weekly", "monthly"] },
+      "dimensions": { "type": "array", "items": { "type": "string" } },
+      "row_count": { "type": "integer", "minimum": 0 },
+      "metrics": {
         "type": "array",
+        "minItems": 1,
         "items": {
-          "type": "string"
+          "type": "object",
+          "required": ["name", "value"],
+          "properties": {
+            "name": { "type": "string" },
+            "value": { "type": "number" },
+            "baseline_value": { "type": "number" },
+            "change_absolute": { "type": "number" },
+            "change_percent": { "type": "number" },
+            "unit": { "type": "string" }
+          }
         }
       },
-      "comparison_periods": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      },
-      "grouping_dimensions": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      },
-      "summary": {
-        "type": "string"
-      }
-    },
-    "required": [
-      "artifact_path",
-      "metrics_computed",
-      "comparison_periods",
-      "grouping_dimensions",
-      "summary"
-    ],
-    "additionalProperties": false
+      "notes": { "type": "array", "items": { "type": "string" } }
+    }
   }
 }

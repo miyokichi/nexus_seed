@@ -1,24 +1,35 @@
-# load_and_clean_csv
+# Load and Clean CSV
 
-## Responsibility
-Load the CSV input referenced by the Work, apply the requested temporal/scope filters,
-handle missing values conservatively, and produce a cleaned reusable dataset artifact.
+## Purpose
+
+Turn a raw CSV file into a dataset the later analysis steps can rely on, and
+say plainly what was changed on the way.
+
+## Inputs
+
+`csv_file` names the source. It arrives either as a workspace-relative path in
+your typed inputs, or named in the objective text. Read it from the workspace;
+nothing is transferred to you as file content.
+
+## Instructions
+
+1. Load the file and read its real shape before deciding anything — column
+   names, row count, dtypes, and how much is actually missing.
+2. Apply only the filter the objective states (a date range, a segment, a
+   status). Do not narrow the data further on your own judgement.
+3. Resolve missing values explicitly. Dropping a row and imputing a value are
+   different decisions, and each one belongs in `missing_value_policy`.
+4. Write the cleaned dataset to a **new** workspace file. Never overwrite the
+   source.
+5. Return the path you wrote, plus the row count, the column list, and how many
+   rows were dropped.
 
 ## Boundaries
-- Do not perform downstream business analysis.
-- Do not infer or fabricate missing business values unless the Work explicitly permits imputation.
-- Do not overwrite the original input file.
-- Keep file operations inside the configured workspace.
-- If the requested source file cannot be found, fail rather than substituting another file.
 
-## Procedure
-1. Identify the CSV file from the Work objective/context.
-2. Inspect schema, data types, row count, date coverage, and critical columns.
-3. Apply only the filters explicitly required by the Work.
-4. Handle missing values conservatively and report unresolved issues.
-5. Write the cleaned dataset to a new workspace artifact, preferably CSV.
-6. Verify the produced artifact can be read back successfully.
-7. Return only the structured result required by the output schema.
-
-## Output meaning
-`artifact_path` must point to the cleaned dataset artifact that a later Work can consume.
+- The cleaned data goes in a file; the returned object carries the *reference*
+  and the shape, not the rows themselves.
+- Do not compute metrics, trends or comparisons — that is the next step's work
+  and doing it here would hide it from the record.
+- Do not delete or modify the source file.
+- If the file is missing or unreadable, fail and say so. An empty dataset that
+  looks successful is worse than a clear failure.

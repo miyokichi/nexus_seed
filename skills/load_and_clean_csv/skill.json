@@ -1,59 +1,28 @@
 {
   "name": "load_and_clean_csv",
   "version": "1",
+  "description": "Load a CSV file, apply the stated filter, and resolve missing values into a clean dataset.",
+  "capabilities": ["load_and_clean_csv"],
+  "input_ports": ["csv_file"],
+  "output_ports": ["cleaned_dataframe"],
+  "required_permissions": [],
+  "instruction": "SKILL.md",
   "enabled": true,
-  "description": "Load a CSV file, restrict it to the requested scope, clean critical missing values, and produce a reusable cleaned dataset artifact.",
-  "instruction": "Load and clean the requested CSV data without inventing rows or values. Persist the cleaned result as a reusable artifact and return its path plus validation metadata.",
-  "capabilities": [
-    "load_and_clean_csv"
-  ],
-  "input_types": [
-    "csv_file"
-  ],
-  "output_types": [
-    "cleaned_dataframe"
-  ],
   "output_schema": {
     "type": "object",
+    "required": ["path", "row_count", "columns"],
     "properties": {
-      "artifact_path": {
+      "path": {
         "type": "string",
-        "minLength": 1
+        "description": "Workspace-relative path of the cleaned dataset written by this step."
       },
-      "row_count": {
-        "type": "integer",
-        "minimum": 0
-      },
-      "columns": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      },
-      "filters_applied": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      },
-      "missing_value_actions": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      },
-      "validation_summary": {
-        "type": "string"
-      }
-    },
-    "required": [
-      "artifact_path",
-      "row_count",
-      "columns",
-      "filters_applied",
-      "missing_value_actions",
-      "validation_summary"
-    ],
-    "additionalProperties": false
+      "format": { "type": "string", "enum": ["csv", "parquet", "json"] },
+      "row_count": { "type": "integer", "minimum": 0 },
+      "columns": { "type": "array", "items": { "type": "string" } },
+      "dropped_rows": { "type": "integer", "minimum": 0 },
+      "filters_applied": { "type": "array", "items": { "type": "string" } },
+      "missing_value_policy": { "type": "array", "items": { "type": "string" } },
+      "notes": { "type": "array", "items": { "type": "string" } }
+    }
   }
 }

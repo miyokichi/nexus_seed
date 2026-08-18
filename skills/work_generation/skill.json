@@ -14,13 +14,37 @@
     "properties": {
       "work_candidates": {
         "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
         "items": {
           "type": "object",
-          "required": ["work_type", "reason"],
+          "required": [
+            "work_type",
+            "reason",
+            "required_capabilities",
+            "available_input_types",
+            "required_output_types"
+          ],
           "properties": {
             "work_type": { "type": "string" },
             "reason": { "type": "string" },
-            "required_capabilities": { "type": "array", "items": { "type": "string" } },
+            "required_capabilities": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": { "type": "string" },
+              "description": "Every competence this one Work takes, in the order the data flows through them."
+            },
+            "available_input_types": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "What this Work may start from, as data type names."
+            },
+            "required_output_types": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "What this Work must end with, as data type names."
+            },
             "related_entities": { "type": "array", "items": { "type": "string" } },
             "priority": { "type": "integer" },
             "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
