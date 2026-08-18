@@ -246,6 +246,14 @@ ones, so an answer reaches the Project that is waiting for it instead of
 starting a second one. The blocker is not deleted when it clears — it is marked
 resolved, and by what, so the Project's history still says what once stopped it.
 
+This is the one decision NEXUS SEED makes for itself, so it depends on the
+routing model answering inside `NEXUS_SEED_LLM_TIMEOUT_SECONDS`. When it does
+not, the router falls back to creating a project — deliberately, because
+burying a request inside an unrelated project is worse than an extra one — and
+says so in the reason. If follow-ups keep becoming new projects, raise that
+timeout (a large local model can need several minutes) or route with a faster
+model.
+
 ## Compatibility application
 
 The existing event-processing application is still available while the new

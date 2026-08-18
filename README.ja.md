@@ -230,6 +230,12 @@ ProjectRouterにはactiveなProjectだけでなくBLOCKED・WAITING_HUMANのProj
 人からの回答が新規Project扱いにならず、待っているProjectへ戻るためです。blockerは解除時に
 削除せず、解除時刻と解除理由を記録して履歴として残します。
 
+これはNEXUS SEEDが自ら行う唯一の判断なので、routing用modelが
+`NEXUS_SEED_LLM_TIMEOUT_SECONDS`以内に応答することが前提になります。応答しない場合は
+新規Project作成へfallbackし（無関係なProjectへ誤って追加するより安全なため）、その理由を
+記録します。follow-upが新規Projectになり続ける場合は、この timeout を延ばすか
+（大きなlocal modelでは数分かかることがあります）、routingに速いmodelを使ってください。
+
 ## 互換application
 
 新しいorchestratorの統合中も、従来のevent-processing applicationは利用できます。
