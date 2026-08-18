@@ -1,55 +1,79 @@
 # NEXUS SEED
 
-NEXUS SEEDは、観測・判断・中断・再開・外部操作・Capability拡張を安全に実行する、
-永続的なイベント駆動ランタイムです。
-
-中心にある仕組みはシンプルです。
+NEXUS SEEDは、永続化された**Project Orchestrator**です。どのProjectを存在させるかを判断し、
+各Projectに1つのAgentを割り当て、Agentから返る結果やエスカレーションを処理します。
 
 ```text
-Event -> Process -> State -> Continuation -> Event -> Resume
+ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
 ```
 
-固定プリミティブは`Event`、`Process`、`State`、`Context`、`Continuation`、`Runtime`
-の6つだけです。Skill、Agent、Workflow、Observerなどは、新しい基底型ではなく
-Processが担う役割として表現します。
+Projectの識別子・優先度・ライフサイクル・担当Agent・blocker・監査可能なAgent通信は
+NEXUS SEEDが管理します。Task分解、Capability選択、Tool利用、実作業はAgentが管理します。
 
 *[English](README.md)*
 
-設計をPhase順ではなく一枚の流れで把握する場合は、
-**[NEXUS SEED 全体像](docs/system-overview.ja.md)**を先に読んでください。
+## 現在の実装状況
 
-## 実装済みの機能
+新しいProject OrchestratorはPython APIとして利用でき、次を実装済みです。
 
-- SQLiteによる原子的な状態遷移、retry、timer、crash recovery、再起動可能なContinuation
-- 履歴と出自を追跡できるWorld State
-- CapabilityベースのWork matching、複数ProcessのPlan、有界replanning
-- LLM入力と外部Actionのvalidation・policy・監査境界
-- 永続Ingress、Resource versioning、抽出、Event配送
-- Capability gap分析、Sandbox内構築、検証、人手確認付きProduction activation、rollback
-- `AUTO / REVIEW_REQUIRED / FORBIDDEN`とBudgetを備えたPhase 5D自律Capability取得
-- 内部Process、Directory Skill、外部Agentを統合するPhase 5E Provider Federation
-- 認証・認可された明示Command、永続Goal、Work制御、監査履歴を備えたPhase 5G Control Plane
-- feature flagで無効化できるPhase 6 Self/Master projection、永続Intention、Attention、Experience/Reflection、自発活動
-- Overview、Being、因果Activity、Work、Review、Provider、Systemを表示する認証付きHuman Cockpit
-- Goal作成でProjectが立ち上がり、所属Work・status・situationを既存recordから導出するGoal中心のProject lifecycle
-- Project Situationだけを根拠にProjectの状況を自然言語で説明するread-only Project Chat
-- Goal / Project / World / Work / Capability / Execution / Evaluationを一本のループとして統合し、各Goalの現在地と「自力で進めない」ことを報告する薄いGoal-driven orchestration
+- Project・Agent・A2A messageのSQLite永続化
+- 新規Project作成、既存ProjectへのTask追加、Project更新、無視を選ぶsemantic routing
+- **1 Project = 1 Agent** の不変条件
+- 完了、進捗、blocker、人への確認、新規Project発見の監査付き処理
+- 再起動後も復元できるProject・Agent状態
+- テストやローカル統合向けの決定的な`InProcessAgentRuntime`
+- Project全体を実際の外部AgentへA2Aで委譲する`A2AAgentRuntime`
+  （`nexus-seed project "<request>"`から利用）
 
-- A2A経由で外部Agent Runtimeへ認知処理を委譲するExecution Providerと、再利用可能な認知手順としてのDirectory Skill
+まだ完成扱いでない統合境界は1つです。webhook serverとCockpitは現在も再設計前の
+event-processing applicationを起動するため、`ProjectOrchestrator`の入口には
+なっていません。
 
-`AUTO`でも安全境界は省略しません。既存validator、限定Grant、ActionProposal、検証、
-Activation、Work reconciliationをすべて通ります。Runtime/Core/Policy変更や
-unrestricted shell/networkは引き続き禁止です。
+従来のdurable runtimeは互換applicationとしてリポジトリに残り、テストも維持されています。
+各moduleの`KEEP`、`MOVE_TO_AGENT_RUNTIME`、`DEPRECATE`の分類は
+[再設計の棚卸し](docs/orchestrator-redesign-inventory.md)を参照してください。この再設計では
+既存moduleを削除していません。
 
-## 実際に動かす
+## 処理の流れ
 
-NEXUS SEEDはチャット画面ではなく、外部Eventを受け取ってProcess群を動かす
-常駐サーバーです。通常は次のように起動し、別のターミナルや外部システムから
-WebhookへEventを送ります。
+```text
+外部からのrequest
+      |
+      v
+routing contextを構築（active Project + World State + user context）
+      |
+      v
+新規Project / Task追加 / Project更新 / 無視 を判断
+      |
+      v
+Project専属Agentを新規割り当て、または再利用
+      |
+      v
+監査付きA2A gatewayからGoalまたはTaskを委譲
+      |
+      v
+完了、進捗更新、またはエスカレーション待ち
+```
 
-### 1. インストール
+AgentからNEXUS SEEDへ返すmessageは、Project管理に必要なものだけです。
 
-Python 3.12以上が必要です。PowerShellでリポジトリ直下から実行します。
+| Message | NEXUS SEED側の処理 |
+| --- | --- |
+| `PROJECT_STATUS` | Projectの最新summaryを記録 |
+| `PROJECT_COMPLETED` | Projectを完了し、Agentをidleへ変更 |
+| `NEED_CAPABILITY` | 不足Capabilityをblockerとして記録 |
+| `NEED_RESOURCE` | 不足Resourceをblockerとして記録 |
+| `NEED_PERMISSION` | 不足Permissionをblockerとして記録 |
+| `PROJECT_BLOCKED` | その他のblockerを記録 |
+| `NEED_HUMAN_INPUT` | Projectを`WAITING_HUMAN`へ変更 |
+| `DISCOVERED_NEW_PROJECT` | 発見内容を新しいrequestとしてrouting |
+
+Projectを作成できるのはNEXUS SEEDだけです。Agentは新しい問題を報告できますが、
+Projectを直接作成することはできません。
+
+## インストール
+
+Python 3.12以上が必要です。
 
 ```powershell
 python -m venv .venv
@@ -57,427 +81,191 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-### 2. `.env`を設定
+## Project Orchestratorを試す
 
-初回は`.env.example`をコピーします。このリポジトリにはローカル用`.env`も
-作成済みです。
+次の例はnetworkを使わないAgent runtimeを利用します。routing backendを渡さない場合は、
+安全なfallbackとしてrequestごとに新しいProjectを作成します。
 
-```powershell
-Copy-Item .env.example .env
+```python
+import asyncio
+
+from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+
+
+async def main() -> None:
+    orchestrator = ProjectOrchestrator(
+        "nexus.db",
+        agent_runtime=InProcessAgentRuntime(),
+    )
+    try:
+        decision = await orchestrator.handle_request("7月の売上低下原因を調べて")
+        project = orchestrator.projects.all()[0]
+        print(decision.action.value, project.id, project.status.value)
+    finally:
+        orchestrator.close()
+
+
+asyncio.run(main())
 ```
 
-最低限確認する設定は次のとおりです。永続データは安全境界のためソースツリー外へ
-置きます。
+現在のProject一覧を考慮したsemantic routingには、`backend=`へ`ExecutionBackend`を渡します。
+Project Agentをどこで動かすかは、`agent_runtime=`へ渡す`AgentRuntime`で決まります。
+`InProcessAgentRuntime`はscripted fakeで、`A2AAgentRuntime`は次節のとおり実際の
+外部Agentへ委譲します。
+
+## 実Agentでの実行
+
+`nexus-seed project`が新しいProject Orchestratorの入口です。`nexus-seed task`とは
+別の入口として維持します。
+
+```text
+nexus-seed task     -> 従来のdurable Goal / Work runtime
+nexus-seed project  -> 新しいProjectOrchestrator
+```
+
+外部Agent Runtimeを別terminalで起動します。A2Aを話すAgentであれば何でも構いません。
+次の例はLittle Agentのprofileを、読み書きできるworkspace付きで起動しています。
+
+```powershell
+$env:LITTLE_AGENT_WORKSPACE = "C:/work/project-agent"
+little-agent --serve-a2a --agent analysis_worker --port 8801 --auto-approve
+```
+
+NEXUS SEED側の設定は次のとおりです。
+
+```dotenv
+NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a
+NEXUS_SEED_PROJECT_AGENT_URL=http://127.0.0.1:8801
+# 任意。bearer tokenを保持する環境変数名を指定します。
+NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV=LITTLE_AGENT_A2A_TOKEN
+# 任意。これを超えるとAgentへ到達できないものとして扱います。
+NEXUS_SEED_PROJECT_AGENT_TIMEOUT_SECONDS=1200
+# 任意。Agentが書き込めるworkspace。Projectごとに1 directoryを渡します。
+NEXUS_SEED_PROJECT_WORKSPACE=projects
+```
+
+これで依頼を投入できます。
+
+```powershell
+nexus-seed project "samples/sample_sales.csvを分析して2026年7月の売上低下原因を調べて"
+```
+
+```text
+Routing: CREATE_PROJECT
+Project: project-8a49c176-74c4-4bc5-9725-c10236e81205
+Agent:   agent-f00bda11-396c-4823-a595-bd5d56a99666
+Status:  COMPLETED
+Goal:    Analyze sales data to identify reasons for low sales in July 2026 ...
+Summary: ~92% of the revenue drop is concentrated in one store/category ...
+```
+
+NEXUS SEEDが渡すのはgoal、context、constraints、workspace、そして`skills/`にある
+Skillのcontractまでです。Task分解、順序、どのSkillを使うかはProject Agentが決めます。
+自力で続行できない場合はretryを繰り返さずescalationを返し、Projectはその理由とともに
+blockされます。
+
+```text
+Status:  BLOCKED
+Blocked: NEED_RESOURCE - SAPの履歴fileも前年同期の行も存在せず、
+         捏造なしには比較できない
+```
+
+Agent Runtimeが停止している状態と、Projectが遂行できない状態は別物として扱います。
+前者ではProjectの状態を維持し、失敗はAgent側に記録され、もう一度コマンドを実行すれば
+再委譲されます。
+
+`NEXUS_SEED_PROJECT_AGENT_RUNTIME`を未設定（または`in_process`）にすれば決定的な
+runtimeで動きます。orchestration自体はどちらでも同一です。
+
+## 互換application
+
+新しいorchestratorの統合中も、従来のevent-processing applicationは利用できます。
+source tree外のdata directoryとwebhook tokenを設定してください。
 
 ```dotenv
 NEXUS_SEED_DATA_DIR=C:/Users/user/AppData/Local/nexus-seed
 NEXUS_SEED_WEBHOOK_HOST=127.0.0.1
 NEXUS_SEED_WEBHOOK_PORT=8787
-NEXUS_SEED_WEBHOOK_TOKEN=十分に長い任意の文字列
+NEXUS_SEED_WEBHOOK_TOKEN=replace-this-token
 NEXUS_SEED_COCKPIT_ENABLED=true
 ```
 
-OpenAI API互換のローカルLLMを使う場合は次も設定します。
-
-```dotenv
-NEXUS_SEED_LLM_ENABLED=true
-NEXUS_SEED_LLM_PROVIDER=openai_compatible
-NEXUS_SEED_LLM_BASE_URL=http://127.0.0.1:1234/v1
-NEXUS_SEED_LLM_MODEL=サーバーが返す正確なモデルID
-```
-
-LM Studioは通常`1234`、Ollamaは通常`11434`ポートです。APIキーを要求しない
-ローカルサーバーなら`OPENAI_API_KEY`は空で構いません。モデル一覧は次のように
-確認できます。
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:1234/v1/models
-```
-
-LLMサーバーをまだ起動しない場合は`NEXUS_SEED_LLM_ENABLED=false`にします。
-その場合も決定論的フォールバックでRuntimeは動作します。
-
-### 3. 設定・DB・復旧処理を確認
-
-HTTPサーバーを起動せず、全Phaseを登録して未処理Eventを一度drainします。
+起動方法は次のとおりです。
 
 ```powershell
 nexus-seed --once
-```
-
-JSONで`status: idle`、DBパス、LLM有効状態などが表示されれば準備完了です。
-続いて、設定したLLMへ実際に1回問い合わせ、JSON応答まで確認します。
-
-```powershell
-nexus-seed --check-llm
-```
-
-`success: true`と`response: {"status": "ok"}`が返ればLLM接続も完了です。
-
-### 4. 常駐サーバーを起動
-
-```powershell
 nexus-seed
 ```
 
-起動時にWebhook URL、DBパス、LLM接続設定が表示されます。Phase 1〜6のProcess、
-Control Plane、Goal-driven orchestration、durable delivery、retry/timer、
-Capability acquisitionがすべて登録され、1秒ごとにRuntimeがtickします。終了は`Ctrl+C`です。同じコマンドで再起動するとSQLiteから
-未完了処理を復旧します。
-
-ブラウザで`http://127.0.0.1:8787/cockpit`を開きます。データ取得時にWebhookと同じTokenを
-入力します。Tokenはブラウザのtab単位session storageだけに保持されます。Cockpitは既存の
-projectionとtraceを読み、操作はすべてPhase 5Gの`/control`へ送ります。表示は自動更新
-されません。最新状態の取得は右上の更新ボタンで明示的に行います。
-`NEXUS_SEED_COCKPIT_ENABLED=false`にするとCockpit routeだけを無効化でき、Runtime、Webhook、
-CLIの挙動は変わりません。
-
-Projectは「1つのGoal + そのGoalのためのWork集合」です。Workが1件でもProjectとして
-成立します。Projectを先に作る操作はなく、Goalを作れば同時に立ち上がります。
-
-```powershell
-nexus-seed control '/goal create title="Runtime health" objective="RuntimeとLLMの状態を把握する" priority=HIGH'
-```
-
-CommandはGoal idから導出した`project_id`を返し、そのProjectはCockpitのProjects一覧へ
-すぐ表示されます。保存するのは関連付けだけで、title / objective / lifecycleはroot Goalが
-持ち続けます。したがって`/goal pause` / `/goal resume` / `/goal cancel`がそのまま
-Project lifecycleです。Goalから生成されたWorkは同じProjectへ所属し、replanやrestart後も
-同じProjectへ収束します。Project statusは
-`CANCELLED > PAUSED > BLOCKED > NEEDS_ATTENTION > ACTIVE > PLANNING > COMPLETED > IDLE`
-の固定順で導出するため、同じ状態からは常に同じ結果になります。
-
-明示指定も従来どおり使えます（Workの`project=project-a`、Goalの
-`metadata={"project_id":"project-a", ...}`）。Control Planeを通さずに保存されたGoalは、
-読み取り時にProjectを与えず未所属のままにします。
-
-CockpitのProjects画面ではProjectを開き、Project Situationの横でNEXUS SEEDに質問できます。
-同じ内容はHTTPからも参照できます。
-
-```text
-GET  /projects
-GET  /projects/project-a/situation
-GET  /projects/project-a/chat
-POST /projects/project-a/chat   {"message": "今このプロジェクトは何で止まってる？"}
-```
-
-Project Chatの回答は、そのProjectのProject Situation projection、同じProjectのThread、
-今回の質問だけから生成します。SQLiteの直接探索も、他Projectの参照も行いません。
-このPhaseは説明専用です。「キャンセルして」「優先して」「この方針で進めて」のような
-状態変更要求は実行せず`READ_ONLY_REFUSED`として断ります。変更は従来どおり`/control`から
-実行してください。別Projectについての質問は`OUT_OF_SCOPE`として断り、勝手に検索しません。
-
-Thread履歴は`project_chat_threads` / `project_chat_messages`に保存され、再起動後も復元
-されます。Chat履歴は会話であり確認済みWorld Stateではないため、Observation、StateDelta、
-World Stateにはなりません。LLM未接続時やLLMの出力が不正な場合は、projectionの確定事実
-だけを`LLM_UNAVAILABLE` / `LLM_FAILED` / `LLM_INVALID`と明示して返し、Runtimeには影響
-しません。
-
-Goal / Project / World / Work / Capability / Execution / Evaluationは一本の
-ループです。Goalを作るとProjectが立ち上がり、`evaluate_goal`がcriteriaと現在の
-World Stateから必要なWorkを生成し、Capability不足のWorkは有界なAcquisitionへ入り、
-実行はProvider境界を通り、結果は通常のStateDeltaとしてWorldへ戻ってGoalを再評価し、
-Projectが完了します。自動Acquisitionが続けられない場合は
-`human_intervention_required`を発行し、何を目指していたか・どのTaskで止まったか・
-何のCapabilityが足りないか・何を試したか・人間は何を提供すればよいかを明示します
-（Cockpitからも確認できます）。どのmoduleがループのどこを担当するかは
-[機能棚卸し](docs/architecture-inventory.ja.md)にまとめています。
-
-### 5. タスクを投入
-
-サーバーを起動したまま、別のPowerShellから実行します。`.env`のURLとTokenは
-コマンドが自動的に使用します。
-
-```powershell
-nexus-seed task "顧客レポートを解析し、必要な作業を判断してください"
-```
-
-これは`human_message` EventをIngressへ投入します。LLMが有効なら通常の
-`interpret_event_llm` Processが処理し、Proposalの検証とPolicy判定を通ります。
-応答の`status: accepted`はEventがSQLiteへ安全に保存されたという意味で、Processや
-LLM処理の完了を待った結果ではありません。
-
-再送時の重複を確実に防ぎたい場合は、外部側で一意なキーを指定します。
-
-```powershell
-nexus-seed task "同じ依頼" --source-key crm-ticket-12345
-```
-
-任意のEventも投入できます。複雑なJSONはファイルにするとPowerShellのquoteを
-気にせず扱えます。
-
-```powershell
-nexus-seed event process_parameter_changed `
-    --payload '{"entity":"reactor-1","attribute":"target","value":42}' `
-    --source-key sensor-change-001
-
-nexus-seed event measurement_completed --payload-file measurement.json
-```
-
-### 6. 状況とレビューを確認
-
-`status`はSQLiteを読み取り専用で開き、Event数、Work/Process/Deliveryの状態、最近の
-処理を表示します。常駐サーバーを止める必要はありません。
+互換Cockpitは`http://127.0.0.1:8787/cockpit`で開きます。主なコマンドは次のとおりです。
 
 ```powershell
 nexus-seed status
-nexus-seed status --json
-```
-
-人の判断待ちになった処理は次で確認・再開できます。レビューの種類はContinuation
-から自動判別されるため、Event名を指定する必要はありません。
-
-```powershell
+nexus-seed task "この依頼を分析して"
 nexus-seed reviews
-nexus-seed review <reviewsに表示されたID> approve
-nexus-seed review <reviewsに表示されたID> reject
-```
-
-`modify`が対応するレビューでは追加JSONも渡せます。
-
-```powershell
-nexus-seed review <ID> modify --payload-file replacement.json
-```
-
-`status`はDB内の永続状態を示すコマンドであり、HTTPサーバーの死活監視では
-ありません。`task`や`event`が接続できない場合は、`nexus-seed`が別ターミナルで
-起動しているかを確認してください。
-
-### 7. 明示CommandとGoalで制御
-
-Phase 5GのControl Planeは、自然言語の`task` Eventと明示Commandを分離します。
-明示CommandはLLMを通らず、Schema ValidationとHumanIdentityのPermission確認後に
-実行されます。常駐サーバーを起動した別ターミナルから使います。
-
-```powershell
-# Control Console summary
+nexus-seed review <review-id> approve
 nexus-seed control '/status'
-
-# 明示的なWork作成
-nexus-seed control '/task create objective="Project Aの最新測定結果を解析" priority=HIGH cloud_forbidden=true'
-
-# 結果に表示されたWork IDを操作
-nexus-seed control '/work <WORK-ID>'
-nexus-seed control '/pause <WORK-ID>'
-nexus-seed control '/resume <WORK-ID>'
-nexus-seed control '/priority <WORK-ID> CRITICAL'
-nexus-seed control '/deadline <WORK-ID> 2026-08-20T18:00+09:00'
-nexus-seed control '/provider <WORK-ID> PREFER local_runtime'
-nexus-seed control '/trace <WORK-ID>'
-nexus-seed control '/cancel <WORK-ID>'
 ```
 
-レビューは既存のContinuation/Event境界へ変換され、新しい承認経路を作りません。
+これらのコマンドが操作するのは、従来のdurable Goal / Work / Capability runtimeです。
+新しい`ProjectOrchestrator` APIではありません。
 
-```powershell
-nexus-seed control '/approve <REVIEW-ID>'
-nexus-seed control '/reject <REVIEW-ID>'
-```
+## 設計境界
 
-長期GoalはWorkRequirementとは別に保存され、通常の`evaluate_goal` Processが現在の
-World Stateと既存Workから不足Workを生成します。同じ不足は再評価・再起動後も
-deterministic keyで1件へ収束します。
+固定primitiveは`Event`、`Process`、`State`、`Context`、`Continuation`、`Runtime`の
+6つのままです。Project、Agent、Skill、Work、Capabilityはdomain recordまたは
+Processの役割であり、新しいprimitiveではありません。
 
-```powershell
-nexus-seed control '/goal create title="Project A review readiness" objective="Project Aをレビュー可能状態へする" priority=HIGH deadline=2026-09-15'
-nexus-seed control '/goals'
-nexus-seed control '/goal show <GOAL-ID>'
-nexus-seed control '/goal evaluate <GOAL-ID>'
-nexus-seed control '/goal pause <GOAL-ID>'
-nexus-seed control '/goal resume <GOAL-ID>'
-nexus-seed control '/goal cancel <GOAL-ID>'
-```
-
-`NEXUS_SEED_CONTROL_IDENTITY`と`NEXUS_SEED_CONTROL_PERMISSIONS`は`.env`で設定します。
-HTTPのBearer/Ingress Tokenは接続認証、HumanIdentity PermissionはCommand認可であり、
-役割が異なります。Commandは既存Permission・Action・Validator・Autonomy Policyを
-緩和できません。
-
-Phase 6は既定で有効です。Phase 5G互換へ戻す場合だけ`.env`へ次を追加します。
-
-```dotenv
-NEXUS_SEED_PHASE6_ENABLED=false
-```
-
-無効時はPhase 6 Processもwake Eventも追加されず、Phase 5Gと同じ挙動です。有効時も
-常時busy loopは作らず、active Goal、未解決Intention、未回答のSelf questionがある
-起動時だけ`existence_wakeup`を追加し、有限のProcess連鎖が終われば通常のEvent待ちへ戻ります。
-success criteria未指定のGoalは、Intention確立後に具体的Workへ構造化分解されます。
-`advance_human_goal`のような内部fallbackをCapability Acquisitionへ渡すことはありません。
-
-### 8. 作成されるデータ
-
-`NEXUS_SEED_DATA_DIR`の下に次が作成されます。
+再設計では次の責務を分離します。
 
 ```text
-nexus_seed.db          Event・Process・監査履歴を持つSQLite DB
-resources/             読み書きを許可したResource領域
-actions/               LocalFileActionBackendの出力先
-construction/          生成コードの隔離workspace
-installed_extensions/  検証・承認後の有効化先
-```
-
-`construction`と`installed_extensions`はソースコード領域から分離されます。生成物が
-いきなり本体を書き換えることはありません。
-
-## 開発・確認
-
-Coreだけの再起動デモと全テストは次で実行できますが、通常運転には不要です。
-
-```powershell
-python -m nexus_seed.demo
-pytest
-```
-
-## 外部Agent Runtime
-
-NEXUS SEED自身がLLM agent harnessを持つ必要はありません。LLMを使う認知処理は、
-A2A `ExecutionProvider` を通じて、別プロセス・別リポジトリで動く外部の
-stateless Agent Runtimeへ委譲できます。
-
-```text
-NEXUS SEED                        外部Agent Runtime
-  World State / Goal / Project
-  Work / Capability / Skill         LLM
-  Provider選択            ──A2A──▶  Tool
-  Durable execution                 Agent loop
-        ▲                              │
-        └────── 構造化された結果 ───────┘
-```
-
-責務分離は固定です。**Durabilityは NEXUS SEED、Executionは外部Agent**。
-remote側のtask storeが揮発しても、既存のContinuationとretry policyで再実行され
-ます。ここに2つ目の永続task管理機構は作りません。実装するのはblocking
-`message/send` + `tasks/get` pollingのみで、SSEやpush notificationは対象外です。
-
-### 混同してはいけない4語
-
-```text
-Skill       再利用可能な認知手順 — どう考えるか
-Provider    実行機構             — どこで実行するか
+Project     NEXUS SEEDが存在を判断し、進行を管理する対象
+Agent       1つのProjectの実行を担当する主体
+Skill       再利用可能な認知手順
 Capability  何ができるか
-Work        何をやるべきか
+Work        Project内で何をする必要があるか
+Provider    どこで実行するか
 ```
 
-Skillはendpoint・model・remote Agent側のSkill名を一切指定しません。Providerは
-「何を考えるか」を決めません。あるA2A Agentを別のAgentへ置き換えても、
-設定変更だけで済み、Coreの変更は不要です。
-
-### Skill
-
-Skillは、機械可読なcontractと認知手順本文を持つディレクトリです。
-
-```text
-skills/
-  world_event_interpretation/
-    skill.json     capability、typed port、permission、output_schema
-    SKILL.md       Agentへ渡す認知手順
-```
-
-`SkillLoader` が設定されたrootを走査して検証しcatalogを作り、`SkillImporter`
-が各Skillを通常のProcessDefinition・Capability・ProviderBindingとして登録し
-ます。Capabilityの主張を成立させるのは `skill.json` だけで、自然言語からは
-決して導出しません。rootは指定順に探索されるため、project-localなSkillが
-user/globalのSkillを決定論的に上書きします。1つのroot内での同名重複は常に
-エラーです。
-
-初期Skillとして5つを [`skills/`](skills/) に同梱しています。
-`world_event_interpretation` / `project_planning` / `work_generation` /
-`work_assignment` / `goal_evaluation`。
-
-### 設定
-
-[`a2a.example.json`](a2a.example.json) をコピーし、`.env` に次を設定します。
-
-```ini
-NEXUS_SEED_A2A_ENABLED=true
-NEXUS_SEED_A2A_CONFIG=./a2a.json
-```
-
-```json
-{
-  "providers": {
-    "observer_agent": { "type": "a2a", "url": "http://127.0.0.1:8801" }
-  },
-  "bindings": {
-    "world_event_interpretation": { "provider": "observer_agent" }
-  },
-  "skills": { "roots": ["./skills", "~/.nexus_seed/skills"] }
-}
-```
-
-bindingsは **Capability** とProviderの対応です。tokenは環境変数名
-(`token_env`) で指定し、DBには保存しません。
-
-### 別プロセスのAgentと動かす
-
-A2Aに応答するAgentであれば何でも使えます。以下ではlittle-agentを例にします。
-little-agentは**別リポジトリ**であり、本プロジェクトのPython依存には決して
-追加しません。
-
-```text
-C:/dev/
-  nexus-seed/
-  little-agent/
-```
-
-```powershell
-# ターミナル1 — 外部Agent（別プロジェクト）
-little-agent --serve-a2a --agent observer --port 8801
-
-# ターミナル2 — NEXUS SEED
-python -m nexus_seed.app
-```
-
-Observationを投入すると、次の経路で処理されます。
-
-```text
-Observation
-   → world_event_interpretation Skill
-   → A2A Provider (http://127.0.0.1:8801)
-   → little-agent observer（LLM + Tool）
-   → 構造化DataPart
-   → StateDelta候補
-```
-
-結果はCockpitのProvidersページか、次のコマンドで確認できます。
-
-```powershell
-python -m nexus_seed.app status
-```
-
-応答しないProviderはProvider側の問題として記録され、Workは
-`BLOCKED_PROVIDER` となり、Provider復帰時に再提示されます。Capability不足と
-して扱われることはありません。
+durabilityはNEXUS SEED、executionはProject Agentの責務です。AgentはA2A経由で、
+Project管理に必要なstatusとescalationだけを返します。
 
 ## ディレクトリ構成
 
 ```text
-nexus_seed/core/          固定データモデル
-nexus_seed/runtime/       routing、scheduling、execution、recovery
-nexus_seed/storage/       SQLite永続化
-nexus_seed/processes/     Process定義とhandler
-nexus_seed/extension/     Phase 5AのCapability gapと取得提案
-nexus_seed/construction/  Phase 5BのSandbox内構築と検証
-nexus_seed/installation/  Phase 5Cの承認付きActivationとrollback
-nexus_seed/autonomy/      Phase 5DのSession、Policy、Budget、Trace
-nexus_seed/providers/     Phase 5EのProvider、委譲、A2A、Skill読み込み、Trace
-nexus_seed/control/       Phase 5GのCommand、Identity、Goal、認可
-nexus_seed/presence/      Phase 6のSelf/Master/Intention projectionとExperience trace
-nexus_seed/projects/      read-onlyなProject Situationのmodelとprojection
-nexus_seed/chat/          read-onlyなProject Chatのcontext、guard、回答生成
-nexus_seed/orchestration/ Goalループの現在地と人間への介入要求
-nexus_seed/cockpit/       人間向けread modelと依存なしWeb UI
-skills/                   Directory Skill: skill.json契約とSKILL.md認知手順
-tests/                    受入テストと再起動収束テスト
+nexus_seed/orchestrator/  Project routing、lifecycle、Agent割り当て、A2A
+nexus_seed/storage/       orchestrator recordを含むSQLite store
+nexus_seed/core/          固定された6つのdata model
+nexus_seed/runtime/       従来のdurable event runtime
+nexus_seed/processes/     従来のProcess handler
+nexus_seed/providers/     Provider federation、A2A client、Project Agent transport
+nexus_seed/control/       互換Command、Human identity、Goal
+nexus_seed/cockpit/       互換read modelと依存なしのWeb UI
+skills/                   directory Skill（skill.json + SKILL.md）
+tests/                    unit、acceptance、restart convergence test
+```
+
+## 開発・確認
+
+```powershell
+pytest
+python -m nexus_seed.demo
+```
+
+`pytest`は外部Agentを必要としません。orchestratorのtestは`InProcessAgentRuntime`を、
+A2A境界のtestはlocalのscripted HTTP serverを使います。実Agentが必要なend-to-end test
+だけが`tests/integration/`にあり、Agentを指定しない限りskipされます。
+
+```powershell
+$env:NEXUS_SEED_PROJECT_AGENT_URL = "http://127.0.0.1:8801"
+pytest tests/integration
 ```
 
 ## 詳細資料
 
-- [詳細アーキテクチャとPhase履歴](docs/architecture.ja.md)
-- [機能棚卸し（どのmoduleがループのどこか）](docs/architecture-inventory.ja.md)
-- [Detailed architecture (English)](docs/architecture.md)
-- [Architecture inventory (English)](docs/architecture-inventory.md)
-- [開発時に守るInvariant](AGENTS.md)
-
-現在の実装範囲には既定ON・Phase 5G互換flag付きの**Phase 6 — Persistent Being**を含みます。Phase 7には進んでいません。
+- [Project Orchestrator再設計の棚卸し](docs/orchestrator-redesign-inventory.md)
+- [ArchitectureとPhase履歴（英語）](docs/architecture.md)
+- [機能棚卸し（英語）](docs/architecture-inventory.md)
+- [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)
+- [機能棚卸し（日本語）](docs/architecture-inventory.ja.md)
+- [開発時の不変条件と作業規約](AGENTS.md)

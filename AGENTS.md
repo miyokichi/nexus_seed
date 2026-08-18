@@ -1235,6 +1235,70 @@ ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
 8. **Restart-safe.** Projects, Agents and A2A history rebuild from SQLite
    alone.
 
+## Done in External Project Agent (A2A delegation of a whole Project)
+
+`nexus-seed project "<request>"` now runs the full path end to end against a
+real external agent:
+
+```text
+request -> ProjectRouter -> Project -> one Agent -> A2A -> external agent
+        -> PROJECT_STATUS / PROJECT_COMPLETED / NEED_* -> Project state
+```
+
+- `A2AAgentRuntime` is finished and takes a `ProjectAgentTransport`. The
+  orchestrator still knows nothing about HTTP or A2A framing; the wire side is
+  `providers/project_agent.py`, which reuses `A2AClient`, `A2AEndpoint` and the
+  shared `await_task` poll loop rather than adding a second protocol client.
+  `providers/a2a.py` gained `await_task` / `A2ATaskUnfinished` / `task_state`,
+  and `A2AAgentAdapter` now uses them, so there is exactly one poll loop.
+- One delegation is one `message/send` carrying a `PROJECT_ASSIGNMENT` derived
+  from `ProjectAgentConfig` (goal, context, constraints, workspace, Skill
+  contracts) plus the reply schema. Nothing about a project is tracked a second
+  time on the transport side.
+- The Skills in `skills/` are offered as *contracts* (`skill_contracts`), never
+  as an order or a plan. NEXUS SEED does not decide which one applies, and the
+  E2E agent chose and chained them itself.
+- `AgentRuntime` gained `attach(config)`: an Agent read back from the database
+  is re-adopted before anything is delegated, so a restart never spawns a second
+  Agent for the same Project. `AgentManager.assign_or_spawn` and
+  `resolve_block` both go through it.
+- Transport failure is separated from Project failure. An unreachable or
+  non-answering agent raises `AgentUnavailable`, which records
+  `metadata["unavailable"]` on the Agent and leaves the Project's status and
+  blockers untouched; only a *working* Agent's `NEED_*` blocks a Project.
+- `orchestrator_config.py` is application wiring (like `llm_config.py` /
+  `federation_config.py`): `NEXUS_SEED_PROJECT_AGENT_RUNTIME` / `_URL` /
+  `_TOKEN_ENV` / `_TIMEOUT_SECONDS` / `NEXUS_SEED_PROJECT_WORKSPACE`, reusing
+  the existing skill-root and token-by-env-var settings.
+- `ProjectOrchestrator.submit()` returns the settled Project next to the
+  decision, for callers (the CLI) that must show where the project ended up.
+  `handle_request()` is unchanged.
+- `nexus-seed task` is untouched. `nexus-seed project` is a separate entry point
+  to the orchestrator and blocks until the Agent answers; everything it changes
+  is written to SQLite as it happens.
+- Tests split by dependency: `InProcessAgentRuntime` for orchestration, a
+  scripted local HTTP server for the A2A boundary, and `tests/integration/`
+  (skipped unless `NEXUS_SEED_PROJECT_AGENT_URL` is set) for a real agent. A
+  plain `pytest` never needs an agent process.
+
+## External Project Agent invariants (keep them)
+
+- **218.** `orchestrator/` never sees HTTP, JSON-RPC or A2A framing; the wire
+  format lives in `providers/` behind `ProjectAgentTransport`.
+- **219.** One poll loop. Anything that sends an A2A message and waits uses
+  `await_task`; no second client, no second set of timeout rules.
+- **220.** Agent unavailability is never an escalation. A transport failure
+  leaves the Project's status and blockers untouched and is retryable; only a
+  working Agent's `NEED_*` blocks a Project.
+- **221.** An Agent's answer is required in contract, never repaired. An answer
+  carrying no known message type is a failed delegation, not a guess.
+- **222.** NEXUS SEED offers Skill contracts and never an order, a plan or a
+  per-work provider choice — the Project Agent decides what applies.
+- **223.** A runtime is always told about an Agent (`spawn` or `attach`) before
+  work is delegated to it, so a restart reuses the recorded Agent.
+- **224.** `pytest` never depends on an external agent process; tests needing
+  one live in `tests/integration/` and skip themselves.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

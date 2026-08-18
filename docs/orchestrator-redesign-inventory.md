@@ -41,7 +41,8 @@ is classified below.
 | `core/*` | The six primitives are unchanged and still carry everything |
 | `storage/database.py` and the generic stores | One SQLite layer, one schema |
 | `backends/base.py`, `backends/llm.py` | The router's reasoning boundary; `FakeLLMBackend` keeps tests network-free |
-| `providers/a2a.py` | The existing A2A boundary the real `A2AAgentRuntime` will use — a second protocol client was deliberately not written |
+| `providers/a2a.py` | The one A2A client and poll loop; `A2AAgentRuntime` reaches a real Project Agent through it — a second protocol client was deliberately not written |
+| `providers/project_agent.py` | The wire side of one whole delegation: PROJECT_ASSIGNMENT out, the eight message types back |
 | `control/*`, `storage/control_store.py` | Authenticated human commands and durable Goals — how a person reaches the orchestrator |
 | `adapters/*`, `ingress/*`, `ingress_cli.py`, `app.py`, `operations.py` | The outside world still becomes an Event before anything acts on it |
 | `cockpit/*`, `chat/*` | Read-only human views; they read projections and change nothing |

@@ -1,48 +1,84 @@
 # NEXUS SEED
 
-NEXUS SEED is a durable, event-driven runtime for processes that observe,
-reason, suspend, resume, act, and extend their capabilities safely.
-
-Its core stays intentionally small:
+NEXUS SEED is a durable **Project Orchestrator**. It decides which Projects
+exist, assigns one Agent to each Project, and handles the Agent's results and
+escalations.
 
 ```text
-Event -> Process -> State -> Continuation -> Event -> Resume
+ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
 ```
 
-Only six primitives are fixed: `Event`, `Process`, `State`, `Context`,
-`Continuation`, and `Runtime`. Skills, agents, workflows, and observers are
-roles of a Process—not additional core abstractions.
+NEXUS SEED owns project identity, priority, lifecycle, assignment, blockers,
+and the audited Agent channel. The Agent owns task decomposition, capability
+selection, tools, and execution.
 
 *[日本語版](README.ja.md)*
 
-## What is implemented
+## Current status
 
-- SQLite-backed atomic transitions, retries, timers, crash recovery, and restart-safe continuations
-- Semantic world state with history and provenance
-- Capability-based work matching, multi-process plans, and bounded replanning
-- LLM input and external action boundaries with validation, policy, and audit trails
-- Durable ingress, resource versioning, extraction, and event delivery
-- Capability-gap analysis, sandboxed construction, verification, reviewed production activation, and rollback
-- Phase 5D autonomous capability acquisition with `AUTO`, `REVIEW_REQUIRED`, `FORBIDDEN`, and hard budgets
-- Phase 5E provider federation for local Processes, directory Skills, and external Agents
-- Phase 5G authenticated human commands, durable Goals, Work controls, and complete command audit trails
-- Feature-gated Phase 6 Self/Master projections, persistent Intentions, Attention, Experience/Reflection, and finite self-initiated activity
-- Authenticated Human Cockpit for Overview, Being, causal Activity, Work, Reviews, Providers, System health, and aggregated Capability Assistance
-- Goal-centric Projects: creating a Goal starts its Project, and its Work, status, and situation are derived from existing records
-- Read-only Project Chat that explains one project in natural language from its Project Situation
-- One Goal-driven loop — Goal, Project, World, Work, Capability, Execution, Evaluation — with a thin coordinator that reports where each Goal stands and asks for help when it cannot continue
+The Project Orchestrator is available as a Python API and includes:
 
-- External Agent Runtime delegation over A2A, with directory Skills as reusable cognitive procedures
+- durable SQLite records for Projects, Agents, and A2A messages;
+- semantic routing to create a Project, add a task, update a Project, or ignore
+  a request;
+- the invariant **one Project = one Agent**;
+- audited handling of completion, status, blockers, human-input requests, and
+  newly discovered Projects;
+- restart-safe Project and Agent state;
+- a deterministic `InProcessAgentRuntime` for tests and local integration; and
+- `A2AAgentRuntime`, which delegates a whole Project to a real external Agent
+  over A2A, reached from `nexus-seed project "<request>"`.
 
-`AUTO` never skips safety checks. It still goes through the existing validators,
-scoped grants, ActionProposal boundary, verification, activation, and
-reconciliation. Runtime/core/policy changes and unrestricted shell or network
-access remain forbidden.
+One integration boundary is intentionally not presented as complete: the
+webhook server and Cockpit still start the pre-redesign event-processing
+application, so they are not yet entry points to `ProjectOrchestrator`.
 
-## Run the application
+The earlier durable runtime remains in the repository, is tested, and provides
+the compatibility application. See
+[the redesign inventory](docs/orchestrator-redesign-inventory.md) for the exact
+`KEEP`, `MOVE_TO_AGENT_RUNTIME`, and `DEPRECATE` classification. No earlier
+module was deleted by the redesign.
 
-NEXUS SEED is an event-processing server, not a chat UI. Install it, configure
-`.env`, start the local LLM if used, and then run the durable webhook service.
+## How orchestration works
+
+```text
+incoming request
+      |
+      v
+compile routing context (active Projects + World State + user context)
+      |
+      v
+route: create Project / add task / update Project / ignore
+      |
+      v
+assign or reuse exactly one Project Agent
+      |
+      v
+delegate Goal or task over the audited A2A gateway
+      |
+      v
+complete, update status, or wait on an escalation
+```
+
+An Agent reports back with a small management-level protocol:
+
+| Message | Orchestrator effect |
+| --- | --- |
+| `PROJECT_STATUS` | Records the latest Project summary. |
+| `PROJECT_COMPLETED` | Completes the Project and idles the Agent. |
+| `NEED_CAPABILITY` | Blocks the Project with the missing capability. |
+| `NEED_RESOURCE` | Blocks the Project with the missing resource. |
+| `NEED_PERMISSION` | Blocks the Project with the missing permission. |
+| `PROJECT_BLOCKED` | Records another blocking reason. |
+| `NEED_HUMAN_INPUT` | Moves the Project to `WAITING_HUMAN`. |
+| `DISCOVERED_NEW_PROJECT` | Routes the discovery as a new request. |
+
+Only NEXUS SEED creates Projects. An Agent may report a discovery, but it
+cannot create a Project directly.
+
+## Install
+
+Python 3.12 or newer is required.
 
 ```powershell
 python -m venv .venv
@@ -50,7 +86,110 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-Set operational and LLM values in `.env`:
+## Project Orchestrator quick start
+
+The example below uses the network-free Agent runtime. Without a routing
+backend, the safe fallback is to create a new Project for each request.
+
+```python
+import asyncio
+
+from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+
+
+async def main() -> None:
+    orchestrator = ProjectOrchestrator(
+        "nexus.db",
+        agent_runtime=InProcessAgentRuntime(),
+    )
+    try:
+        decision = await orchestrator.handle_request(
+            "Investigate the cause of the July sales decline"
+        )
+        project = orchestrator.projects.all()[0]
+        print(decision.action.value, project.id, project.status.value)
+    finally:
+        orchestrator.close()
+
+
+asyncio.run(main())
+```
+
+Pass an `ExecutionBackend` as `backend=` to enable semantic routing across the
+current Project list. Pass an `AgentRuntime` as `agent_runtime=` to decide where
+Project Agents run. `InProcessAgentRuntime` is a scripted fake;
+`A2AAgentRuntime` delegates to a real external Agent, as the next section does.
+
+## Running a Project on a real Agent
+
+`nexus-seed project` is the Project Orchestrator's entry point, and it is a
+different door from `nexus-seed task`:
+
+```text
+nexus-seed task     -> the earlier durable Goal / Work runtime
+nexus-seed project  -> the ProjectOrchestrator
+```
+
+Start an external Agent Runtime in its own terminal. Any A2A agent works; the
+example is Little Agent serving one of its profiles, with a workspace it may
+read and write:
+
+```powershell
+$env:LITTLE_AGENT_WORKSPACE = "C:/work/project-agent"
+little-agent --serve-a2a --agent analysis_worker --port 8801 --auto-approve
+```
+
+Point NEXUS SEED at it:
+
+```dotenv
+NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a
+NEXUS_SEED_PROJECT_AGENT_URL=http://127.0.0.1:8801
+# Optional: name an environment variable holding a bearer token.
+NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV=LITTLE_AGENT_A2A_TOKEN
+# Optional: how long one Project may take before the Agent is called unreachable.
+NEXUS_SEED_PROJECT_AGENT_TIMEOUT_SECONDS=1200
+# Optional: a workspace the Agent can write, one directory per project.
+NEXUS_SEED_PROJECT_WORKSPACE=projects
+```
+
+Then hand it a request:
+
+```powershell
+nexus-seed project "Analyze samples/sample_sales.csv and find why July 2026 sales fell, against June 2026"
+```
+
+```text
+Routing: CREATE_PROJECT
+Project: project-8a49c176-74c4-4bc5-9725-c10236e81205
+Agent:   agent-f00bda11-396c-4823-a595-bd5d56a99666
+Status:  COMPLETED
+Goal:    Analyze sales data to identify reasons for low sales in July 2026 ...
+Summary: ~92% of the revenue drop is concentrated in one store/category ...
+```
+
+NEXUS SEED sends the goal, its context, its constraints, a workspace and the
+contracts of the Skills in `skills/` — then stays out of the way. The Agent
+decides the tasks, the order, and which Skills apply. When it cannot continue
+it escalates instead of retrying, and the Project is blocked with the reason:
+
+```text
+Status:  BLOCKED
+Blocked: NEED_RESOURCE - there is no SAP historical file and no prior-year rows,
+         so the comparison cannot be computed without fabrication
+```
+
+An Agent Runtime that is down is a different thing from a Project that cannot
+proceed: the Project keeps its state, the failure is recorded on the Agent, and
+running the command again delegates it once more.
+
+Leave `NEXUS_SEED_PROJECT_AGENT_RUNTIME` unset (or `in_process`) to use the
+deterministic runtime — the orchestration is identical either way.
+
+## Compatibility application
+
+The existing event-processing application is still available while the new
+orchestrator is integrated. Configure a data directory outside the source tree
+and a webhook token:
 
 ```dotenv
 NEXUS_SEED_DATA_DIR=C:/Users/user/AppData/Local/nexus-seed
@@ -58,367 +197,86 @@ NEXUS_SEED_WEBHOOK_HOST=127.0.0.1
 NEXUS_SEED_WEBHOOK_PORT=8787
 NEXUS_SEED_WEBHOOK_TOKEN=replace-this-token
 NEXUS_SEED_COCKPIT_ENABLED=true
-
-NEXUS_SEED_LLM_ENABLED=true
-NEXUS_SEED_LLM_PROVIDER=openai_compatible
-NEXUS_SEED_LLM_BASE_URL=http://127.0.0.1:1234/v1
-NEXUS_SEED_LLM_MODEL=exact-model-id
 ```
 
-Check recovery and configuration once, then start the server:
+Then run:
 
 ```powershell
 nexus-seed --once
-nexus-seed --check-llm
 nexus-seed
 ```
 
-Open `http://127.0.0.1:8787/cockpit`. The browser asks for the same webhook
-token and keeps it only in tab-scoped session storage. Cockpit reads existing
-projections and traces; controls are submitted exclusively through the Phase
-5G `/control` endpoint. The view does not auto-refresh; use the refresh button
-to request a new snapshot. Capability Assistance joins the existing Goal →
-Intention → Work → CapabilityGap → AcquisitionSession trace and appears only
-when automatic acquisition is waiting for review or cannot continue. Set
-`NEXUS_SEED_COCKPIT_ENABLED=false` to remove all
-Cockpit routes without changing Runtime, webhook, or CLI behavior.
-
-A Project is one Goal plus the Work that Goal generates — one Work is already a
-Project. Creating a Goal creates its Project:
-
-```powershell
-nexus-seed control '/goal create title="Runtime health" objective="Runtime と LLM の状態を把握する" priority=HIGH'
-```
-
-The command answers with the `project_id` it derived from the Goal id, and the
-Project appears in the Cockpit Projects view immediately. Only that association
-is stored: the title, objective and lifecycle stay on the Goal, so
-`/goal pause`, `/goal resume` and `/goal cancel` are the whole project
-lifecycle. Work generated for the Goal joins the same Project, and replanned or
-restarted Work stays there. Project status is derived in a fixed order —
-`CANCELLED`, `PAUSED`, `BLOCKED`, `NEEDS_ATTENTION`, `ACTIVE`, `PLANNING`,
-`COMPLETED`, `IDLE` — so the same facts always read the same way.
-
-Explicit association still works for Work (`project=project-a`) and Goals
-(`metadata={"project_id":"project-a", ...}`), and a Goal saved outside the
-Control Plane stays unassigned rather than being given a Project at read time.
-No Project table or Project Runtime is created. Authenticated callers can read:
-
-```text
-GET /projects
-GET /projects/project-a/situation
-```
-
-Both endpoints use the webhook bearer token and reconstruct their response
-from the same durable records after every request. Process/LLM handlers can
-read the identical projection through
-`ctx.services.get_project_situation("project-a")`.
-
-Project Chat answers questions about one project from that same projection:
-
-```text
-GET  /projects/project-a/chat
-POST /projects/project-a/chat   {"message": "今このプロジェクトは何で止まってる？"}
-```
-
-The Cockpit Projects view opens a project and puts the chat panel beside its
-situation. The answer is compiled from the Project Situation projection, the
-project's own thread and the question — never from SQLite, another project, or
-raw traces. This phase is deliberately read-only: a request to cancel,
-prioritize, approve or proceed is refused with `READ_ONLY_REFUSED` instead of
-being executed, and change still belongs to the `/control` endpoint. Naming a
-different project returns `OUT_OF_SCOPE` rather than an answer from it.
-
-Threads survive restart in `project_chat_threads` / `project_chat_messages`.
-Chat history is conversation, not confirmed world state, so it never becomes an
-Observation, StateDelta or World State fact. Without a configured LLM — or when
-the model returns unusable output — the reply is a deterministic summary of the
-projection, labelled `LLM_UNAVAILABLE`, `LLM_FAILED` or `LLM_INVALID`, and
-Runtime is unaffected.
-
-Goal, Project, World, Work, Capability, Execution and Evaluation are one loop:
-creating a Goal makes the Project, `evaluate_goal` turns its criteria plus
-current World State into Work, blocked Work enters bounded Capability
-Acquisition, execution runs through the Provider boundary, and results return
-to the world as ordinary StateDeltas that re-evaluate the Goal until the
-Project completes. When automatic acquisition cannot continue, NEXUS SEED emits
-`human_intervention_required` naming the Goal, the Task that stopped, the
-missing Capability, what was already tried and what a person can supply — it is
-also visible in the Cockpit. See
-[the architecture inventory](docs/architecture-inventory.md) for which module
-owns which part of that loop.
-
-Submit a natural-language task from another terminal. The command reads the
-webhook URL and token from `.env`:
-
-```powershell
-nexus-seed task "Analyze this request and determine the required work"
-```
-
-Inspect durable state and handle human-review pauses without stopping the
-server:
+The compatibility Cockpit is served at `http://127.0.0.1:8787/cockpit`.
+Useful commands include:
 
 ```powershell
 nexus-seed status
+nexus-seed task "Analyze this request"
 nexus-seed reviews
 nexus-seed review <review-id> approve
-```
-
-Phase 5G also provides an authenticated, schema-validated control plane. These
-commands bypass natural-language interpretation, but never bypass safety,
-permission, action, or autonomy policy:
-
-```powershell
 nexus-seed control '/status'
-nexus-seed control '/task create objective="Analyze Project A" priority=HIGH cloud_forbidden=true'
-nexus-seed control '/pause <work-id>'
-nexus-seed control '/resume <work-id>'
-nexus-seed control '/provider <work-id> REQUIRE local_runtime'
-nexus-seed control '/trace <work-id>'
-nexus-seed control '/goal create objective="Make Project A review ready" priority=HIGH'
 ```
 
-The local control principal and comma-separated grants are configured with
-`NEXUS_SEED_CONTROL_IDENTITY` and `NEXUS_SEED_CONTROL_PERMISSIONS`. Goals are
-separate durable domain records; `evaluate_goal` discovers deduplicated Work
-through the existing event-driven pipeline.
+These commands exercise the earlier durable Goal/Work/Capability runtime, not
+the new `ProjectOrchestrator` API.
 
-Phase 6 is enabled by default. Set `NEXUS_SEED_PHASE6_ENABLED=false` to restore
-Phase 5G behavior. When disabled, no Phase 6 Process is registered and no wake
-Event is appended. When enabled, startup may append one `existence_wakeup` only
-when an active Goal, unresolved Intention, or unanswered Self question exists.
-Goals without explicit success criteria are structurally decomposed after the
-Intention exists; the internal `advance_human_goal` fallback is never sent to
-Capability Acquisition in Phase 6.
-The finite Process chain then returns to the normal idle/event-wait state.
+## Design boundaries
 
-Submit domain Events with inline JSON or `--payload-file`:
+The six fixed primitives remain `Event`, `Process`, `State`, `Context`,
+`Continuation`, and `Runtime`. Project, Agent, Skill, Work, and Capability are
+domain records or Process roles, not new primitives.
 
-```powershell
-nexus-seed event measurement_completed --payload-file measurement.json
-```
-
-An `accepted` response means the Event is durable; processing continues
-asynchronously. `--source-key` supplies a stable external deduplication key.
-Restarting the server recovers unfinished delivery, processes, retries, timers,
-and continuations from SQLite. See the [Japanese guide](README.ja.md) for the
-full command reference and step-by-step procedure.
-
-For development only:
-
-```powershell
-python -m nexus_seed.demo
-pytest
-```
-
-## External Agent Runtime
-
-NEXUS SEED does not need to contain an LLM agent harness. LLM-based cognitive
-work can be delegated through the A2A `ExecutionProvider` to an external,
-stateless Agent Runtime that runs in its own process and its own repository.
+The redesign keeps these responsibilities separate:
 
 ```text
-NEXUS SEED                       External Agent Runtime
-  World State / Goal / Project
-  Work / Capability / Skill        LLM
-  Provider selection      ──A2A──▶ Tool
-  Durable execution                Agent loop
-        ▲                             │
-        └────── typed result ─────────┘
-```
-
-The split of responsibility is fixed: **durability is NEXUS SEED, execution is
-the remote agent**. If a remote task store is lost, the existing Continuation
-and retry policy re-runs the delegation — nothing here keeps a second durable
-task database. Only blocking `message/send` + `tasks/get` polling is
-implemented; SSE and push notifications are deliberately out of scope.
-
-### Four words that are not interchangeable
-
-```text
-Skill       a reusable cognitive procedure — how to think
-Provider    an execution mechanism        — where it runs
+Project     what NEXUS SEED decides exists and steers
+Agent       who owns execution for one Project
+Skill       a reusable cognitive procedure
 Capability  what can be done
-Work        what must be done
+Work        what needs to be done inside a Project
+Provider    where execution happens
 ```
 
-A Skill never names an endpoint, a model or a remote agent's own skills. A
-provider never decides what should be thought about. Swapping one A2A agent for
-another is a configuration change, not a Core change.
-
-### Skills
-
-A Skill is a directory holding a machine-readable contract and an instruction
-body:
-
-```text
-skills/
-  world_event_interpretation/
-    skill.json     capabilities, typed ports, permissions, output_schema
-    SKILL.md       the cognitive procedure given to the agent
-```
-
-`SkillLoader` scans the configured roots, validates each package and produces a
-catalog; `SkillImporter` registers each Skill as an ordinary ProcessDefinition
-with its Capabilities and a ProviderBinding. Natural language never establishes
-a capability claim — only `skill.json` does. Roots are searched in order, so a
-project-local Skill shadows a user/global one deterministically, and a
-duplicate inside a single root is always an error.
-
-Five starting Skills ship in [`skills/`](skills/):
-`world_event_interpretation`, `project_planning`, `work_generation`,
-`work_assignment`, `goal_evaluation`.
-
-### Configuration
-
-Copy [`a2a.example.json`](a2a.example.json), then set in `.env`:
-
-```ini
-NEXUS_SEED_A2A_ENABLED=true
-NEXUS_SEED_A2A_CONFIG=./a2a.json
-```
-
-```json
-{
-  "providers": {
-    "observer_agent": { "type": "a2a", "url": "http://127.0.0.1:8801" }
-  },
-  "bindings": {
-    "world_event_interpretation": { "provider": "observer_agent" }
-  },
-  "skills": { "roots": ["./skills", "~/.nexus_seed/skills"] }
-}
-```
-
-Bindings map a **capability** to a provider. Tokens are named by environment
-variable (`token_env`) and never stored in the database.
-
-### Running against a separate agent process
-
-Any agent that answers A2A works. Little Agent is used below only as an
-example — it lives in a **separate repository** and is never a Python
-dependency of this project:
-
-```text
-C:/dev/
-  nexus-seed/
-  little-agent/
-```
-
-```powershell
-# terminal 1 — the external agent, in its own project
-little-agent --serve-a2a --agent observer --port 8801
-
-# terminal 2 — NEXUS SEED
-python -m nexus_seed.app
-```
-
-Then submit an Observation and follow it through:
-
-```text
-Observation
-   → world_event_interpretation Skill
-   → A2A provider (http://127.0.0.1:8801)
-   → external agent (LLM + tools)
-   → structured DataPart
-   → StateDelta candidate
-```
-
-Check the result with the Cockpit's Providers page, or:
-
-```powershell
-python -m nexus_seed.app status
-```
-
-A provider that does not answer is recorded as a provider problem — work is
-marked `BLOCKED_PROVIDER` and re-offered when the provider returns. It is never
-reported as a missing Capability.
-
-## Project Orchestrator
-
-NEXUS SEED is being narrowed to one job: **look at the context, start a
-Project, hand it to an Agent, and deal with what comes back.** It does not
-decompose a Goal, pick a Capability per unit of work, or run tools.
-
-```text
-ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
-```
-
-| Component | Owns |
-| --- | --- |
-| `ContextManager` | Compiles the live projects, world state and user context one routing decision may see |
-| `ProjectRouter` | Existing project or new Goal — decided semantically, then checked against the real project list |
-| `ProjectManager` | Project CRUD, status, priority, relationships, lifecycle |
-| `AgentManager` | **One Project = one Agent**: assign, spawn, idle, stop, health |
-| `A2AGateway` | The only NEXUS SEED ↔ Agent channel, audited in both directions |
-
-```python
-from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
-
-orch = ProjectOrchestrator("nexus.db", agent_runtime=InProcessAgentRuntime(), backend=llm)
-await orch.handle_request("7月の売上低下原因を調べて")
-```
-
-A Project carries only what NEXUS SEED needs to steer — `goal`, `context`,
-`status`, `priority`, `assigned_agent_id`, `parent_project_id`, `summary`,
-`blockers` — with status `CREATED → ACTIVE → BLOCKED / WAITING_HUMAN →
-COMPLETED / FAILED / CANCELLED`. The task breakdown lives in the Agent.
-
-The Agent comes back only over A2A, and only when it must:
-
-| Message | Effect |
-| --- | --- |
-| `PROJECT_STATUS` | Progress summary recorded |
-| `PROJECT_COMPLETED` | Project `COMPLETED`, Agent idled |
-| `NEED_CAPABILITY` / `NEED_RESOURCE` / `NEED_PERMISSION` / `PROJECT_BLOCKED` | Project `BLOCKED` with the reason recorded |
-| `NEED_HUMAN_INPUT` | Project `WAITING_HUMAN` |
-| `DISCOVERED_NEW_PROJECT` | Routed like any request — the Agent reports, NEXUS SEED creates |
-
-Project creation stays with NEXUS SEED: an Agent that finds an independent
-problem reports it and never creates a Project itself. `resolve_block()` clears
-a blocker once a person or a Skill supplies what was missing and re-delegates.
-
-`AgentRuntime` is where an Agent actually runs. `InProcessAgentRuntime` is
-scripted and network-free (the tests use it exactly as `FakeLLMBackend` is used
-for the LLM boundary); `A2AAgentRuntime` is the seam for a real external Agent
-Runtime over the existing `providers/a2a.py` boundary. Swapping one for the
-other changes nothing in the orchestrator.
-
-See [the redesign inventory](docs/orchestrator-redesign-inventory.md) for which
-existing module is KEEP, MOVE_TO_AGENT_RUNTIME or DEPRECATE under this split —
-nothing was deleted.
+Durability belongs to NEXUS SEED; execution belongs to the Project Agent. The
+Agent returns only management-level status and escalation messages over A2A.
 
 ## Repository layout
 
 ```text
-nexus_seed/core/          fixed data models
-nexus_seed/runtime/       routing, scheduling, execution, recovery
-nexus_seed/storage/       SQLite persistence
-nexus_seed/processes/     concrete Process definitions and handlers
-nexus_seed/extension/     Phase 5A capability gaps and acquisition proposals
-nexus_seed/construction/  Phase 5B sandboxed construction and verification
-nexus_seed/installation/  Phase 5C reviewed activation and rollback
-nexus_seed/autonomy/      Phase 5D sessions, policy, budget, trace
-nexus_seed/providers/     Phase 5E providers, delegation, A2A, skill loading, trace
-nexus_seed/control/       Phase 5G commands, identities, Goals, and authorization
-nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experience traces
-nexus_seed/projects/      read-only Project Situation models and projections
-nexus_seed/chat/          read-only Project Chat context, guards, and answers
-nexus_seed/orchestration/ Goal-loop status and the human-intervention request
-nexus_seed/orchestrator/  Project Orchestrator: context, routing, projects, agents, A2A
-nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
-skills/                   directory Skills: skill.json contract + SKILL.md procedure
-tests/                    acceptance and restart-convergence tests
+nexus_seed/orchestrator/  Project routing, lifecycle, Agent assignment, A2A
+nexus_seed/storage/       SQLite stores, including orchestrator records
+nexus_seed/core/          the six fixed data models
+nexus_seed/runtime/       earlier durable event runtime
+nexus_seed/processes/     earlier Process handlers
+nexus_seed/providers/     provider federation, A2A client, Project Agent transport
+nexus_seed/control/       authenticated compatibility commands and Goals
+nexus_seed/cockpit/       compatibility read model and dependency-free Web UI
+skills/                   directory Skills (skill.json + SKILL.md)
+tests/                    unit, acceptance, and restart-convergence tests
+```
+
+## Development
+
+```powershell
+pytest
+python -m nexus_seed.demo
+```
+
+`pytest` never needs an external Agent: the orchestrator tests use
+`InProcessAgentRuntime`, and the A2A boundary is tested against a scripted local
+HTTP server. The end-to-end tests that need a real Agent live in
+`tests/integration/` and skip themselves unless one is pointed at:
+
+```powershell
+$env:NEXUS_SEED_PROJECT_AGENT_URL = "http://127.0.0.1:8801"
+pytest tests/integration
 ```
 
 ## Documentation
 
-- [Detailed architecture and phase history](docs/architecture.md)
-- [Architecture inventory: every module, in one area of the loop](docs/architecture-inventory.md)
-- [Redesign inventory: KEEP / MOVE_TO_AGENT_RUNTIME / DEPRECATE](docs/orchestrator-redesign-inventory.md)
-- [詳細アーキテクチャ（日本語）](docs/architecture.ja.md)
+- [Project Orchestrator redesign inventory](docs/orchestrator-redesign-inventory.md)
+- [Architecture and phase history](docs/architecture.md)
+- [Architecture inventory](docs/architecture-inventory.md)
+- [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)
 - [機能棚卸し（日本語）](docs/architecture-inventory.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)
-
-Current implementation includes default-on **Phase 6 — Persistent Being** with
-a complete Phase 5G compatibility flag. Phase 7 is intentionally out of scope.
