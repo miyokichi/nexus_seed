@@ -1191,6 +1191,50 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **216.** Skill precedence is deterministic and stated; identical names are never resolved arbitrarily.
 - **217.** Loading a Skill never bypasses the permission and installation boundaries that Phase 5E established for imported Skills.
 
+## Done in Project Orchestrator redesign
+
+NEXUS SEED is re-defined as a **Project Orchestrator**, not an execution agent:
+
+```text
+ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
+```
+
+- `orchestrator/` is the new Core. `Project`, `Agent`, `ProjectAgentConfig`,
+  `RoutingDecision` and `A2AMessage` are **domain records, not primitives** —
+  the six Core primitives are untouched.
+- A durable `Project` record (`orchestrator_projects`) carries `goal`,
+  `context`, `status`, `priority`, `assigned_agent_id`, `parent_project_id`,
+  `summary`, `blockers`, plus the Tasks attached to it. Status ladder:
+  `CREATED / ACTIVE / BLOCKED / WAITING_HUMAN / COMPLETED / FAILED / CANCELLED`.
+- The pre-existing derived `projects/` projection is unchanged and still
+  answers "what is happening inside this Goal". See
+  `docs/orchestrator-redesign-inventory.md` for why both exist.
+- `InProcessAgentRuntime` keeps every orchestrator test network-free, exactly as
+  `FakeLLMBackend` does for the LLM boundary. `A2AAgentRuntime` is the seam for a
+  real external Agent Runtime and reuses `providers/a2a.py`.
+- Nothing was deleted. Modules that implement *how work gets done* are
+  classified `MOVE_TO_AGENT_RUNTIME` and are simply not called by the new Core.
+
+## Project Orchestrator invariants (keep them)
+
+1. **One Project = one Agent.** Never select an executor per unit of work.
+   `AgentManager.assign_or_spawn` reuses a live Agent before spawning.
+2. **Only NEXUS SEED creates Projects.** `DISCOVERED_NEW_PROJECT` is a report;
+   it goes through the ProjectRouter like any other request.
+3. **The Agent owns the task breakdown.** Do not re-add Goal decomposition,
+   per-work Capability search, or per-work Provider selection to the Core.
+4. **A2A is the only channel** between NEXUS SEED and a Project Agent, and both
+   directions are recorded.
+5. **The router only proposes.** Its decision is schema-checked and validated
+   against the real project list; an unknown `target_project_id` falls back to
+   creating a project rather than burying the request in an unrelated one.
+6. **No backend, no guessing.** Without a reasoning backend the router
+   deterministically creates a project — it never string-matches goals.
+7. **Project Agents are generic.** One `ProjectAgent` contract configured per
+   project; never per-project agent code.
+8. **Restart-safe.** Projects, Agents and A2A history rebuild from SQLite
+   alone.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

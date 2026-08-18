@@ -334,6 +334,60 @@ A provider that does not answer is recorded as a provider problem — work is
 marked `BLOCKED_PROVIDER` and re-offered when the provider returns. It is never
 reported as a missing Capability.
 
+## Project Orchestrator
+
+NEXUS SEED is being narrowed to one job: **look at the context, start a
+Project, hand it to an Agent, and deal with what comes back.** It does not
+decompose a Goal, pick a Capability per unit of work, or run tools.
+
+```text
+ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
+```
+
+| Component | Owns |
+| --- | --- |
+| `ContextManager` | Compiles the live projects, world state and user context one routing decision may see |
+| `ProjectRouter` | Existing project or new Goal — decided semantically, then checked against the real project list |
+| `ProjectManager` | Project CRUD, status, priority, relationships, lifecycle |
+| `AgentManager` | **One Project = one Agent**: assign, spawn, idle, stop, health |
+| `A2AGateway` | The only NEXUS SEED ↔ Agent channel, audited in both directions |
+
+```python
+from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+
+orch = ProjectOrchestrator("nexus.db", agent_runtime=InProcessAgentRuntime(), backend=llm)
+await orch.handle_request("7月の売上低下原因を調べて")
+```
+
+A Project carries only what NEXUS SEED needs to steer — `goal`, `context`,
+`status`, `priority`, `assigned_agent_id`, `parent_project_id`, `summary`,
+`blockers` — with status `CREATED → ACTIVE → BLOCKED / WAITING_HUMAN →
+COMPLETED / FAILED / CANCELLED`. The task breakdown lives in the Agent.
+
+The Agent comes back only over A2A, and only when it must:
+
+| Message | Effect |
+| --- | --- |
+| `PROJECT_STATUS` | Progress summary recorded |
+| `PROJECT_COMPLETED` | Project `COMPLETED`, Agent idled |
+| `NEED_CAPABILITY` / `NEED_RESOURCE` / `NEED_PERMISSION` / `PROJECT_BLOCKED` | Project `BLOCKED` with the reason recorded |
+| `NEED_HUMAN_INPUT` | Project `WAITING_HUMAN` |
+| `DISCOVERED_NEW_PROJECT` | Routed like any request — the Agent reports, NEXUS SEED creates |
+
+Project creation stays with NEXUS SEED: an Agent that finds an independent
+problem reports it and never creates a Project itself. `resolve_block()` clears
+a blocker once a person or a Skill supplies what was missing and re-delegates.
+
+`AgentRuntime` is where an Agent actually runs. `InProcessAgentRuntime` is
+scripted and network-free (the tests use it exactly as `FakeLLMBackend` is used
+for the LLM boundary); `A2AAgentRuntime` is the seam for a real external Agent
+Runtime over the existing `providers/a2a.py` boundary. Swapping one for the
+other changes nothing in the orchestrator.
+
+See [the redesign inventory](docs/orchestrator-redesign-inventory.md) for which
+existing module is KEEP, MOVE_TO_AGENT_RUNTIME or DEPRECATE under this split —
+nothing was deleted.
+
 ## Repository layout
 
 ```text
@@ -351,6 +405,7 @@ nexus_seed/presence/      Phase 6 Self/Master/Intention projections and Experien
 nexus_seed/projects/      read-only Project Situation models and projections
 nexus_seed/chat/          read-only Project Chat context, guards, and answers
 nexus_seed/orchestration/ Goal-loop status and the human-intervention request
+nexus_seed/orchestrator/  Project Orchestrator: context, routing, projects, agents, A2A
 nexus_seed/cockpit/       Human-facing read model and dependency-free Web UI
 skills/                   directory Skills: skill.json contract + SKILL.md procedure
 tests/                    acceptance and restart-convergence tests
@@ -360,6 +415,7 @@ tests/                    acceptance and restart-convergence tests
 
 - [Detailed architecture and phase history](docs/architecture.md)
 - [Architecture inventory: every module, in one area of the loop](docs/architecture-inventory.md)
+- [Redesign inventory: KEEP / MOVE_TO_AGENT_RUNTIME / DEPRECATE](docs/orchestrator-redesign-inventory.md)
 - [詳細アーキテクチャ（日本語）](docs/architecture.ja.md)
 - [機能棚卸し（日本語）](docs/architecture-inventory.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)

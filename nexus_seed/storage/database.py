@@ -1116,6 +1116,48 @@ CREATE TABLE IF NOT EXISTS goals (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS orchestrator_projects (
+    id                TEXT PRIMARY KEY,
+    goal              TEXT NOT NULL,
+    context           TEXT NOT NULL DEFAULT '{}',
+    status            TEXT NOT NULL,
+    priority          INTEGER NOT NULL DEFAULT 0,
+    assigned_agent_id TEXT,
+    parent_project_id TEXT,
+    summary           TEXT NOT NULL DEFAULT '',
+    blockers          TEXT NOT NULL DEFAULT '[]',
+    tasks             TEXT NOT NULL DEFAULT '[]',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orch_projects_status ON orchestrator_projects(status);
+CREATE INDEX IF NOT EXISTS idx_orch_projects_parent ON orchestrator_projects(parent_project_id);
+
+CREATE TABLE IF NOT EXISTS orchestrator_agents (
+    agent_id   TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    runtime    TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    endpoint   TEXT,
+    metadata   TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orch_agents_project ON orchestrator_agents(project_id);
+CREATE INDEX IF NOT EXISTS idx_orch_agents_status ON orchestrator_agents(status);
+
+CREATE TABLE IF NOT EXISTS orchestrator_a2a_messages (
+    id              TEXT PRIMARY KEY,
+    source_agent_id TEXT,
+    project_id      TEXT,
+    direction       TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    payload         TEXT NOT NULL DEFAULT '{}',
+    timestamp       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orch_a2a_project ON orchestrator_a2a_messages(project_id);
+
 """
 
 #: Columns added to pre-existing tables after they shipped.  ``CREATE TABLE IF
