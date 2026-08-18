@@ -234,6 +234,14 @@ def _parse_json_output(text: str) -> Any:
     """Parse model JSON, repairing malformed output only after strict parsing fails."""
 
     stripped = text.strip()
+    if not stripped:
+        # A reasoning model that spends its whole budget thinking answers with
+        # an empty message.  Say that, rather than "Expecting value: line 1
+        # column 1", which sends the reader looking for malformed JSON.
+        raise ValueError(
+            "LLM returned an empty message (no JSON to parse); a reasoning "
+            "model may have used its whole token budget before answering"
+        )
     if stripped.startswith("```") and stripped.endswith("```"):
         lines = stripped.splitlines()
         if len(lines) >= 3:
