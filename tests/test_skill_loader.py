@@ -311,7 +311,10 @@ def test_shipped_skill_packages_are_valid():
 
     names = sorted(s.name for s in catalog.list())
     assert names == [
+        "compute_sales_metrics",
         "goal_evaluation",
+        "load_and_clean_csv",
+        "perform_causal_analysis",
         "project_planning",
         "work_assignment",
         "work_generation",

@@ -3,14 +3,14 @@
   "version": "1",
   "enabled": true,
   "description": "Analyze a sales trend table to rank evidence-supported drivers of an observed sales decline without overstating causality.",
-  "instruction": "Use the provided sales trend evidence to identify and rank likely contributors to the decline. Distinguish observed contribution from proven causality and return only evidence-supported factors.",
+  "instruction": "SKILL.md",
   "capabilities": [
     "perform_causal_analysis"
   ],
-  "input_types": [
+  "input_ports": [
     "sales_trend_table"
   ],
-  "output_types": [
+  "output_ports": [
     "causal_factors_list"
   ],
   "output_schema": {

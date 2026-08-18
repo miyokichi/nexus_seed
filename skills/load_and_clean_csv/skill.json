@@ -3,14 +3,14 @@
   "version": "1",
   "enabled": true,
   "description": "Load a CSV file, restrict it to the requested scope, clean critical missing values, and produce a reusable cleaned dataset artifact.",
-  "instruction": "Load and clean the requested CSV data without inventing rows or values. Persist the cleaned result as a reusable artifact and return its path plus validation metadata.",
+  "instruction": "SKILL.md",
   "capabilities": [
     "load_and_clean_csv"
   ],
-  "input_types": [
+  "input_ports": [
     "csv_file"
   ],
-  "output_types": [
+  "output_ports": [
     "cleaned_dataframe"
   ],
   "output_schema": {
