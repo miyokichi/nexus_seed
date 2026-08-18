@@ -95,6 +95,14 @@ Rules:
 - Never claim PROJECT_COMPLETED for work you did not verify.
 - You cannot create projects. Report a separate problem with
   DISCOVERED_NEW_PROJECT and let NEXUS SEED decide what happens to it.
+
+Stopping is answered the same way as finishing. Explaining why you stopped in a
+sentence outside the object loses the explanation entirely, so put it in the
+payload. A refusal looks exactly like this and nothing else:
+
+{"messages": [{"type": "NEED_RESOURCE", "payload": {"required_resource": "sap_prior_year_sales", "reason": "The workspace only holds 2026-05..07; nothing here is SAP data and I will not fabricate a prior-year comparison."}}]}
+
+Your last message is that object. Nothing before it, nothing after it.
 """
 
 #: The only shape an answer may take.  Typed output is required, never guessed.

@@ -184,6 +184,11 @@ deterministic runtime — the orchestration is identical either way.
 `nexus-seed project` waits for the Project by default because it is the
 explicit door; pass `--no-wait` for the same hand-off the resident server does.
 
+It works directly on the database, so use it when no NEXUS SEED is resident on
+that data directory. When one is running, send requests with `nexus-seed task`
+instead: one process reconciling a Project is the assumption, and two would ask
+the same Agent for the same answer.
+
 ## Normal operation
 
 With the orchestrator switched on, ordinary requests become Projects. Run

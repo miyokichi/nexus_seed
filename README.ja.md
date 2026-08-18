@@ -174,6 +174,10 @@ runtimeで動きます。orchestration自体はどちらでも同一です。
 `nexus-seed project`は明示的な入口なので既定でProjectの完了まで待ちます。常駐時と
 同じく受付だけで返す場合は`--no-wait`を付けてください。
 
+このコマンドはdatabaseを直接操作します。同じdata directoryでNEXUS SEEDを常駐させて
+いる場合は`nexus-seed task`を使ってください。1つのProjectをreconcileするのは1 process
+という前提であり、2つあると同じAgentへ同じ問い合わせを行うことになります。
+
 ## 通常運転
 
 Project Orchestratorを有効にすると、通常のrequestがProjectになります。NEXUS SEEDを
