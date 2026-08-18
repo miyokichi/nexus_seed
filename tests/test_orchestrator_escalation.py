@@ -115,7 +115,10 @@ async def test_blocked_project_can_be_resolved_and_resumed(tmp_path):
     resolved = await orch.resolve_block(project.id, note="SAP access granted")
 
     assert resolved.status is ProjectStatus.COMPLETED
-    assert resolved.blockers == []
+    assert resolved.current_blockers == []
+    # What stopped it once stays in the record, marked as no longer in the way.
+    assert [blocker["kind"] for blocker in resolved.blockers] == ["NEED_CAPABILITY"]
+    assert resolved.blockers[0]["resolved_at"]
     orch.close()
 
 

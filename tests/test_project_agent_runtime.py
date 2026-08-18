@@ -17,20 +17,41 @@ from nexus_seed.orchestrator import (
     A2AMessageType,
     AgentStatus,
     AgentUnavailable,
+    AssignmentStatus,
+    Dispatch,
     ProjectOrchestrator,
     ProjectStatus,
+    RemoteWorkLost,
 )
 
 
 class FakeTransport:
-    """A Project Agent runtime that answers with a scripted set of messages."""
+    """A Project Agent runtime that answers with a scripted set of messages.
 
-    def __init__(self, answers=None, *, fail_open=False, fail_send=False):
+    ``answers`` is one list of ``(type, payload)`` per hand-over.  By default an
+    answer is ready at once; ``slow`` holds it back so the hand-over stays
+    outstanding until ``reconcile`` asks for it, the way a real Agent does.
+    """
+
+    def __init__(
+        self,
+        answers=None,
+        *,
+        fail_open=False,
+        fail_send=False,
+        slow=False,
+        lose_work=False,
+    ):
         self.answers = list(answers or [])
         self.fail_open = fail_open
         self.fail_send = fail_send
+        self.slow = slow
+        self.lose_work = lose_work
         self.opened = []
         self.sent = []
+        self.collected = []
+        self.abandoned = []
+        self._pending = {}
 
     async def open(self, config):
         if self.fail_open:
@@ -38,10 +59,34 @@ class FakeTransport:
         self.opened.append(config)
         return "http://127.0.0.1:8801"
 
-    async def send(self, config, envelope):
+    async def start(self, config, envelope):
         self.sent.append((config, envelope))
         if self.fail_send:
             raise AgentUnavailable("project agent unreachable: connection refused")
+        messages = self._messages(config)
+        if not self.slow:
+            return Dispatch(messages=messages)
+        handle = f"task-{len(self.sent)}"
+        self._pending[handle] = messages
+        return Dispatch(handle=handle)
+
+    async def collect(self, config, handle):
+        self.collected.append(handle)
+        if self.lose_work:
+            raise RemoteWorkLost(f"project agent no longer knows task {handle}")
+        return self._pending.pop(handle, None)
+
+    async def abandon(self, handle):
+        self.abandoned.append(handle)
+        return True
+
+    async def close(self, agent_id):
+        return None
+
+    async def alive(self):
+        return not self.fail_open
+
+    def _messages(self, config):
         answers = self.answers.pop(0) if self.answers else []
         return [
             A2AMessage(
@@ -52,12 +97,6 @@ class FakeTransport:
             )
             for message_type, payload in answers
         ]
-
-    async def close(self, agent_id):
-        return None
-
-    async def alive(self):
-        return not self.fail_open
 
 
 def create_decision(goal="売上分析"):
@@ -167,11 +206,13 @@ async def test_transport_failure_is_not_capability_failure(tmp_path):
     assert project.status is not ProjectStatus.FAILED
     assert project.blockers == []
 
-    # The project keeps its Agent and can simply be delegated again.
+    # The project keeps its Agent and the hand-over is queued to be retried.
     agent = orch.agents.for_project(project.id)
     assert agent is not None
     assert agent.status is AgentStatus.RUNNING
     assert "connection refused" in agent.metadata["unavailable"]["reason"]
+    assert agent.assignment.status is AssignmentStatus.PENDING
+    assert agent.assignment.next_attempt_at is not None
     orch.close()
 
 

@@ -17,6 +17,7 @@ from nexus_seed.orchestrator import (
     A2AMessageType,
     AgentStatus,
     AgentUnavailable,
+    AssignmentStatus,
     ProjectAgentConfig,
     ProjectOrchestrator,
     ProjectStatus,
@@ -188,7 +189,8 @@ async def test_need_capability_over_a2a_blocks_the_project(tmp_path):
         orch.close()
 
 
-async def test_a_slow_task_is_polled_until_it_answers(tmp_path):
+async def test_a_slow_task_is_taken_now_and_answered_later(tmp_path):
+    """A Project that takes a while is *accepted* now and finished later."""
     with FakeA2AServer(
         {
             "message/send": [task("working", task_id="task-7")],
@@ -201,8 +203,20 @@ async def test_a_slow_task_is_polled_until_it_answers(tmp_path):
         orch = orchestrator(tmp_path / "o.db", server.url)
         await orch.handle_request("時間のかかる分析をして")
 
+        # Accepted, not finished: the request came back while the Agent works.
+        project = orch.projects.all()[0]
+        assert project.status is ProjectStatus.ACTIVE
+        assignment = orch.agents.for_project(project.id).assignment
+        assert assignment.status is AssignmentStatus.DISPATCHED
+        assert assignment.handle == "task-7"
+        assert server.calls("tasks/get") == []
+
+        await orch.reconcile()
+        assert orch.projects.all()[0].status is ProjectStatus.ACTIVE
+
+        await orch.reconcile()
         assert orch.projects.all()[0].status is ProjectStatus.COMPLETED
-        assert len(server.calls("tasks/get")) >= 2
+        assert len(server.calls("tasks/get")) == 2
         orch.close()
 
 
@@ -228,7 +242,7 @@ async def test_a_failed_remote_task_is_unavailable_not_a_blocker(tmp_path):
 
         project = orch.projects.all()[0]
         assert project.blockers == []
-        assert project.status is ProjectStatus.CREATED
+        assert project.status is not ProjectStatus.BLOCKED
         agent = orch.agents.for_project(project.id)
         assert "the model provider timed out" in agent.metadata["unavailable"]["reason"]
         orch.close()
@@ -239,7 +253,7 @@ async def test_an_answer_outside_the_contract_is_refused_not_guessed():
         {"message/send": [task("completed", artifacts=[text_artifact("I think it went fine")])]}
     ) as server:
         with pytest.raises(AgentUnavailable, match="understand"):
-            await transport(server.url).send(config(), {"kind": "ASSIGN_GOAL"})
+            await transport(server.url).start(config(), {"kind": "ASSIGN_GOAL"})
 
 
 async def test_an_unknown_message_type_is_dropped_not_invented():
@@ -265,7 +279,8 @@ async def test_an_unknown_message_type_is_dropped_not_invented():
             ]
         }
     ) as server:
-        messages = await transport(server.url).send(config(), {"kind": "ASSIGN_GOAL"})
+        dispatch = await transport(server.url).start(config(), {"kind": "ASSIGN_GOAL"})
+        messages = dispatch.messages
 
         assert [message.type for message in messages] == [A2AMessageType.PROJECT_COMPLETED]
         assert messages[0].project_id == "project-1"
