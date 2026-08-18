@@ -33,6 +33,8 @@ from .operations import (
     submit_control_command,
 )
 from .control.models import HumanIdentity
+from .orchestrator import Agent, Project, RoutingDecision
+from .orchestrator_config import ProjectAgentConfigurationError, build_orchestrator
 from .processes.autonomy import bootstrap_autonomy
 from .orchestration import bootstrap_orchestration
 from .processes.control import bootstrap_control
@@ -219,10 +221,22 @@ def build_parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve", help="run the webhook server (default)")
     _add_connection_arguments(serve, suppress_defaults=True)
 
-    task = commands.add_parser("task", help="submit a natural-language task")
+    task = commands.add_parser(
+        "task", help="submit a natural-language task to the durable Goal/Work runtime"
+    )
     _add_connection_arguments(task, suppress_defaults=True)
     task.add_argument("text", help="task text sent as a human_message Event")
     task.add_argument("--source-key", default=None, help="stable external id for deduplication")
+
+    project = commands.add_parser(
+        "project", help="route a request through the Project Orchestrator"
+    )
+    _add_connection_arguments(project, suppress_defaults=True)
+    project.add_argument("text", help="what you want done, in your own words")
+    project.add_argument(
+        "--priority", type=int, default=0, help="how urgent this is (higher runs first)"
+    )
+    project.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     event = commands.add_parser("event", help="submit an arbitrary Event")
     _add_connection_arguments(event, suppress_defaults=True)
@@ -348,6 +362,8 @@ async def run(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+    if command == "project":
+        return await _run_project(args, settings)
     if command == "event":
         payload = _read_payload(args)
         result = await asyncio.to_thread(
@@ -470,6 +486,71 @@ def _read_payload(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ApplicationConfigurationError("payload must be a JSON object")
     return payload
+
+
+async def _run_project(args: argparse.Namespace, settings: AppSettings) -> int:
+    """Route one request through the Project Orchestrator and report the result.
+
+    Blocking on purpose: the Project Agent is given the whole Goal and this
+    waits for what it reports back.  Everything it changes — the Project, its
+    Agent and the audited A2A channel — is written to SQLite as it happens, so
+    interrupting the wait loses the report, never the project.
+    """
+    _validate_data_dir(settings.data_dir)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    orchestrator = build_orchestrator(
+        settings.data_dir / "nexus_seed.db", env_file=args.env_file
+    )
+    try:
+        decision, project = await orchestrator.submit(args.text, priority=args.priority)
+        agent = (
+            orchestrator.agents.for_project(project.id) if project is not None else None
+        )
+    finally:
+        orchestrator.close()
+    _print_project(decision, project, agent, as_json=args.json)
+    return 0
+
+
+def _print_project(
+    decision: RoutingDecision,
+    project: Project | None,
+    agent: Agent | None,
+    *,
+    as_json: bool,
+) -> None:
+    """Show what the orchestrator decided and where the project stands now."""
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "routing": decision.to_dict(),
+                    "project": project.to_dict() if project else None,
+                    "agent": agent.to_dict() if agent else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    print(f"Routing: {decision.action.value}")
+    if project is None:
+        print(f"Reason:  {decision.reason or 'no project work was needed'}")
+        return
+    print(f"Project: {project.id}")
+    print(f"Agent:   {agent.agent_id if agent else '(none assigned)'}")
+    print(f"Status:  {project.status.value}")
+    print(f"Goal:    {project.goal}")
+    if project.summary:
+        print(f"Summary: {project.summary}")
+    for blocker in project.blockers:
+        print(f"Blocked: {blocker['kind']} - {blocker['reason']}")
+    unavailable = (agent.metadata.get("unavailable") if agent else None) or {}
+    if unavailable:
+        # The Project is untouched and still delegable; the runtime was not there.
+        print(f"Agent unavailable: {unavailable.get('reason', '')}")
+        print("The project keeps its state; run the command again once the agent is up.")
 
 
 def _print_operational_status(report: dict[str, Any], *, as_json: bool) -> None:
@@ -668,9 +749,28 @@ def _read_bool(name: str, default: bool) -> bool:
     raise ApplicationConfigurationError(f"{name} must be true or false")
 
 
+def _tolerate_unprintable_characters() -> None:
+    """Never let a console codepage turn an Agent's own words into a crash.
+
+    Project summaries come from a Project Agent, so they can contain anything a
+    model wrote.  The encoding itself is left alone — only the failure mode
+    changes, from raising to substituting.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - unusual stream
+            logger.debug("could not relax encoding errors on %r", stream)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Console entry point for the runnable application."""
 
+    _tolerate_unprintable_characters()
     args = build_parser().parse_args(argv)
     try:
         return asyncio.run(run(args))
@@ -681,6 +781,7 @@ def main(argv: list[str] | None = None) -> int:
         ApplicationConfigurationError,
         LLMConfigurationError,
         OperationalCommandError,
+        ProjectAgentConfigurationError,
         OSError,
     ) as exc:
         print(f"configuration/startup error: {exc}", file=sys.stderr)
