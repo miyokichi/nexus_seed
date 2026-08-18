@@ -21,6 +21,7 @@ from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
 from ..orchestration.loop import get_goal_loops
 from ..projects.projections import get_project_situation, get_project_summaries
+from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
 from ..work.work_requirement import WorkStatus
 
 
@@ -37,6 +38,9 @@ BLOCKED_WORK = {
     WorkStatus.BLOCKED_PROVIDER,
     WorkStatus.BLOCKED_PLAN,
 }
+#: How much of one Project's A2A channel the detail view carries.
+ORCHESTRATOR_MESSAGE_LIMIT = 50
+
 RUNNING_PROCESSES = {
     ProcessStatus.RUNNABLE,
     ProcessStatus.RUNNING,
@@ -66,6 +70,12 @@ class CockpitService:
         #: Read-only Project Chat.  It lives with the interface layer, so
         #: disabling Cockpit removes it and leaves Runtime untouched.
         self.chat = ProjectChatService(runtime)
+        #: Read-only views of the Project Orchestrator's own records.  Built on
+        #: the same database, never on the Runtime's Goal projection: the two
+        #: kinds of project are shown apart because they *are* apart.
+        self.orchestrator_projects = ProjectStore(runtime.db)
+        self.orchestrator_agents = AgentStore(runtime.db)
+        self.orchestrator_messages = A2AMessageStore(runtime.db)
 
     def snapshot(self) -> dict[str, Any]:
         """Return one JSON-safe, point-in-time view of the running system."""
@@ -148,6 +158,7 @@ class CockpitService:
             "reviews": reviews,
             "providers": [self._provider(item) for item in providers],
             "projects": self.projects(),
+            "orchestrator": self.orchestrator(),
             "goal_loops": self.goal_loops(),
             "system": {
                 "phase6_enabled": self.phase6_enabled,
@@ -165,9 +176,82 @@ class CockpitService:
         }
 
     def projects(self) -> list[dict[str, Any]]:
-        """Return compact, explicitly-associated project summaries read-only."""
+        """Return compact, explicitly-associated project summaries read-only.
+
+        These are the Goal-derived projects of the earlier runtime.  The
+        Project Orchestrator's own projects are a different thing and are
+        reported separately by :meth:`orchestrator` — never merged into this
+        list, so it is always clear which one a row came from.
+        """
 
         return [item.to_dict() for item in get_project_summaries(self.runtime)]
+
+    def orchestrator(self) -> dict[str, Any]:
+        """Return the Project Orchestrator's projects, read-only.
+
+        ``enabled`` says whether this NEXUS SEED routes requests here at all,
+        so an empty list is not mistaken for "nothing is happening".
+        """
+
+        projects = self.orchestrator_projects.all()
+        projects.sort(key=lambda item: (-item.priority, item.created_at))
+        return {
+            "enabled": getattr(self.runtime, "project_orchestrator", None) is not None,
+            "counts": _counts(project.status.value for project in projects),
+            "projects": [self._orchestrator_project(project) for project in projects],
+        }
+
+    def orchestrator_project(self, project_id: str) -> dict[str, Any] | None:
+        """Return one orchestrator Project in full, or ``None`` if unknown.
+
+        Everything a person needs to see where a Project stands: its Goal, who
+        holds it, the Agent's latest word, what is in the way, and the audited
+        A2A channel.  What the Agent did *inside* the project is the Agent's
+        business and deliberately not reconstructed here.
+        """
+
+        project = self.orchestrator_projects.get(project_id)
+        if project is None:
+            return None
+        detail = self._orchestrator_project(project)
+        detail["messages"] = [
+            {"direction": direction, **message.to_dict()}
+            for direction, message in self.orchestrator_messages.for_project(project_id)
+        ][-ORCHESTRATOR_MESSAGE_LIMIT:]
+        detail["blocker_history"] = list(project.blockers)
+        detail["tasks"] = list(project.tasks)
+        return detail
+
+    def _orchestrator_project(self, project) -> dict[str, Any]:
+        """One orchestrator Project as the interface shows it."""
+
+        agent = self.orchestrator_agents.active_for_project(project.id)
+        assignment = agent.assignment if agent is not None else None
+        return {
+            "id": project.id,
+            "goal": project.goal,
+            "status": project.status.value,
+            "priority": project.priority,
+            "summary": project.summary,
+            "assigned_agent_id": project.assigned_agent_id,
+            "parent_project_id": project.parent_project_id,
+            "blockers": project.current_blockers,
+            "task_count": len(project.tasks),
+            "created_at": _iso(project.created_at),
+            "updated_at": _iso(project.updated_at),
+            "agent": (
+                {
+                    "agent_id": agent.agent_id,
+                    "runtime": agent.runtime,
+                    "status": agent.status.value,
+                    "endpoint": agent.endpoint,
+                    "unavailable": agent.metadata.get("unavailable"),
+                    "assignment": assignment.to_dict() if assignment else None,
+                }
+                if agent is not None
+                else None
+            ),
+        }
 
     def goal_loops(self) -> list[dict[str, Any]]:
         """Return where each Goal stands in the loop, read-only."""

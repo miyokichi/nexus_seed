@@ -365,6 +365,16 @@ class WebhookServer:
             if not self.ingress.authorize(_token_from(headers)):
                 return WebhookResponse(401, {"error": "unauthorized"})
             return WebhookResponse(200, self.cockpit.snapshot(), headers=security_headers)
+        if path.startswith("/cockpit/api/orchestrator/projects/"):
+            if not self.ingress.authorize(_token_from(headers)):
+                return WebhookResponse(401, {"error": "unauthorized"})
+            project_id = unquote(path.rsplit("/", 1)[-1])
+            detail = self.cockpit.orchestrator_project(project_id)
+            if detail is None:
+                return WebhookResponse(
+                    404, {"error": "project not found"}, headers=security_headers
+                )
+            return WebhookResponse(200, detail, headers=security_headers)
         return WebhookResponse(404, {"error": "unknown cockpit path"})
 
     def _project_response(
