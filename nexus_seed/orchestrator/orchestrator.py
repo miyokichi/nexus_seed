@@ -21,12 +21,13 @@ from ..storage.database import Database
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
 from .a2a_gateway import A2AGateway
 from .agent_manager import AgentManager
-from .agent_runtime import AgentRuntime, InProcessAgentRuntime
+from .agent_runtime import AgentRuntime, AgentUnavailable, InProcessAgentRuntime
 from .context_manager import ContextManager
 from .models import (
     BLOCKING_ESCALATIONS,
     A2AMessage,
     A2AMessageType,
+    Agent,
     AgentStatus,
     Project,
     ProjectStatus,
@@ -98,6 +99,30 @@ class ProjectOrchestrator:
         Returns the decision that was acted on, so a caller can see whether a
         project was created, extended, or deliberately ignored.
         """
+        decision, _project = await self.submit(
+            request,
+            source=source,
+            user_context=user_context,
+            origin_project_id=origin_project_id,
+            priority=priority,
+        )
+        return decision
+
+    async def submit(
+        self,
+        request: str,
+        *,
+        source: str = "user",
+        user_context: dict[str, Any] | None = None,
+        origin_project_id: str | None = None,
+        priority: int = 0,
+    ) -> tuple[RoutingDecision, Project | None]:
+        """Handle one request and return the decision *and* the Project it touched.
+
+        The Project is re-read after the Agents have been drained, so what
+        comes back is the settled state rather than the state at delegation.
+        ``None`` means the request deliberately produced no project work.
+        """
         context = self.context.build(
             request,
             source=source,
@@ -108,9 +133,11 @@ class ProjectOrchestrator:
         logger.info(
             "routing %r -> %s (%s)", request[:60], decision.action.value, decision.reason
         )
-        await self.apply(decision, priority=priority, origin_project_id=origin_project_id)
+        touched = await self.apply(
+            decision, priority=priority, origin_project_id=origin_project_id
+        )
         await self.drain()
-        return decision
+        return decision, (self.projects.get(touched.id) if touched else None)
 
     async def apply(
         self,
@@ -138,9 +165,10 @@ class ProjectOrchestrator:
 
         if decision.action is RoutingAction.ADD_TASK_TO_PROJECT:
             task = self.projects.add_task(project, decision.proposed_task or "")
-            agent = await self.agents.assign_or_spawn(project)
-            self.projects.assign_agent(project, agent.agent_id)
-            await self.gateway.add_task(project, agent, task)
+            agent = await self.assign_agent(project)
+            if agent is None:
+                return project
+            await self.delegate(project, agent, task=task)
             return project
 
         # UPDATE_PROJECT: management-level framing only.
@@ -165,11 +193,48 @@ class ProjectOrchestrator:
             priority=priority,
             parent_project_id=parent_project_id,
         )
-        agent = await self.agents.assign_or_spawn(project)
-        self.projects.assign_agent(project, agent.agent_id)
-        self.projects.activate(project)
-        await self.gateway.assign_goal(project, agent)
+        agent = await self.assign_agent(project)
+        if agent is None:
+            return project
+        if await self.delegate(project, agent):
+            self.projects.activate(project)
         return project
+
+    # --- delegation ---------------------------------------------------------
+
+    async def assign_agent(self, project: Project) -> Agent | None:
+        """Give ``project`` its Agent, or ``None`` when no runtime answered.
+
+        An Agent Runtime that is not there is a transport problem, so the
+        Project keeps its status and simply has no Agent yet: the next attempt
+        assigns one.  It is never turned into a blocker on the Project.
+        """
+        try:
+            agent = await self.agents.assign_or_spawn(project)
+        except AgentUnavailable as exc:
+            logger.warning("project %s has no agent yet: %s", project.id, exc)
+            return None
+        self.projects.assign_agent(project, agent.agent_id)
+        return agent
+
+    async def delegate(
+        self, project: Project, agent: Agent, *, task: dict[str, Any] | None = None
+    ) -> bool:
+        """Hand the Goal (or one added Task) over.  ``False`` if unreachable.
+
+        Same rule as assignment: an unreachable Agent is recorded on the Agent
+        and retried later, never written onto the Project as a blocker.
+        """
+        try:
+            if task is None:
+                await self.gateway.assign_goal(project, agent)
+            else:
+                await self.gateway.add_task(project, agent, task)
+        except AgentUnavailable as exc:
+            self.agents.record_unavailable(agent, str(exc))
+            return False
+        self.agents.clear_unavailable(agent)
+        return True
 
     # --- messages from agents ---------------------------------------------
 
@@ -282,11 +347,11 @@ class ProjectOrchestrator:
             self.projects.set_summary(project, note)
         if reactivate:
             self.projects.activate(project)
-            agent = self.agents.for_project(project.id)
+            agent = await self.assign_agent(project)
             if agent is not None:
                 if agent.status is AgentStatus.IDLE:
                     self.agents.set_status(agent, AgentStatus.RUNNING)
-                await self.gateway.assign_goal(project, agent)
+                await self.delegate(project, agent)
                 await self.drain()
         return self.projects.get(project_id)
 

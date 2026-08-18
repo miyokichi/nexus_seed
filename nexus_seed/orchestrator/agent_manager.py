@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..core.event import utcnow
 from ..storage.orchestrator_store import AgentStore
-from .agent_runtime import AgentRuntime
+from .agent_runtime import AgentRuntime, AgentUnavailable
 from .models import Agent, AgentStatus, Project, ProjectAgentConfig, new_agent_id
 
 logger = logging.getLogger("nexus_seed.orchestrator.agent_manager")
@@ -39,10 +40,17 @@ class AgentManager:
         self.a2a_endpoint = a2a_endpoint
 
     async def assign_or_spawn(self, project: Project) -> Agent:
-        """Return the Agent that owns ``project``, starting one if needed."""
+        """Return the Agent that owns ``project``, starting one if needed.
+
+        A live Agent is always reused — that is the one-Project-one-Agent rule.
+        After a restart the runtime has never seen it, so its config is rebuilt
+        from the Project and Agent records and handed back before anything is
+        delegated; nothing about the Agent is kept outside the database.
+        """
         existing = self.store.active_for_project(project.id)
         if existing is not None:
             logger.info("project %s reuses agent %s", project.id, existing.agent_id)
+            await self.runtime.attach(self.build_config(project, existing))
             return existing
         return await self.spawn(project)
 
@@ -63,7 +71,14 @@ class AgentManager:
             agent.status = AgentStatus.FAILED
             agent.metadata = {**agent.metadata, "error": str(exc)}
             self.store.save(agent)
-            logger.exception("failed to start agent for project %s", project.id)
+            if isinstance(exc, AgentUnavailable):
+                # Nothing is wrong with the Project: the runtime is not there.
+                # The record stays as evidence and a later attempt spawns again.
+                logger.warning(
+                    "agent runtime unavailable for project %s: %s", project.id, exc
+                )
+            else:
+                logger.exception("failed to start agent for project %s", project.id)
             raise
 
         agent.endpoint = endpoint or None
@@ -99,6 +114,27 @@ class AgentManager:
     def set_status(self, agent: Agent, status: AgentStatus) -> Agent:
         """Record a new agent status."""
         agent.status = status
+        return self.store.save(agent)
+
+    def record_unavailable(self, agent: Agent, reason: str) -> Agent:
+        """Record that an Agent could not be reached, keeping it as the owner.
+
+        The Agent stays the Project's Agent and the Project keeps its status:
+        being unable to talk to a runtime says nothing about whether the Goal
+        can be reached, so the next attempt simply tries again.
+        """
+        agent.metadata = {
+            **agent.metadata,
+            "unavailable": {"reason": reason, "at": utcnow().isoformat()},
+        }
+        logger.warning("agent %s unavailable: %s", agent.agent_id, reason)
+        return self.store.save(agent)
+
+    def clear_unavailable(self, agent: Agent) -> Agent:
+        """Forget a recorded transport failure once the Agent answers again."""
+        if "unavailable" not in agent.metadata:
+            return agent
+        agent.metadata = {k: v for k, v in agent.metadata.items() if k != "unavailable"}
         return self.store.save(agent)
 
     async def idle(self, agent: Agent) -> Agent:

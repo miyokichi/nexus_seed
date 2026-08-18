@@ -27,6 +27,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -204,6 +205,72 @@ class A2AClient:
         return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+class A2ATaskUnfinished(RuntimeError):
+    """A remote task that had already started did not reach ``completed``.
+
+    Execution began, so this is a failed attempt rather than a free failover to
+    another provider — the caller decides what a failed attempt means for it.
+    """
+
+    def __init__(self, reason: str, *, state: str = "", task_id: str | None = None) -> None:
+        super().__init__(reason)
+        self.state = state
+        self.task_id = task_id
+
+
+def task_state(task: dict) -> str:
+    """Return the lower-cased A2A ``TaskState`` of ``task``."""
+    status = task.get("status")
+    if isinstance(status, dict):
+        return str(status.get("state") or "").lower()
+    return str(status or "").lower()
+
+
+async def await_task(
+    client: A2AClient,
+    endpoint: A2AEndpoint,
+    task: dict,
+    *,
+    clock=time.monotonic,
+    cancel: Callable[[str | None], Awaitable[bool]] | None = None,
+) -> dict:
+    """Poll ``tasks/get`` until ``task`` reaches a terminal state and return it.
+
+    The one poll loop in this codebase, so every caller that sends an A2A
+    message and waits for the answer obeys the same timeout, cancel and
+    unsupported-state rules.  Raises :class:`A2ATaskUnfinished` when the task
+    cannot get there.
+    """
+    task_id = str(task.get("id") or "") or None
+    deadline = clock() + endpoint.timeout_seconds
+    while task_state(task) not in TERMINAL_STATES:
+        state = task_state(task)
+        if state in UNSUPPORTED_STATES:
+            if cancel is not None:
+                await cancel(task_id)
+            raise A2ATaskUnfinished(
+                f"remote task needs {state}, which blocking delegation cannot supply",
+                state=state,
+                task_id=task_id,
+            )
+        if task_id is None:
+            raise A2ATaskUnfinished("remote agent returned a task without an id")
+        if clock() >= deadline:
+            if cancel is not None:
+                await cancel(task_id)
+            raise A2ATaskUnfinished(
+                f"remote task timed out after {endpoint.timeout_seconds}s",
+                state=state,
+                task_id=task_id,
+            )
+        await asyncio.sleep(endpoint.poll_interval_seconds)
+        try:
+            task = await asyncio.to_thread(client.call, "tasks/get", {"id": task_id})
+        except A2AProtocolError as exc:
+            raise A2ATaskUnfinished(str(exc), state=state, task_id=task_id) from exc
+    return task
+
+
 class A2AAgentAdapter:
     """Delegate one structured request to a remote A2A agent and come back.
 
@@ -241,41 +308,20 @@ class A2AAgentAdapter:
                 request, result.get("parts") or [], state="completed", task_id=None
             )
 
-        task = result
-        task_id = str(task.get("id") or "") or None
-        deadline = self._clock() + self.endpoint.timeout_seconds
-        while self._state(task) not in TERMINAL_STATES:
-            state = self._state(task)
-            if state in UNSUPPORTED_STATES:
-                await self.cancel(task_id)
-                return self._failed(
-                    request,
-                    f"remote task needs {state}, which blocking delegation cannot supply",
-                    task_id=task_id,
-                    state=state,
-                )
-            if task_id is None:
-                return self._failed(
-                    request, "remote agent returned a task without an id", task_id=None
-                )
-            if self._clock() >= deadline:
-                await self.cancel(task_id)
-                return self._failed(
-                    request,
-                    f"remote task timed out after {self.endpoint.timeout_seconds}s",
-                    task_id=task_id,
-                    state=state,
-                )
-            await asyncio.sleep(self.endpoint.poll_interval_seconds)
-            try:
-                task = await asyncio.to_thread(
-                    self.client.call, "tasks/get", {"id": task_id}
-                )
-            except A2AProtocolError as exc:
-                # Execution had already started; this is a failed attempt, never
-                # a free failover to a second provider.
-                return self._failed(request, str(exc), task_id=task_id)
+        try:
+            task = await await_task(
+                self.client,
+                self.endpoint,
+                result,
+                clock=self._clock,
+                cancel=self.cancel,
+            )
+        except A2ATaskUnfinished as exc:
+            # Execution had already started; this is a failed attempt, never a
+            # free failover to a second provider.
+            return self._failed(request, str(exc), task_id=exc.task_id, state=exc.state)
 
+        task_id = str(task.get("id") or "") or None
         state = self._state(task)
         if state != "completed":
             message = self._error_text(task) or f"remote task {state}"
@@ -362,10 +408,7 @@ class A2AAgentAdapter:
 
     @staticmethod
     def _state(task: dict) -> str:
-        status = task.get("status")
-        if isinstance(status, dict):
-            return str(status.get("state") or "").lower()
-        return str(status or "").lower()
+        return task_state(task)
 
     @staticmethod
     def _error_text(task: dict) -> str:

@@ -8,9 +8,11 @@ Two implementations ship:
 
 * :class:`InProcessAgentRuntime` — a scripted, network-free runtime used by the
   tests, exactly as ``FakeLLMBackend`` is used for the LLM boundary.
-* :class:`A2AAgentRuntime` — the seam for a real external Agent Runtime (Little
-  Agent or anything else that answers A2A), reusing the existing
-  ``providers/a2a.py`` boundary rather than adding a second protocol client.
+* :class:`A2AAgentRuntime` — a real external Agent Runtime (Little Agent or
+  anything else that answers A2A), reached through a transport that reuses the
+  existing ``providers/a2a.py`` boundary rather than a second protocol client.
+  Nothing in the orchestrator changes when one replaces the other; that is the
+  point of the interface.
 
 Messages an Agent sends back are *queued*, not delivered re-entrantly: the
 orchestrator drains them after the current step, the same way the Runtime drains
@@ -28,6 +30,16 @@ from .models import A2AMessage, A2AMessageType, ProjectAgentConfig
 logger = logging.getLogger("nexus_seed.orchestrator.agent_runtime")
 
 
+class AgentUnavailable(RuntimeError):
+    """The Project Agent could not be reached, or did not answer in contract.
+
+    Deliberately not an escalation: an Agent that cannot be talked to is a
+    transport problem and is retryable, while ``NEED_CAPABILITY`` and friends
+    are statements *by* a working Agent about its Project.  Confusing the two
+    would block a Project for a restart of the agent process.
+    """
+
+
 @runtime_checkable
 class AgentRuntime(Protocol):
     """Somewhere a generic Project Agent can be started and talked to."""
@@ -36,6 +48,16 @@ class AgentRuntime(Protocol):
 
     async def spawn(self, config: ProjectAgentConfig) -> str:
         """Start an agent for ``config`` and return its endpoint (or ``""``)."""
+        ...
+
+    async def attach(self, config: ProjectAgentConfig) -> None:
+        """Re-adopt an Agent that already exists, so it can be talked to again.
+
+        Called for an Agent read back from the database — after a restart the
+        runtime has never seen it, but the Project record says it owns the
+        Project, so the config is rebuilt and handed back rather than a second
+        Agent being started for the same Project.
+        """
         ...
 
     async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:
@@ -83,6 +105,10 @@ class InProcessAgentRuntime:
         logger.info("in-process agent %s started for %s", config.agent_id, config.project_id)
         return ""
 
+    async def attach(self, config: ProjectAgentConfig) -> None:
+        """Re-adopt an agent that was recorded by an earlier run."""
+        self.configs[config.agent_id] = config
+
     async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:
         """Run the scripted behaviour and queue whatever it reports back."""
         self.delivered.append((agent_id, envelope))
@@ -120,55 +146,95 @@ class InProcessAgentRuntime:
         return agent_id in self.configs
 
 
-class A2AAgentRuntime:
-    """Seam for a real external Agent Runtime reached over A2A.
+@runtime_checkable
+class ProjectAgentTransport(Protocol):
+    """How :class:`A2AAgentRuntime` reaches a real Project Agent.
 
-    Deliberately thin and unfinished in this phase: it records what would be
-    sent so the orchestration can be wired and reviewed, and leaves the actual
-    transport to the existing ``providers/a2a.py`` boundary.  Nothing in the
-    orchestrator changes when this replaces :class:`InProcessAgentRuntime` —
-    that is the point of the interface.
+    Everything about HTTP, JSON-RPC and A2A framing lives behind this — see
+    :mod:`nexus_seed.providers.project_agent`.  The orchestrator only knows
+    that a Project can be handed over and that messages come back.
+    """
+
+    async def open(self, config: ProjectAgentConfig) -> str:
+        """Make the Agent ready and return the endpoint it is reached at."""
+        ...
+
+    async def send(
+        self, config: ProjectAgentConfig, envelope: dict[str, Any]
+    ) -> list[A2AMessage]:
+        """Delegate a goal or an added task and return what the Agent reported."""
+        ...
+
+    async def close(self, agent_id: str) -> None:
+        """Release whatever the Agent was holding."""
+        ...
+
+    async def alive(self) -> bool:
+        """Whether the remote Agent Runtime is answering."""
+        ...
+
+
+class A2AAgentRuntime:
+    """A Project Agent that runs in a separate process, reached over A2A.
+
+    The remote runtime is generic and holds no project state: the Project *is*
+    the delegation, so this runtime keeps only the config each Agent was given
+    (rebuilt from the database through ``attach`` after a restart) and queues
+    what the Agent answers for the orchestrator to drain.
+
+    A transport failure raises :class:`AgentUnavailable` rather than being
+    turned into an escalation, so an agent process that is simply down never
+    looks like a Project that lacks a Capability.
     """
 
     name = "a2a"
 
-    def __init__(self, *, endpoint: str, transport: Any | None = None) -> None:
-        self.endpoint = endpoint
+    def __init__(self, transport: ProjectAgentTransport) -> None:
         self.transport = transport
+        self.configs: dict[str, ProjectAgentConfig] = {}
         self._outbox: list[A2AMessage] = []
 
     async def spawn(self, config: ProjectAgentConfig) -> str:
-        """Announce a new project to the external Agent Runtime."""
-        if self.transport is None:
-            raise NotImplementedError(
-                "A2AAgentRuntime needs a transport; use InProcessAgentRuntime for tests"
+        """Make the remote runtime ready for this project and record its config."""
+        endpoint = await self.transport.open(config)
+        self.configs[config.agent_id] = config
+        logger.info(
+            "project %s delegated to external agent %s at %s",
+            config.project_id,
+            config.agent_id,
+            endpoint or "(no endpoint)",
+        )
+        return endpoint
+
+    async def attach(self, config: ProjectAgentConfig) -> None:
+        """Re-adopt an Agent recorded by an earlier run, without a remote call."""
+        self.configs[config.agent_id] = config
+
+    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:
+        """Hand the whole Project (or one added Task) to the remote Agent."""
+        config = self.configs.get(agent_id)
+        if config is None:
+            raise AgentUnavailable(
+                f"agent {agent_id} is not known to this runtime; it must be "
+                "spawned or attached before work is delegated to it"
             )
-        await self.transport.spawn(config)  # pragma: no cover - needs a live endpoint
-        return self.endpoint
+        self._outbox.extend(await self.transport.send(config, envelope))
 
-    async def deliver(self, agent_id: str, envelope: dict[str, Any]) -> None:  # pragma: no cover
-        """Send a goal or task to the remote agent."""
-        if self.transport is None:
-            raise NotImplementedError("A2AAgentRuntime needs a transport")
-        await self.transport.deliver(agent_id, envelope)
+    async def poll(self) -> list[A2AMessage]:
+        """Return and clear what the remote Agents have reported."""
+        pending, self._outbox = self._outbox, []
+        return pending
 
-    async def poll(self) -> list[A2AMessage]:  # pragma: no cover - needs a live endpoint
-        """Return messages the remote agents have posted back."""
-        if self.transport is None:
-            return []
-        received = await self.transport.poll()
-        return list(received)
+    async def stop(self, agent_id: str) -> None:
+        """Release the remote Agent and forget its config."""
+        self.configs.pop(agent_id, None)
+        await self.transport.close(agent_id)
 
-    async def stop(self, agent_id: str) -> None:  # pragma: no cover
-        """Ask the remote runtime to stop the agent."""
-        if self.transport is not None:
-            await self.transport.stop(agent_id)
-
-    async def health(self, agent_id: str) -> bool:  # pragma: no cover
-        """Ask the remote runtime whether the agent is alive."""
-        if self.transport is None:
+    async def health(self, agent_id: str) -> bool:
+        """Whether this Agent is known here and its runtime is answering."""
+        if agent_id not in self.configs:
             return False
-        return bool(await self.transport.health(agent_id))
+        return bool(await self.transport.alive())
 
 
 def status_message(project_id: str, summary: str, **payload: Any) -> A2AMessage:
@@ -197,8 +263,10 @@ def escalation(project_id: str, type: A2AMessageType, **payload: Any) -> A2AMess
 __all__ = [
     "A2AAgentRuntime",
     "AgentRuntime",
+    "AgentUnavailable",
     "Behaviour",
     "InProcessAgentRuntime",
+    "ProjectAgentTransport",
     "completed_message",
     "escalation",
     "status_message",
