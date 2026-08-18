@@ -23,6 +23,8 @@ from .agent_runtime import (
 )
 from .context_manager import ContextManager
 from .models import (
+    ROUTING_LIST_LIMIT,
+    ROUTING_TEXT_LIMIT,
     A2AMessage,
     A2AMessageType,
     Agent,
@@ -64,6 +66,8 @@ __all__ = [
     "ProjectStatus",
     "RemoteWorkLost",
     "RoutingAction",
+    "ROUTING_LIST_LIMIT",
+    "ROUTING_TEXT_LIMIT",
     "RoutingContext",
     "RoutingDecision",
     "completed_message",

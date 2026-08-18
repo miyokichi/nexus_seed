@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from nexus_seed.backends import FakeLLMBackend, proposal_response
 from nexus_seed.orchestrator import (
+    ROUTING_LIST_LIMIT,
+    ROUTING_TEXT_LIMIT,
     InProcessAgentRuntime,
     ProjectOrchestrator,
     ProjectStatus,
@@ -109,4 +111,34 @@ async def test_router_without_backend_creates_project(tmp_path):
     assert result.action is RoutingAction.CREATE_PROJECT
     assert result.confidence == 0.0
     assert orch.projects.all()[0].goal == "調べておいて"
+    orch.close()
+
+
+async def test_the_routing_context_is_compressed(tmp_path):
+    """An Agent's whole report must not become the routing prompt.
+
+    A summary grows with the work; the routing prompt must not, or the router
+    times out and the request is decided by its fallback instead of by meaning.
+    """
+    orch = ProjectOrchestrator(tmp_path / "o.db", agent_runtime=InProcessAgentRuntime())
+    project = orch.projects.create("g" * 900)
+    orch.projects.set_summary(project, "s" * 2000)
+    orch.projects.block(project, kind="NEED_RESOURCE", reason="r" * 2000)
+    for index in range(9):
+        orch.projects.add_task(project, f"task {index} " + "t" * 900)
+
+    [offered] = orch.context.build("次はどうする？").active_projects
+
+    assert len(offered["goal"]) <= ROUTING_TEXT_LIMIT
+    assert len(offered["summary"]) <= ROUTING_TEXT_LIMIT
+    assert offered["summary"].endswith("…")
+    assert len(offered["blockers"]) == 1
+    assert len(offered["blockers"][0]) <= ROUTING_TEXT_LIMIT
+    # Only the most recent few tasks, each clipped.
+    assert len(offered["open_tasks"]) == ROUTING_LIST_LIMIT
+    assert offered["open_tasks"][-1].startswith("task 8")
+    assert all(len(task) <= ROUTING_TEXT_LIMIT for task in offered["open_tasks"])
+
+    # The record itself keeps everything; only the prompt is shortened.
+    assert len(orch.projects.get(project.id).summary) == 2000
     orch.close()

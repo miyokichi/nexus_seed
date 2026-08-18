@@ -19,6 +19,17 @@ from typing import Any
 
 from ..core.event import utcnow
 
+#: How much of a Project's own words the ProjectRouter is given.
+#:
+#: The router decides *which* project a request belongs to, so it needs enough
+#: to recognise one — not the Agent's whole report.  An unbounded summary makes
+#: the routing prompt grow with every project until the decision times out, and
+#: a router that cannot answer is a request routed by its fallback.
+ROUTING_TEXT_LIMIT = 300
+
+#: How many open tasks and blockers of one Project the router is shown.
+ROUTING_LIST_LIMIT = 5
+
 #: Prefix of an orchestrator-owned project identifier.
 PROJECT_ID_PREFIX = "project-"
 
@@ -52,6 +63,14 @@ LIVE_STATUSES = frozenset(
 TERMINAL_STATUSES = frozenset(
     {ProjectStatus.COMPLETED, ProjectStatus.FAILED, ProjectStatus.CANCELLED}
 )
+
+
+def clip(text: str, limit: int = ROUTING_TEXT_LIMIT) -> str:
+    """Shorten ``text`` for a routing prompt, saying that it was shortened."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
 
 
 def new_project_id() -> str:
@@ -126,16 +145,25 @@ class Project:
         }
 
     def to_routing_dict(self) -> dict[str, Any]:
-        """Return the compact form the ProjectRouter is asked to reason over."""
+        """Return the compact form the ProjectRouter is asked to reason over.
+
+        Compressed on purpose: what a project is about, how it is going, and
+        what it is stuck on — clipped, and only the most recent few of each.
+        The whole story stays in the record for people to read.
+        """
         return {
             "id": self.id,
-            "goal": self.goal,
+            "goal": clip(self.goal),
             "status": self.status.value,
             "priority": self.priority,
-            "summary": self.summary,
-            "open_tasks": [task.get("description", "") for task in self.tasks],
+            "summary": clip(self.summary),
+            "open_tasks": [
+                clip(task.get("description", ""))
+                for task in self.tasks[-ROUTING_LIST_LIMIT:]
+            ],
             "blockers": [
-                blocker.get("reason", "") for blocker in self.current_blockers
+                clip(blocker.get("reason", ""))
+                for blocker in self.current_blockers[-ROUTING_LIST_LIMIT:]
             ],
         }
 
@@ -434,6 +462,8 @@ class A2AMessage:
 
 __all__ = [
     "AGENT_ID_PREFIX",
+    "ROUTING_LIST_LIMIT",
+    "ROUTING_TEXT_LIMIT",
     "OPEN_ASSIGNMENTS",
     "PROJECT_ID_PREFIX",
     "A2AMessage",
@@ -451,6 +481,7 @@ __all__ = [
     "RoutingContext",
     "RoutingDecision",
     "TERMINAL_STATUSES",
+    "clip",
     "new_agent_id",
     "new_project_id",
 ]

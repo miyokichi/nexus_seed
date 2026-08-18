@@ -20,7 +20,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from .models import Project, RoutingContext
+from .models import Project, RoutingContext, clip
 from .project_manager import ProjectManager
 
 logger = logging.getLogger("nexus_seed.orchestrator.context_manager")
@@ -61,7 +61,12 @@ class ContextManager:
         finished = [p for p in self.projects.all() if not p.is_live]
         finished.sort(key=lambda p: p.updated_at, reverse=True)
         recent = [
-            {"id": p.id, "goal": p.goal, "status": p.status.value, "summary": p.summary}
+            {
+                "id": p.id,
+                "goal": clip(p.goal),
+                "status": p.status.value,
+                "summary": clip(p.summary),
+            }
             for p in finished[: self.recent_summary_limit]
         ]
 
