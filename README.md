@@ -24,14 +24,18 @@ The Project Orchestrator is available as a Python API and includes:
 - the invariant **one Project = one Agent**;
 - audited handling of completion, status, blockers, human-input requests, and
   newly discovered Projects;
-- restart-safe Project and Agent state;
-- a deterministic `InProcessAgentRuntime` for tests and local integration; and
+- restart-safe Project, Agent and hand-over state, reconciled on start;
+- a deterministic `InProcessAgentRuntime` for tests and local integration;
 - `A2AAgentRuntime`, which delegates a whole Project to a real external Agent
-  over A2A, reached from `nexus-seed project "<request>"`.
+  over A2A;
+- ordinary requests — `nexus-seed task`, a webhook, any connector — routed into
+  Projects behind `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`; and
+- a Cockpit **Projects** view over the orchestrator's own records.
 
-One integration boundary is intentionally not presented as complete: the
-webhook server and Cockpit still start the pre-redesign event-processing
-application, so they are not yet entry points to `ProjectOrchestrator`.
+What is deliberately not built yet: several Agents on one Project, Agents
+talking to each other, and merging the orchestrator's Projects with the earlier
+Goal-derived projection. The two kinds of project are shown separately rather
+than reconciled.
 
 The earlier durable runtime remains in the repository, is tested, and provides
 the compatibility application. See
@@ -122,14 +126,6 @@ Project Agents run. `InProcessAgentRuntime` is a scripted fake;
 
 ## Running a Project on a real Agent
 
-`nexus-seed project` is the Project Orchestrator's entry point, and it is a
-different door from `nexus-seed task`:
-
-```text
-nexus-seed task     -> the earlier durable Goal / Work runtime
-nexus-seed project  -> the ProjectOrchestrator
-```
-
 Start an external Agent Runtime in its own terminal. Any A2A agent works; the
 example is Little Agent serving one of its profiles, with a workspace it may
 read and write:
@@ -184,6 +180,66 @@ running the command again delegates it once more.
 
 Leave `NEXUS_SEED_PROJECT_AGENT_RUNTIME` unset (or `in_process`) to use the
 deterministic runtime — the orchestration is identical either way.
+
+`nexus-seed project` waits for the Project by default because it is the
+explicit door; pass `--no-wait` for the same hand-off the resident server does.
+
+## Normal operation
+
+With the orchestrator switched on, ordinary requests become Projects. Run
+NEXUS SEED, and talk to it the way you already did:
+
+```dotenv
+NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED=true
+```
+
+```powershell
+nexus-seed                                        # resident
+nexus-seed task "Analyze samples/sample_sales.csv and find why July fell"
+```
+
+`task` returns as soon as the request is accepted — a Project can take as long
+as it takes. What happens next happens on the server's own tick:
+
+```text
+CLI / webhook / connector -> Ingress -> human_message -> ProjectRouter
+                                                      -> Project + Agent
+                                                      -> A2A hand-over
+```
+
+The hand-over is durable. What the Agent owes NEXUS SEED — which goal or task,
+the remote handle, how many attempts, when to retry — is written to SQLite, so
+stopping NEXUS SEED mid-run loses nothing: on the next start it re-adopts the
+same Agent and picks up whatever happened while it was down. An Agent Runtime
+that is unreachable is retried a few times and then left alone; it never turns
+into a blocked Project.
+
+Watch it in the Cockpit's **Projects** view (`/cockpit`), which reads the
+orchestrator's own records. The earlier Goal-derived projection is still there
+under **Goal Projects** — two different things called "project", kept apart on
+purpose rather than merged.
+
+`nexus-seed task` also still updates World State through the existing
+interpretation path: the flag adds the Project route, it does not remove
+perception.
+
+### Unblocking a Project
+
+When an Agent cannot continue it escalates, and the Project is blocked with the
+reason. Answer it the same way you asked for it:
+
+```powershell
+nexus-seed task "Analyze sales.csv and compare it against SAP prior-year data"
+# -> NEED_RESOURCE: there is no SAP data here -> BLOCKED
+
+nexus-seed task "Forget SAP. Carry on with the June data we already have."
+# -> ADD_TASK_TO_PROJECT on the same project, same agent -> ACTIVE -> COMPLETED
+```
+
+The router is given the blocked and waiting Projects along with the active
+ones, so an answer reaches the Project that is waiting for it instead of
+starting a second one. The blocker is not deleted when it clears — it is marked
+resolved, and by what, so the Project's history still says what once stopped it.
 
 ## Compatibility application
 
@@ -264,7 +320,8 @@ python -m nexus_seed.demo
 
 `pytest` never needs an external Agent: the orchestrator tests use
 `InProcessAgentRuntime`, and the A2A boundary is tested against a scripted local
-HTTP server. The end-to-end tests that need a real Agent live in
+HTTP server — including the durable hand-over, the bounded retry, and restart
+reconciliation. The end-to-end tests that need a real Agent live in
 `tests/integration/` and skip themselves unless one is pointed at:
 
 ```powershell

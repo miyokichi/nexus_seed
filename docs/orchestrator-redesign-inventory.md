@@ -44,8 +44,9 @@ is classified below.
 | `providers/a2a.py` | The one A2A client and poll loop; `A2AAgentRuntime` reaches a real Project Agent through it — a second protocol client was deliberately not written |
 | `providers/project_agent.py` | The wire side of one whole delegation: PROJECT_ASSIGNMENT out, the eight message types back |
 | `control/*`, `storage/control_store.py` | Authenticated human commands and durable Goals — how a person reaches the orchestrator |
-| `adapters/*`, `ingress/*`, `ingress_cli.py`, `app.py`, `operations.py` | The outside world still becomes an Event before anything acts on it |
-| `cockpit/*`, `chat/*` | Read-only human views; they read projections and change nothing |
+| `adapters/*`, `ingress/*`, `ingress_cli.py`, `app.py`, `operations.py` | The outside world still becomes an Event before anything acts on it — and, with `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`, a `human_message` becomes Project work through `processes/project_orchestration.py` |
+| `cockpit/*` (Projects view) | Reads `orchestrator_projects` directly, shown apart from the Goal-derived projection |
+| `chat/*` | Read-only human views; they read projections and change nothing |
 | `world/*`, `storage/state_store.py`, `processes/semantic.py`, `intelligence/*`, `processes/llm_interpret.py` | World State is the context the router reasons over; the LLM-proposal boundary is unchanged |
 | `context/*` | Declared per-activation views; the same discipline the ContextManager follows |
 | `delivery/*`, `resources/*` | Durable delivery and versioned documents, unchanged |

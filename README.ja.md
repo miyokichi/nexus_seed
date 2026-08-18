@@ -20,14 +20,16 @@ NEXUS SEEDが管理します。Task分解、Capability選択、Tool利用、実�
 - 新規Project作成、既存ProjectへのTask追加、Project更新、無視を選ぶsemantic routing
 - **1 Project = 1 Agent** の不変条件
 - 完了、進捗、blocker、人への確認、新規Project発見の監査付き処理
-- 再起動後も復元できるProject・Agent状態
+- 再起動時にreconcileされる、Project・Agent・委譲状態の永続化
 - テストやローカル統合向けの決定的な`InProcessAgentRuntime`
 - Project全体を実際の外部AgentへA2Aで委譲する`A2AAgentRuntime`
-  （`nexus-seed project "<request>"`から利用）
+- `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`により、`nexus-seed task`・webhook・
+  各種connectorからの通常requestをProjectへrouting
+- Cockpitの**Projects**画面（orchestrator自身のrecordを表示）
 
-まだ完成扱いでない統合境界は1つです。webhook serverとCockpitは現在も再設計前の
-event-processing applicationを起動するため、`ProjectOrchestrator`の入口には
-なっていません。
+今回も意図的に作っていないもの: 1 Projectへの複数Agent、Agent同士の直接通信、
+そして`orchestrator_projects`と従来のGoal由来projectionの統合です。2種類のProjectは
+統合せず、別々に表示します。
 
 従来のdurable runtimeは互換applicationとしてリポジトリに残り、テストも維持されています。
 各moduleの`KEEP`、`MOVE_TO_AGENT_RUNTIME`、`DEPRECATE`の分類は
@@ -115,14 +117,6 @@ Project Agentをどこで動かすかは、`agent_runtime=`へ渡す`AgentRuntim
 
 ## 実Agentでの実行
 
-`nexus-seed project`が新しいProject Orchestratorの入口です。`nexus-seed task`とは
-別の入口として維持します。
-
-```text
-nexus-seed task     -> 従来のdurable Goal / Work runtime
-nexus-seed project  -> 新しいProjectOrchestrator
-```
-
 外部Agent Runtimeを別terminalで起動します。A2Aを話すAgentであれば何でも構いません。
 次の例はLittle Agentのprofileを、読み書きできるworkspace付きで起動しています。
 
@@ -176,6 +170,61 @@ Agent Runtimeが停止している状態と、Projectが遂行できない状態
 
 `NEXUS_SEED_PROJECT_AGENT_RUNTIME`を未設定（または`in_process`）にすれば決定的な
 runtimeで動きます。orchestration自体はどちらでも同一です。
+
+`nexus-seed project`は明示的な入口なので既定でProjectの完了まで待ちます。常駐時と
+同じく受付だけで返す場合は`--no-wait`を付けてください。
+
+## 通常運転
+
+Project Orchestratorを有効にすると、通常のrequestがProjectになります。NEXUS SEEDを
+常駐させ、これまでどおりの入口から依頼します。
+
+```dotenv
+NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED=true
+```
+
+```powershell
+nexus-seed                                        # 常駐起動
+nexus-seed task "samples/sample_sales.csvを分析して2026年7月の売上低下原因を調べて"
+```
+
+`task`はrequestを受け付けた時点で返ります。Projectは必要なだけ時間がかかるためで、
+以降の処理は常駐側のtickで進みます。
+
+```text
+CLI / webhook / connector -> Ingress -> human_message -> ProjectRouter
+                                                      -> Project + Agent
+                                                      -> A2Aへ委譲
+```
+
+委譲は永続化されます。どのgoal/taskを渡したか、remote task id、試行回数、次回retry時刻を
+SQLiteへ記録するため、実行途中でNEXUS SEEDを停止しても失われません。次回起動時に同じ
+Agentをre-adoptし、停止中に起きたことを回収します。Agent Runtimeへ到達できない場合は
+上限付きでretryし、それ以上は追わずに放置します。Projectのblockerにはしません。
+
+状況はCockpitの**Projects**画面（`/cockpit`）で確認できます。従来のGoal由来projectionは
+**Goal Projects**として残しています。同じ「Project」という語でも別物なので、統合せず
+分けて表示します。
+
+なお`nexus-seed task`は従来どおりWorld Stateの解釈経路も通ります。このflagはProjectへの
+経路を追加するものであり、知覚を止めるものではありません。
+
+### BLOCKED Projectの再開
+
+Agentが自力で続行できない場合はescalationを返し、Projectはその理由とともにblockされます。
+解除は依頼と同じ入口から行います。
+
+```powershell
+nexus-seed task "sales.csvを分析し、さらにSAPから前年同期データを取得して比較して"
+# -> NEED_RESOURCE: SAPデータが無い -> BLOCKED
+
+nexus-seed task "SAPは使わなくていい。今ある2026年6月データだけで分析を続けて"
+# -> ADD_TASK_TO_PROJECT（同じProject・同じAgent）-> ACTIVE -> COMPLETED
+```
+
+ProjectRouterにはactiveなProjectだけでなくBLOCKED・WAITING_HUMANのProjectも渡します。
+人からの回答が新規Project扱いにならず、待っているProjectへ戻るためです。blockerは解除時に
+削除せず、解除時刻と解除理由を記録して履歴として残します。
 
 ## 互換application
 
@@ -253,8 +302,9 @@ python -m nexus_seed.demo
 ```
 
 `pytest`は外部Agentを必要としません。orchestratorのtestは`InProcessAgentRuntime`を、
-A2A境界のtestはlocalのscripted HTTP serverを使います。実Agentが必要なend-to-end test
-だけが`tests/integration/`にあり、Agentを指定しない限りskipされます。
+A2A境界のtestはlocalのscripted HTTP serverを使います（永続化された委譲、上限付きretry、
+再起動時のreconcileを含みます）。実Agentが必要なend-to-end testだけが
+`tests/integration/`にあり、Agentを指定しない限りskipされます。
 
 ```powershell
 $env:NEXUS_SEED_PROJECT_AGENT_URL = "http://127.0.0.1:8801"

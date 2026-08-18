@@ -1299,6 +1299,76 @@ request -> ProjectRouter -> Project -> one Agent -> A2A -> external agent
 - **224.** `pytest` never depends on an external agent process; tests needing
   one live in `tests/integration/` and skip themselves.
 
+## Done in Project Orchestrator normal operation
+
+The orchestrator stopped being a separate command and became how NEXUS SEED
+handles requests:
+
+```text
+CLI / webhook / connector -> Ingress -> human_message -> route_request_to_project
+   -> ProjectRouter -> Project + Agent -> durable A2A hand-over
+   -> reconcile (tick, and on start) -> COMPLETED / BLOCKED / WAITING_HUMAN
+   -> human follow-up -> same Project, same Agent -> COMPLETED
+```
+
+- `processes/project_orchestration.py` is one ordinary Process behind
+  `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`, registered exactly the way Phase 6
+  is. Off is a strict no-op. Ingress is untouched: deduplication stays at the
+  boundary (one `source_event_key` is one Event is one activation), so the
+  router holds no idempotency logic. The Process carries the request across and
+  creates nothing itself.
+- Handing over and getting the answer are two steps. `AgentRuntime.deliver`
+  returns a `Dispatch` (what the Agent said now, plus a `handle` to ask about
+  later) and `collect(handle)` asks once — never waits. A Project therefore
+  takes as long as it takes without holding anything open.
+- `AgentAssignment` lives on the Agent record (`metadata["assignment"]`): kind,
+  task id, status, remote handle, attempts, dispatched-at, next-attempt-at. No
+  new table, and no copy of the Project — the envelope is rebuilt from the
+  Project each time, so a re-send carries it as it stands now.
+- `ProjectOrchestrator.reconcile()` is the one loop that moves Projects outside
+  a request: re-adopt, collect, retry, re-hand-over. Recovery is not a separate
+  path — the application calls the same method on start and on every tick.
+- Retry is bounded and widening (5 attempts, doubling to 5 min) and then stops.
+  `UNAVAILABLE` is not retried by reconcile; the next thing a person sends
+  starts a fresh hand-over. A `RemoteWorkLost` answer (A2A `-32001`) is the one
+  case that re-dispatches, because it is proof nothing is still running.
+- Blockers are never deleted. Resolving stamps `resolved_at` / `resolved_by`,
+  `Project.current_blockers` is what is in the way now, and a terminal status
+  resolves rather than clears. A follow-up Task resolves what blocked the
+  Project and the envelope carries that blocker, marked resolved, so the
+  instruction reaches the Agent against what it was stuck on.
+- The router is given BLOCKED and WAITING_HUMAN projects too, and told that a
+  request answering one of them is `ADD_TASK_TO_PROJECT`. Without that, a
+  person's answer becomes a second project beside the one already waiting.
+- Cockpit gained a **Projects** view over `orchestrator_projects` plus a detail
+  route (`/cockpit/api/orchestrator/projects/<id>`) showing the Agent, the
+  blocker history and the audited A2A channel. The Goal-derived projection
+  stays as **Goal Projects**; the two are never merged into one list.
+- With the flag on, a `human_message` still goes through the existing
+  interpretation path into World State. The flag adds the Project route; it
+  does not remove perception.
+
+## Project Orchestrator operation invariants (keep them)
+
+- **225.** Requests reach Projects through the existing Ingress and one
+  ordinary Process. No second intake path, and no idempotency logic outside the
+  Ingress boundary.
+- **226.** Accepting a request and finishing it are separate. Nothing waits on
+  an Agent inside a request; what is outstanding is durable.
+- **227.** Recovery is the steady-state loop. `reconcile()` is called on start
+  and on every tick; there is no separate restart path to keep in step.
+- **228.** A hand-over is re-sent only on proof the Agent lost it
+  (`RemoteWorkLost`), never on silence — anything vaguer could run the same
+  work twice.
+- **229.** Retries are bounded and stop. Transport trouble never sets a Project
+  to BLOCKED or FAILED.
+- **230.** Blockers are history, not just control state: resolved, never
+  deleted, and always attributable.
+- **231.** A person's answer goes back to the Project that is waiting for it,
+  with the same Agent — never to a new Project.
+- **232.** Orchestrator Projects and Goal-derived projects are shown apart. Two
+  different things sharing a word must not share a list.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,
