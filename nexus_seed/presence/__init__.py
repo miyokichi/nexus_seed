@@ -19,6 +19,7 @@ from .models import (
 )
 from .projections import (
     get_intention,
+    get_intention_for_pursuit,
     get_intentions,
     project_master,
     project_self,
@@ -38,6 +39,7 @@ __all__ = [
     "self_question_id",
     "get_experience_trace",
     "get_intention",
+    "get_intention_for_pursuit",
     "get_intentions",
     "intention_id_for_pursuit",
     "project_master",

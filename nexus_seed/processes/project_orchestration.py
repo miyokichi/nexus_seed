@@ -23,6 +23,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
+from ..orchestrator.pursuits import ProjectPursuits
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..orchestrator import ProjectOrchestrator
@@ -89,6 +90,12 @@ def bootstrap_project_orchestration(
         return False
     runtime.set_project_orchestrator(orchestrator)
     runtime.register_process(ROUTE_REQUEST, route_request_to_project)
+    # Projects are what NEXUS SEED is pursuing, so Phase 6 holds its Intentions
+    # about them.  Registered here rather than in the orchestrator itself: the
+    # orchestrator knows nothing about Phase 6, and should not.
+    runtime.register_pursuit_source(
+        "orchestrator.projects", ProjectPursuits(orchestrator.projects)
+    )
     logger.info("human messages are routed to the Project Orchestrator")
     return True
 
