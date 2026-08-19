@@ -308,6 +308,26 @@ project the instruction came from. Only then does the same authorized, audited
 nothing, and an explicit `/command` needs no LLM at all. Both the instruction
 and its outcome are appended to the project's own thread.
 
+### Instructing an orchestrator Project
+
+The orchestrator's own Projects take instructions from their Cockpit page:
+
+```text
+POST /cockpit/api/orchestrator/projects/<id>/instruct  {"message": "地域別の内訳も出して"}
+POST /cockpit/api/orchestrator/projects/<id>/unblock   {"note": "SAP権限を付与した"}
+```
+
+There is no command vocabulary here and no need for one. The instruction goes
+straight to the `ProjectRouter` with `origin_project_id` set, so it decides —
+semantically — whether this is more work for the Project (`ADD_TASK_TO_PROJECT`,
+same Agent) or an independent Goal (`CREATE_PROJECT`, a child Project with its
+own Agent). NEXUS SEED still only creates or extends a Project and delegates it;
+it never executes the work.
+
+`unblock` resolves the Project's blockers and hands it back to its Agent.
+Blockers are not deleted: each is stamped `resolved_at` / `resolved_by`, so why
+the Project stopped stays readable afterwards.
+
 ## Design boundaries
 
 The six fixed primitives remain `Event`, `Process`, `State`, `Context`,

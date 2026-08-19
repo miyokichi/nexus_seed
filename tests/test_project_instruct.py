@@ -294,4 +294,6 @@ async def test_instruct_endpoint_requires_token_and_executes(tmp_path):
 def test_cockpit_renders_an_instruction_form():
     assert "instruct-form" in APP_JS
     assert "指示する" in APP_JS
-    assert 'sendProject(instruct?"instruct":"chat"' in APP_JS
+    # The question form and the instruction form post to different endpoints.
+    assert '#chat-form, #instruct-form' in APP_JS
+    assert 'sendProject(form.id==="instruct-form"?"instruct":"chat"' in APP_JS

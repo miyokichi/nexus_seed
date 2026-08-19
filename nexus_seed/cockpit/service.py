@@ -226,6 +226,50 @@ class CockpitService:
         detail["tasks"] = list(project.tasks)
         return detail
 
+    async def orchestrator_instruct(
+        self, project_id: str, message: str
+    ) -> dict[str, Any] | None:
+        """Give one instruction to an orchestrator Project, or ``None`` if unknown.
+
+        There is no command vocabulary here and no need for one: the
+        ProjectRouter already decides whether an instruction is more work for
+        this Project or an independent Goal, and either way NEXUS SEED only
+        creates or extends a Project and delegates it.  The Cockpit never
+        executes the work itself.
+        """
+
+        orchestrator = getattr(self.runtime, "project_orchestrator", None)
+        if orchestrator is None:
+            return None
+        if self.orchestrator_projects.get(project_id) is None:
+            return None
+        text = (message or "").strip()
+        if not text:
+            raise ValueError("message must not be empty")
+
+        decision, touched = await orchestrator.submit(
+            text, source="cockpit-instruct", origin_project_id=project_id
+        )
+        return {
+            "project_id": project_id,
+            "decision": decision.to_dict(),
+            "affected_project_id": touched.id if touched else None,
+            "project": self.orchestrator_project(project_id),
+        }
+
+    async def orchestrator_unblock(
+        self, project_id: str, note: str = ""
+    ) -> dict[str, Any] | None:
+        """Clear a Project's blockers and hand it back to its Agent."""
+
+        orchestrator = getattr(self.runtime, "project_orchestrator", None)
+        if orchestrator is None:
+            return None
+        project = await orchestrator.resolve_block(project_id, note=(note or "").strip())
+        if project is None:
+            return None
+        return {"project_id": project_id, "project": self.orchestrator_project(project_id)}
+
     def _orchestrator_project(self, project) -> dict[str, Any]:
         """One orchestrator Project as the interface shows it."""
 

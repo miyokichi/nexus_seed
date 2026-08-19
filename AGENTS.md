@@ -1395,6 +1395,18 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
    them to `ALLOWED_COMMANDS`, never by writing records from the chat layer.
 237. **No LLM must not mean no control.** Explicit `/commands` keep working.
 
+## Done in Orchestrator Project instructions
+
+- `POST /cockpit/api/orchestrator/projects/<id>/instruct` routes one instruction
+  through `ProjectOrchestrator.submit(..., origin_project_id=<id>)`.
+- `POST /cockpit/api/orchestrator/projects/<id>/unblock` calls `resolve_block`.
+- Deliberately **no** allow-list or scope guard here, unlike the Control Plane
+  box: the router is the mapping, and the only outcomes are "add a task to this
+  Project" or "create a child Project". Nothing executes work in NEXUS SEED, so
+  there is no command surface to constrain.
+- Cockpit shows the Project's Tasks as the instruction history, and offers
+  ブロック解除 only while a Project has unresolved blockers.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

@@ -291,6 +291,10 @@ class WebhookServer:
             clean_path == "/projects" or clean_path.startswith("/projects/")
         ):
             return self._project_response(clean_path, headers)
+        if method.upper() == "POST" and clean_path.startswith(
+            "/cockpit/api/orchestrator/projects/"
+        ):
+            return await self._orchestrator_action_response(clean_path, headers, raw_body)
         if method.upper() == "POST" and clean_path.startswith("/projects/"):
             return await self._project_chat_response(clean_path, headers, raw_body)
         if method.upper() != "POST":
@@ -415,6 +419,71 @@ class WebhookServer:
         return WebhookResponse(
             404, {"error": "unknown project path"}, headers=security_headers
         )
+
+    async def _orchestrator_action_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Instruct an orchestrator Project, or clear what is blocking it.
+
+        Both actions only reach the Project Orchestrator: an instruction adds
+        work to a Project (or becomes one), and unblocking hands the Project
+        back to its Agent.  Neither runs the work here.
+        """
+
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if self.cockpit is None:
+            return WebhookResponse(
+                404, {"error": "cockpit is disabled"}, headers=security_headers
+            )
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        # cockpit/api/orchestrator/projects/<id>/<action>
+        if len(parts) != 6 or parts[5] not in {"instruct", "unblock"}:
+            return WebhookResponse(
+                404, {"error": "unknown orchestrator path"}, headers=security_headers
+            )
+        project_id, action = unquote(parts[4]), parts[5]
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        if not isinstance(body, dict):
+            return WebhookResponse(
+                400, {"error": "body must be a JSON object"}, headers=security_headers
+            )
+
+        try:
+            if action == "instruct":
+                message = body.get("message")
+                if not isinstance(message, str) or not message.strip():
+                    return WebhookResponse(
+                        400,
+                        {"error": "message must be a non-empty string"},
+                        headers=security_headers,
+                    )
+                result = await self.cockpit.orchestrator_instruct(project_id, message)
+            else:
+                note = body.get("note")
+                result = await self.cockpit.orchestrator_unblock(
+                    project_id, note if isinstance(note, str) else ""
+                )
+        except ValueError as exc:
+            return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
+        if result is None:
+            return WebhookResponse(
+                404,
+                {"error": "project not found or orchestrator is disabled"},
+                headers=security_headers,
+            )
+        return WebhookResponse(200, result, headers=security_headers)
 
     async def _project_chat_response(
         self, path: str, headers: dict[str, str], raw_body: bytes
