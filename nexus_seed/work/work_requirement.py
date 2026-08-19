@@ -114,7 +114,10 @@ class WorkRequirement:
     constraints: dict = field(default_factory=dict)
     completion_criteria: list = field(default_factory=list)
     provider_directive: dict | None = None
-    goal_id: uuid.UUID | None = None
+    #: What this Work is for, as text.  Named ``goal_id`` in the column and in
+    #: A2A correlation because those are wire shapes; a pursuit id is a Project
+    #: id now, so it is no longer a UUID.
+    goal_id: str | None = None
     command_id: uuid.UUID | None = None
     pre_pause_status: str | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)

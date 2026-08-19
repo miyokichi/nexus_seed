@@ -13,7 +13,6 @@ from nexus_seed.backends.llm import FakeLLMBackend, proposal_response
 from nexus_seed.app import AppSettings
 from nexus_seed.capabilities.models import CapabilityRef
 from nexus_seed.context.requirements import ContextRequirements, ContinuationReq, WorkReq
-from nexus_seed.control.models import Goal
 from nexus_seed.core.event import Event
 from nexus_seed.core.process import ProcessDefinition, ProcessStatus
 from nexus_seed.presence import (
@@ -31,13 +30,8 @@ from nexus_seed.processes.actions import (
     waiting_for_action,
 )
 from nexus_seed.processes.autonomy import bootstrap_autonomy
-from nexus_seed.processes.control import (
-    GOAL_DECOMPOSITION_PROPOSED,
-    GoalPursuits,
-    _validate_goal_decomposition,
-    bootstrap_control,
-)
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
+from nexus_seed.processes.work_review import bootstrap_work_review
 from nexus_seed.processes.semantic import bootstrap_semantic
 from nexus_seed.processes.work_intelligence import bootstrap_work_intelligence
 from nexus_seed.runtime.runtime import Runtime
@@ -125,13 +119,11 @@ async def phase5g_probe(ctx):
 async def test_phase6_off_is_a_strict_noop(tmp_path):
     runtime = Runtime(tmp_path / "off.db")
     try:
-        bootstrap_control(runtime)
-        assert runtime.process_store.get_definition("evaluate_goal", "1").max_retries == 0
+        bootstrap_work_review(runtime)
         definitions_before = runtime.process_store.all_definitions()
         events_before = runtime.event_store.all()
         assert bootstrap_persistent_being(runtime, enabled=False) is False
         assert runtime.process_store.all_definitions() == definitions_before
-        assert runtime.process_store.get_definition("evaluate_goal", "1").max_retries == 0
         assert runtime.event_store.all() == events_before
         assert not hasattr(runtime, "_phase6_bootstrapped")
     finally:
@@ -148,110 +140,18 @@ async def test_phase6_application_setting_defaults_on_and_allows_explicit_off(
     assert AppSettings.from_env(tmp_path / "missing.env").phase6_enabled is False
 
 
-async def test_bare_phase6_goal_never_opens_advance_human_goal_gap(tmp_path):
-    runtime = extension_runtime(tmp_path, "bare-goal.db")
-    bootstrap_autonomy(runtime)
-    bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
-    bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
-    assert runtime.process_store.get_definition("evaluate_goal", "1").max_retries == 2
-    goal = Goal(
-        title="Prepare project review",
-        objective="prepare the project for review",
-        owner_identity_id="master-1",
-    )
-    runtime.control_store.save_goal(goal)
-    try:
-        await runtime.submit_event(Event("goal_created", "test", {"goal_id": str(goal.id)}))
-
-        assert get_intention(runtime, intention_id_for_pursuit(goal.id)) is not None
-        assert runtime.work_requirement_store.for_goal(goal.id) == []
-        assert runtime.get_capability("advance_human_goal", "1") is None
-        assert runtime.get_capability_gaps() == []
-        assert runtime.get_acquisition_sessions() == []
-    finally:
-        runtime.close()
 
 
-async def test_goal_decomposition_reaches_bounded_acquisition_and_reconciliation(tmp_path):
-    capability = "prepare_project_review"
-    runtime = extension_runtime(tmp_path, "decomposed-goal.db")
-    bootstrap_autonomy(runtime)
-    bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
-    definition = ProcessDefinition(
-        name="project_review_worker",
-        version="1",
-        handler="project_review_worker",
-        metadata={"role": "work"},
-        provides_capabilities=(CapabilityRef(capability),),
-    )
-    runtime.register_process(definition, concrete_goal_worker)
-    runtime.set_capability_enabled(capability, "1", False)
-    decomposition_backend = FakeLLMBackend(default=proposal_response({
-        "work": [{
-            "semantic_key": "project_review_preparation",
-            "objective": "prepare concrete review evidence",
-            "work_type": "project_review_work",
-            "required_capabilities": [{"name": capability}],
-            "available_input_types": [],
-            "required_output_types": [],
-            "completion_criteria": [],
-        }]
-    }))
-    runtime.register_backend("llm", decomposition_backend)
-    bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
-    goal = Goal(
-        title="Prepare project review",
-        objective="prepare the project for review",
-        owner_identity_id="master-1",
-    )
-    runtime.control_store.save_goal(goal)
-    try:
-        await runtime.submit_event(Event("goal_created", "test", {"goal_id": str(goal.id)}))
-
-        works = runtime.work_requirement_store.for_goal(goal.id)
-        assert len(works) == 1
-        assert [item.name for item in works[0].required_capabilities] == [capability]
-        assert works[0].status is WorkStatus.SATISFIED
-        assert runtime.event_store.by_type(GOAL_DECOMPOSITION_PROPOSED)
-        assert not any(
-            "advance_human_goal" in gap.missing_names
-            for gap in runtime.get_capability_gaps()
-        )
-
-        session = runtime.get_acquisition_sessions()[0]
-        assert session.status is AcquisitionStatus.COMPLETED
-        assert [decision.decision for decision in runtime.get_autonomy_decisions(session.id)] == [
-            AutonomyDecisionKind.AUTO,
-            AutonomyDecisionKind.AUTO,
-        ]
-        assert runtime.get_capability(capability, "1").enabled is True
-        reconciliations = [
-            item
-            for item in runtime.process_store.all_instances()
-            if item.definition_name == "reconcile_blocked_work"
-        ]
-        assert reconciliations
-        assert runtime.control_store.get_goal(goal.id).status.value == "ACHIEVED"
-    finally:
-        runtime.close()
 
 
-async def test_goal_decomposition_rejects_internal_lifecycle_capability():
-    with pytest.raises(ValueError, match="internal lifecycle placeholder"):
-        _validate_goal_decomposition([{
-            "semantic_key": "generic_advance",
-            "objective": "advance the goal",
-            "work_type": "human_goal_work",
-            "required_capabilities": [{"name": "advance_human_goal"}],
-        }])
+
+
+
 
 
 async def test_phase6_failure_does_not_disable_phase5g_runtime(tmp_path):
     runtime = Runtime(tmp_path / "failure-isolation.db")
     bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
     bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
     runtime.register_process(
         ProcessDefinition(
@@ -319,129 +219,6 @@ async def test_self_and_master_are_world_state_projections(tmp_path):
         runtime.close()
 
 
-async def test_unresolved_goal_can_start_from_durable_wakeup_without_a_command(tmp_path):
-    runtime = Runtime(tmp_path / "self-start.db")
-    bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
-    bootstrap_work_intelligence(runtime)
-    bootstrap_actions(runtime)
-    backend = FakeActionBackend()
-    runtime.register_backend("fake_action", backend)
-    runtime.register_process(GOAL_WORKER, phase6_goal_worker)
-    goal = Goal(
-        title="Unresolved durable goal",
-        objective="advance without a new command",
-        owner_identity_id="master-1",
-        success_criteria=[{
-            "type": "required_work",
-            "semantic_key": "self-start",
-            "objective": "advance without a new command",
-            "work_type": "persistent_goal_work",
-            "required_capabilities": ["advance_persistent_goal"],
-        }],
-    )
-    runtime.control_store.save_goal(goal)
-    bootstrap_persistent_being(runtime, enabled=True, wake_on_start=True)
-    try:
-        await runtime.run_pending()
-        work = runtime.work_requirement_store.for_goal(goal.id)
-        intention = get_intention(runtime, intention_id_for_pursuit(goal.id))
-        assert len(runtime.event_store.by_type("existence_wakeup")) == 1
-        assert len(work) == 1 and work[0].status is WorkStatus.SATISFIED
-        assert intention is not None and intention.status is IntentionStatus.SATISFIED
-        assert backend.effect_count == 1
-    finally:
-        runtime.close()
 
 
-async def test_persistent_existence_loop_survives_restart_and_acts_without_new_task(tmp_path):
-    database = tmp_path / "persistent-being.db"
-    goal = Goal(
-        title="Keep the project ready",
-        objective="produce the durable readiness artifact",
-        owner_identity_id="master-1",
-        success_criteria=[{
-            "type": "required_work",
-            "semantic_key": "phase6-readiness",
-            "objective": "produce the durable readiness artifact",
-            "work_type": "persistent_goal_work",
-            "required_capabilities": ["advance_persistent_goal"],
-        }],
-    )
 
-    first = Runtime(database)
-    bootstrap_semantic(first)
-    # An Intention is held about a *pursuit*, so something has to be supplying
-    # them; without a registered source Phase 6 is pursuing nothing.  Only the
-    # source is registered here — the Goal evaluator belongs to the restart.
-    first.register_pursuit_source("control.goals", GoalPursuits(first))
-    bootstrap_persistent_being(first, enabled=True, wake_on_start=False)
-    first.control_store.save_goal(goal)
-    await first.submit_event(Event(
-        "intention_declaration_requested",
-        "test",
-        {
-            "goal_id": str(goal.id),
-            "focus": goal.objective,
-            "status": "WAITING",
-            "reconsider_on": ["external_signal"],
-        },
-    ))
-    intention_id = intention_id_for_pursuit(goal.id)
-    before = get_intention(first, intention_id)
-    assert before is not None and before.status is IntentionStatus.WAITING
-    assert first.work_requirement_store.for_goal(goal.id) == []
-    first.close()
-
-    restarted = Runtime(database)
-    bootstrap_semantic(restarted)
-    bootstrap_control(restarted)
-    bootstrap_work_intelligence(restarted)
-    bootstrap_actions(restarted)
-    backend = FakeActionBackend()
-    restarted.register_backend("fake_action", backend)
-    restarted.register_process(GOAL_WORKER, phase6_goal_worker)
-    bootstrap_persistent_being(restarted, enabled=True, wake_on_start=True)
-    try:
-        restored = get_intention(restarted, intention_id)
-        assert restored is not None and restored.status is IntentionStatus.WAITING
-
-        # No new Command/task is submitted.  This is an external world Event;
-        # Attention recognizes the persisted condition and reopens the Intention.
-        await restarted.submit_event(Event(
-            "external_signal",
-            "sensor",
-            {"goal_id": str(goal.id), "message": "readiness evidence changed"},
-        ))
-
-        works = restarted.work_requirement_store.for_goal(goal.id)
-        restored = get_intention(restarted, intention_id)
-        assert len(works) == 1
-        assert works[0].status is WorkStatus.SATISFIED
-        assert restarted.control_store.get_goal(goal.id).status.value == "ACHIEVED"
-        assert restored is not None and restored.status is IntentionStatus.SATISFIED
-        assert backend.effect_count == 1
-
-        attention = restarted.event_store.by_type("attention_evaluated")
-        assert any(
-            event.payload["source_event_type"] == "external_signal"
-            and event.payload["disposition"] == "RELEVANT"
-            for event in attention
-        )
-        experiences = [
-            event for event in restarted.event_store.by_type("experience_recorded")
-            if event.payload.get("action", {}).get("action_proposal_id")
-        ]
-        assert experiences
-        trace = get_experience_trace(restarted, experiences[0].id)
-        assert trace is not None
-        assert trace.source_event is not None
-        assert trace.reflection is not None
-        assert trace.record.intention["goal_id"] == str(goal.id)
-
-        # The finite chain converges to the existing Runtime's idle/event-wait state.
-        assert restarted.get_pending_event_delivery_count() == 0
-        assert restarted.scheduler.next_runnable() is None
-        assert not restarted.process_store.instances_by_status(ProcessStatus.RUNNING)
-    finally:
-        restarted.close()

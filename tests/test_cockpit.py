@@ -20,15 +20,16 @@ from nexus_seed.autonomy.models import (
 from nexus_seed.capabilities.models import CapabilityRequirement
 from nexus_seed.cockpit import CockpitService, humanize_error
 from nexus_seed.cockpit.assets import APP_JS
-from nexus_seed.control.models import Goal
 from nexus_seed.core.event import Event
 from nexus_seed.extension.models import CapabilityGap
 from nexus_seed.presence.models import IntentionRecord
-from nexus_seed.processes.control import bootstrap_control
+from nexus_seed.orchestrator.models import Project, ProjectStatus
 from nexus_seed.processes.autonomy import bootstrap_autonomy
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
 from nexus_seed.processes.semantic import bootstrap_semantic
+from nexus_seed.orchestrator.pursuits import ProjectPursuits
 from nexus_seed.runtime.runtime import Runtime
+from nexus_seed.storage.orchestrator_store import ProjectStore
 from nexus_seed.work.work_requirement import WorkRequirement, WorkStatus
 
 
@@ -58,7 +59,6 @@ async def get_path(port: int, path: str, *, token: str | None = None):
 async def test_snapshot_is_read_only_and_groups_causal_activity(tmp_path):
     runtime = Runtime(tmp_path / "cockpit.db")
     bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
     bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
     try:
         await runtime.submit_event(
@@ -157,16 +157,18 @@ def test_cockpit_refresh_is_manual_only():
 
 def test_capability_assistance_aggregates_goal_trace_without_writing(tmp_path):
     runtime = Runtime(tmp_path / "assistance.db")
-    goal = Goal(
-        title="Self operation",
-        objective="LLMサーバーの状態を診断する",
-        owner_identity_id="operator",
+    projects = ProjectStore(runtime.db)
+    project = Project(
+        goal="LLMサーバーの状態を診断する",
+        summary="Self operation",
+        status=ProjectStatus.ACTIVE,
     )
-    runtime.control_store.save_goal(goal)
+    projects.save(project)
+    runtime.register_pursuit_source("orchestrator.projects", ProjectPursuits(projects))
     intention = IntentionRecord.for_pursuit(
-        goal.id,
+        project.id,
         "診断結果を得て次の対応を決める",
-        reason="Goalを具体的なWorkへ分解した",
+        reason="Projectを具体的なWorkへ分解した",
     )
     runtime.state_store.set(f"intention:{intention.id}", "record", intention.to_dict())
 
@@ -179,7 +181,7 @@ def test_capability_assistance_aggregates_goal_trace_without_writing(tmp_path):
             work_key=f"diagnose:{index}",
             objective=f"診断対象 {index + 1} を確認する",
             reason="Goal達成に診断が必要",
-            goal_id=goal.id,
+            goal_id=project.id,
             required_capabilities=[requirement],
             missing_capabilities=["diagnostic_probe"],
             status=WorkStatus.BLOCKED_CAPABILITY,

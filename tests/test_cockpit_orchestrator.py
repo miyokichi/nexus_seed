@@ -117,16 +117,17 @@ async def test_an_unknown_project_is_not_invented(tmp_path):
     runtime.close()
 
 
-async def test_legacy_and_orchestrator_projects_are_not_ambiguously_mixed(tmp_path):
+async def test_projects_are_reported_once(tmp_path):
+    """One kind of Project now, so the snapshot must not list it twice."""
+
     runtime, _orch, project = await blocked_runtime(tmp_path)
 
     snapshot = cockpit(runtime).snapshot()
 
-    # Two separate sections, and the orchestrator's project is only in its own.
-    orchestrator_ids = {row["id"] for row in snapshot["orchestrator"]["projects"]}
-    legacy_ids = {row.get("project_id") for row in snapshot["projects"]}
-    assert project.id in orchestrator_ids
-    assert orchestrator_ids & legacy_ids == set()
+    assert [row["id"] for row in snapshot["orchestrator"]["projects"]] == [project.id]
+    assert "projects" not in snapshot
+    # The list endpoint still answers, over the same records.
+    assert [row["project_id"] for row in cockpit(runtime).projects()] == [project.id]
     runtime.close()
 
 

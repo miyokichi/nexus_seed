@@ -314,9 +314,6 @@ class ProcessResult:
     acquisition_subscribers: list = field(default_factory=list)
     autonomy_decisions: list = field(default_factory=list)
     acquisition_attempts: list = field(default_factory=list)
-    #: Phase 5G Goal effects.  Goal remains domain data, never a core primitive.
-    goals: list = field(default_factory=list)
-    goal_updates: list[tuple] = field(default_factory=list)
     #: Explicit closure of another suspended instance whose continuation ended.
     process_instance_updates: list[tuple] = field(default_factory=list)
     join: JoinRequest | None = None
@@ -531,8 +528,6 @@ class ProcessContext:
     _acquisition_subscribers: list = field(default_factory=list)
     _autonomy_decisions: list = field(default_factory=list)
     _acquisition_attempts: list = field(default_factory=list)
-    _goals: list = field(default_factory=list)
-    _goal_updates: list[tuple] = field(default_factory=list)
     _continuations_to_delete: list[uuid.UUID] = field(default_factory=list)
     _process_instance_updates: list[tuple] = field(default_factory=list)
 
@@ -1067,15 +1062,6 @@ class ProcessContext:
             return self.services.get_resource_by_uri(str(criterion.get("uri"))) is not None
         return False
 
-    def record_goal(self, goal) -> object:
-        """Stage a new Goal for atomic persistence."""
-        self._goals.append(goal)
-        return goal
-
-    def update_goal(self, goal_id: uuid.UUID, status) -> None:
-        """Stage a Goal lifecycle transition."""
-        self._goal_updates.append((goal_id, getattr(status, "value", status)))
-
     def _staged(self) -> dict:
         """Every effect staged on this context, as ProcessResult kwargs."""
         return {
@@ -1134,8 +1120,6 @@ class ProcessContext:
             "acquisition_subscribers": list(self._acquisition_subscribers),
             "autonomy_decisions": list(self._autonomy_decisions),
             "acquisition_attempts": list(self._acquisition_attempts),
-            "goals": list(self._goals),
-            "goal_updates": list(self._goal_updates),
             "continuations_to_delete": list(self._continuations_to_delete),
             "process_instance_updates": list(self._process_instance_updates),
         }

@@ -396,12 +396,6 @@ def check_conflicts(result) -> None:
         label="acquisition attempt",
         signature=lambda value: (value.status, value.plan_id, value.result_id),
     )
-    result.goals = _normalize_domain_records(
-        result.goals,
-        label="goal",
-        signature=lambda value: (value.status.value, value.objective),
-    )
-    result.goal_updates = normalize_status_updates(result.goal_updates, label="goal")
     result.process_instance_updates = _normalize_process_instance_updates(
         result.process_instance_updates
     )

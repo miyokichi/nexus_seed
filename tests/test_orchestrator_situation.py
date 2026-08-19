@@ -142,11 +142,9 @@ async def test_the_shared_project_lookup_resolves_an_orchestrator_project(tmp_pa
 async def test_orchestrator_projects_are_known_to_the_scope_guard(tmp_path):
     runtime, _orch, project = await setup(tmp_path, quiet, "scope.db")
     try:
-        known = [item.project_id for item in get_project_summaries(runtime)]
-        assert project.id in known
-        # The Goal-Projects list keeps the two kinds apart while both exist.
-        hidden = get_project_summaries(runtime, include_orchestrator=False)
-        assert project.id not in [item.project_id for item in hidden]
+        [summary] = get_project_summaries(runtime)
+        assert summary.project_id == project.id
+        assert summary.objective == REQUEST
     finally:
         runtime.close()
 

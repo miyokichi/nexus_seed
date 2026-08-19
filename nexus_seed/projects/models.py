@@ -13,12 +13,7 @@ from typing import Any
 
 
 class ProjectOverallStatus(str, Enum):
-    """Deterministic status derived from existing Goal/Work/Review state.
-
-    The root Goal's own lifecycle outranks everything below it: a paused or
-    cancelled Goal describes the project regardless of what its Work happens to
-    be doing.  See ``projections.project_status`` for the full priority order.
-    """
+    """How a project reads to a person, in one word."""
 
     CANCELLED = "CANCELLED"
     PAUSED = "PAUSED"
@@ -32,18 +27,17 @@ class ProjectOverallStatus(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class Project:
-    """The thin management record: one root Goal, named and dated by that Goal.
+    """The thin management record naming one project.
 
-    Nothing here is stored separately.  ``title`` and ``objective`` are the root
-    Goal's own, and ``status`` is derived, so a Goal renamed or paused through
-    the Control Plane is immediately described correctly here.
+    Kept because the situation's JSON shape is a public surface; the durable
+    record itself is the orchestrator's :class:`nexus_seed.orchestrator.Project`.
     """
 
     project_id: str
-    root_goal_id: str | None
     title: str
     objective: str
     status: ProjectOverallStatus
+    root_goal_id: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

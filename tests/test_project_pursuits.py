@@ -132,8 +132,6 @@ async def test_phase6_holds_an_intention_about_the_project_itself(tmp_path):
         assert intention is not None
         assert intention.pursuit_id == project.id
         assert intention.focus == "原因を突き止める"
-        # No Goal was created anywhere along the way.
-        assert runtime.control_store.goals() == []
     finally:
         runtime.close()
 

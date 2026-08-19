@@ -1,24 +1,18 @@
-"""Phase 6 asks the Runtime what is being pursued, not the Control Plane.
+"""Phase 6 asks the Runtime what is being pursued, and a domain answers.
 
 The point of the seam is that "what NEXUS SEED is currently pursuing" is a
-question the Runtime relays and a *domain* answers.  Today the Control Plane
-answers "ACTIVE Goals"; when the Orchestrator takes over it will answer "live
-Projects", and nothing in Phase 6 should notice the difference.  These tests
-pin that independence rather than the current answer.
+question the Runtime relays and a *domain* answers.  The Project Orchestrator
+answers it today (see ``test_project_pursuits``); these tests pin the seam
+itself, with sources that belong to no domain at all.
 """
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 
-from nexus_seed.control.models import Goal
-from nexus_seed.core.event import Event
 from nexus_seed.presence import project_self
-from nexus_seed.processes.control import bootstrap_control
-from nexus_seed.pursuit import Pursuit, PursuitSource
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
+from nexus_seed.pursuit import Pursuit, PursuitSource
 from nexus_seed.runtime.runtime import Runtime
 
 
@@ -38,65 +32,42 @@ class ListSource(PursuitSource):
         return next((item for item in self.pursuits if item.id == str(pursuit_id)), None)
 
 
-def active_goal(title: str = "Ship the thing") -> Goal:
-    return Goal(title=title, objective=title.lower(), owner_identity_id="master-1")
-
-
 async def test_runtime_pursues_nothing_until_a_domain_says_otherwise(tmp_path):
     runtime = Runtime(tmp_path / "bare.db")
     try:
         assert runtime.active_pursuits() == []
+        assert runtime.get_pursuit("anything") is None
         assert project_self(runtime).active_pursuit_ids == ()
     finally:
         runtime.close()
 
 
-async def test_control_plane_registers_active_goals_as_the_pursuit_source(tmp_path):
-    runtime = Runtime(tmp_path / "control.db")
-    try:
-        bootstrap_control(runtime)
-        goal = active_goal()
-        runtime.control_store.save_goal(goal)
-        [pursuit] = runtime.active_pursuits()
-        assert pursuit.id == str(goal.id)
-        assert pursuit.objective == goal.objective
-        assert pursuit.active is True
-        assert project_self(runtime).active_pursuit_ids == (str(goal.id),)
-        # Resolvable by id whether or not it is still live.
-        assert runtime.get_pursuit(goal.id).id == str(goal.id)
-    finally:
-        runtime.close()
-
-
-async def test_achieved_goals_stop_being_pursued(tmp_path):
-    runtime = Runtime(tmp_path / "completed.db")
-    try:
-        bootstrap_control(runtime)
-        goal = active_goal()
-        runtime.control_store.save_goal(goal)
-        runtime.control_store.update_goal_status(goal.id, "ACHIEVED")
-        assert runtime.active_pursuits() == []
-        # An Intention still has to be able to describe what it was about.
-        assert runtime.get_pursuit(goal.id).active is False
-    finally:
-        runtime.close()
-
-
-async def test_phase6_reads_a_source_that_has_nothing_to_do_with_goals(tmp_path):
-    """The Orchestrator switch is a registration change, not a Phase 6 change."""
-
-    runtime = Runtime(tmp_path / "projects.db")
+async def test_a_registered_source_is_what_the_runtime_reports(tmp_path):
+    runtime = Runtime(tmp_path / "registered.db")
     try:
         pursuits = [
-            Pursuit(id="project-1", objective="調べる"),
-            Pursuit(id="project-2", objective="直す"),
+            Pursuit(id="p-1", objective="調べる"),
+            Pursuit(id="p-2", objective="直す"),
         ]
-        runtime.register_pursuit_source("orchestrator.projects", ListSource(pursuits))
+        runtime.register_pursuit_source("domain", ListSource(pursuits))
+
         assert runtime.active_pursuits() == pursuits
-        assert project_self(runtime).active_pursuit_ids == ("project-1", "project-2")
-        assert runtime.get_pursuit("project-2").objective == "直す"
-        # No Goal was ever created, and no Control Plane bootstrapped.
-        assert runtime.control_store.goals() == []
+        assert project_self(runtime).active_pursuit_ids == ("p-1", "p-2")
+        assert runtime.get_pursuit("p-2").objective == "直す"
+    finally:
+        runtime.close()
+
+
+async def test_a_finished_pursuit_is_still_resolvable(tmp_path):
+    """An Intention outlives the thing it is about, so ``get`` must not filter."""
+
+    runtime = Runtime(tmp_path / "finished.db")
+    try:
+        done = Pursuit(id="p-1", objective="調べる", active=False)
+        runtime.register_pursuit_source("domain", ListSource([done]))
+
+        assert runtime.active_pursuits() == []
+        assert runtime.get_pursuit("p-1") == done
     finally:
         runtime.close()
 
@@ -108,12 +79,21 @@ async def test_registering_the_same_name_twice_replaces_the_source(tmp_path):
         second = Pursuit(id="second", objective="b")
         runtime.register_pursuit_source("domain", ListSource([first]))
         runtime.register_pursuit_source("domain", ListSource([second]))
+
         assert runtime.active_pursuits() == [second]
-        bootstrap_control(runtime)
-        bootstrap_control(runtime)
-        goal = active_goal()
-        runtime.control_store.save_goal(goal)
-        assert [item.id for item in runtime.active_pursuits()] == ["second", str(goal.id)]
+        assert runtime.get_pursuit("first") is None
+    finally:
+        runtime.close()
+
+
+async def test_sources_registered_under_different_names_all_answer(tmp_path):
+    runtime = Runtime(tmp_path / "two.db")
+    try:
+        runtime.register_pursuit_source("a", ListSource([Pursuit("a-1", "x")]))
+        runtime.register_pursuit_source("b", ListSource([Pursuit("b-1", "y")]))
+
+        assert [item.id for item in runtime.active_pursuits()] == ["a-1", "b-1"]
+        assert runtime.get_pursuit("b-1").objective == "y"
     finally:
         runtime.close()
 
@@ -121,12 +101,18 @@ async def test_registering_the_same_name_twice_replaces_the_source(tmp_path):
 async def test_one_broken_source_does_not_blind_the_others(tmp_path):
     runtime = Runtime(tmp_path / "broken.db")
     try:
-        def explode() -> list:
-            raise RuntimeError("source is down")
+        class Broken(PursuitSource):
+            def live(self):
+                raise RuntimeError("source is down")
 
-        runtime.register_pursuit_source("broken", explode)
-        runtime.register_pursuit_source("working", ListSource([Pursuit("still-here", "b")]))
-        assert [item.id for item in runtime.active_pursuits()] == ["still-here"]
+            def get(self, pursuit_id):
+                raise RuntimeError("source is down")
+
+        runtime.register_pursuit_source("broken", Broken())
+        runtime.register_pursuit_source("working", ListSource([Pursuit("ok", "b")]))
+
+        assert [item.id for item in runtime.active_pursuits()] == ["ok"]
+        assert runtime.get_pursuit("ok").objective == "b"
     finally:
         runtime.close()
 
@@ -134,11 +120,12 @@ async def test_one_broken_source_does_not_blind_the_others(tmp_path):
 async def test_startup_wake_counts_pursuits_from_the_seam(tmp_path):
     runtime = Runtime(tmp_path / "wake.db")
     try:
-        runtime.register_pursuit_source(
-            "orchestrator.projects", ListSource([Pursuit("project-1", "調べる")])
-        )
+        runtime.register_pursuit_source("domain", ListSource([Pursuit("p-1", "調べる")]))
         assert bootstrap_persistent_being(runtime, enabled=True, wake_on_start=True) is True
-        wakeups = [event for event in runtime.event_store.all() if event.type == "existence_wakeup"]
+
+        wakeups = [
+            event for event in runtime.event_store.all() if event.type == "existence_wakeup"
+        ]
         assert len(wakeups) == 1
         assert wakeups[0].payload["active_goal_count"] == 1
     finally:
@@ -156,8 +143,13 @@ async def test_startup_stays_quiet_when_nothing_is_pursued(tmp_path):
         runtime.close()
 
 
-async def test_phase6_modules_do_not_read_the_control_store(tmp_path):
+async def test_phase6_modules_never_name_a_domain_store(tmp_path):
     from pathlib import Path
 
-    for module in ("nexus_seed/presence/projections.py", "nexus_seed/processes/persistent_being.py"):
-        assert "control_store" not in Path(module).read_text(), module
+    for module in (
+        "nexus_seed/presence/projections.py",
+        "nexus_seed/processes/persistent_being.py",
+    ):
+        source = Path(module).read_text()
+        assert "control_store" not in source, module
+        assert "get_goal" not in source, module

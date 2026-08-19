@@ -1,11 +1,5 @@
-"""A Project is one Goal and its Work, projected — never a Core primitive."""
+"""A Project as people read it — never a Core primitive."""
 
-from .lifecycle import (
-    attach_project,
-    goal_id_from_project_id,
-    project_id_for_goal,
-    project_id_of,
-)
 from .models import (
     Project,
     ProjectOverallStatus,
@@ -16,7 +10,6 @@ from .projections import (
     get_project_situation,
     get_project_situations,
     get_project_summaries,
-    project_status,
 )
 
 __all__ = [
@@ -24,12 +17,7 @@ __all__ = [
     "ProjectOverallStatus",
     "ProjectSituation",
     "ProjectSituationSummary",
-    "attach_project",
     "get_project_situation",
     "get_project_situations",
     "get_project_summaries",
-    "goal_id_from_project_id",
-    "project_id_for_goal",
-    "project_id_of",
-    "project_status",
 ]

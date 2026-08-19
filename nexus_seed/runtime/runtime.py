@@ -76,7 +76,6 @@ from ..storage.construction_store import ConstructionStore
 from ..storage.installation_store import InstallationStore
 from ..storage.autonomy_store import AutonomyStore
 from ..storage.provider_store import ProviderStore
-from ..storage.control_store import ControlStore
 from ..providers.models import ExecutionProvider, ProviderBinding
 from ..providers.registry import ProviderRegistry
 from ..providers.skills import DirectorySkillAdapter, SkillImporter
@@ -201,7 +200,6 @@ class Runtime:
         self.observation_store = ObservationStore(self.db)
         self.state_delta_store = StateDeltaStore(self.db)
         self.work_requirement_store = WorkRequirementStore(self.db)
-        self.control_store = ControlStore(self.db)
         #: Domains register ``(name, callable)`` here to say what NEXUS SEED is
         #: actively pursuing.  Phase 6 asks the Runtime, not the Control Plane,
         #: so what is being pursued can change source without touching Phase 6.
@@ -354,7 +352,6 @@ class Runtime:
             autonomy_budget=self.default_autonomy_budget,
             provider_registry=self.providers,
             continuation_store=self.continuation_store,
-            control_store=self.control_store,
             runtime=self,
             extractor_registry=self.extractors,
             ingress_receipt_store=self.ingress_receipt_store,

@@ -32,10 +32,8 @@ The Project Orchestrator is available as a Python API and includes:
   Projects behind `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`; and
 - a Cockpit **Projects** view over the orchestrator's own records.
 
-What is deliberately not built yet: several Agents on one Project, Agents
-talking to each other, and merging the orchestrator's Projects with the earlier
-Goal-derived projection. The two kinds of project are shown separately rather
-than reconciled.
+What is deliberately not built yet: several Agents on one Project, and Agents
+talking to each other.
 
 The earlier durable runtime remains in the repository, is tested, and provides
 the compatibility application. See
@@ -220,9 +218,8 @@ that is unreachable is retried a few times and then left alone; it never turns
 into a blocked Project.
 
 Watch it in the Cockpit's **Projects** view (`/cockpit`), which reads the
-orchestrator's own records. The earlier Goal-derived projection is still there
-under **Goal Projects** — two different things called "project", kept apart on
-purpose rather than merged.
+orchestrator's own records. There is one kind of project now, so it is shown
+once.
 
 `nexus-seed task` also still updates World State through the existing
 interpretation path: the flag adds the Project route, it does not remove
@@ -285,17 +282,17 @@ nexus-seed reviews
 nexus-seed review <review-id> approve
 ```
 
-These commands exercise the earlier durable Goal/Work/Capability runtime, not
-the new `ProjectOrchestrator` API.
+These commands exercise the durable Work/Capability runtime alongside the
+`ProjectOrchestrator` API.
 
-Each Goal-rooted project in that Cockpit has a read-only thread:
+Each project has a read-only thread:
 
 ```text
-POST /projects/project-a/chat   {"message": "今なんで止まってる？"}
+POST /projects/<id>/chat   {"message": "今なんで止まってる？"}
 ```
 
 Asking explains; it never changes anything. Acting on a project goes to the
-Project Orchestrator instead — see below.
+Project Orchestrator — see below.
 
 ### The command surface is gone
 
@@ -308,7 +305,6 @@ instruction box no longer exist. What they gated is reachable directly:
 | Approve or reject a review | `POST /cockpit/api/reviews/<id>/<approve\|reject>` (`nexus_seed/reviews.py`) |
 | Answer a self question | `POST /cockpit/api/questions/<id>/answer` (`nexus_seed/questions.py`) |
 | Unblock a Project | `POST /cockpit/api/orchestrator/projects/<id>/unblock` |
-| Create or end a Goal | `nexus_seed.goals.create_goal` / `end_goal` — deliberately temporary, see below |
 
 A review is a Continuation waiting for an event whose type ends in
 `_reviewed`, so deciding one is emitting that event; a self question is
@@ -317,20 +313,34 @@ finds nothing waiting and changes nothing — and neither authorizes anything,
 because the gate is the channel's own (the webhook bearer token). The shipped
 app only ever granted one identity `command.*`, so nothing was being denied.
 
-Goals are what remains of the old spine. They are no longer written by the
-Runtime (`bootstrap_control` registers a `control.goals` result applier, so the
-executor commits Goals without knowing they exist) and no longer read by Phase
-6, which asks `runtime.active_pursuits()`. Still Goal-shaped:
-`orchestration/loop`, the Goal-derived Project projection, and
-`ctx.services.get_goal`.
+### Goal is gone; a Project is the goal
 
-Phase 6 asks the Runtime what is being pursued rather than reading Goals:
-`Runtime.register_pursuit_source(name, fn)` registers an answer,
-`runtime.active_pursuits()` collects them, and `bootstrap_control` supplies
-ACTIVE Goals. A runtime with no source pursues nothing — `project_self` reports
-no active ids and the Phase 6 startup wake stays silent — and pointing the same
-question at Orchestrator Projects is one registration change, with no edit to
-`presence/` or `processes/persistent_being.py`.
+There is no Goal record, no `ControlStore`, no goal decomposition. A Project
+*is* the objective a person handed over, delegated whole to one Agent, and the
+Agent breaks it into tasks itself — so there was nothing left for a Goal to be.
+
+What that removed: `nexus_seed/control/`, `storage/control_store.py`,
+`processes/control.py` (`evaluate_goal` and the LLM decomposition),
+`nexus_seed/orchestration/` (the Goal loop), the Goal-derived Project
+projection, `ProcessResult.goals` / `goal_updates`, `ctx.record_goal` /
+`update_goal`, `ctx.services.get_goal`, and the `goals`, `commands`,
+`command_results` and `human_identities` tables. `review_human_work` survives
+as `processes/work_review.py`: approving constrained Work was never a Goal
+concern.
+
+What Phase 6 reads instead is a **pursuit** (`nexus_seed/pursuit.py`) — an id,
+an objective, whether it is live, and what should make it reconsider.
+`Runtime.register_pursuit_source(name, source)` registers an answer,
+`runtime.active_pursuits()` lists them, `runtime.get_pursuit(id)` resolves one
+whether or not it is still live (an Intention has to keep describing something
+that just finished). `bootstrap_project_orchestration` registers
+`ProjectPursuits`, so Phase 6 holds its Intentions about Projects. A runtime
+with no source pursues nothing: `project_self` reports no active ids and the
+startup wake stays silent.
+
+`IntentionRecord.pursuit_id` is text (a Project id is `project-<uuid>`), and
+both it and event payloads still carry `goal_id` so a journal written before
+the rename stays loadable.
 
 
 ### Instructing an orchestrator Project
@@ -393,9 +403,8 @@ nexus_seed/orchestrator/  Project routing, lifecycle, Agent assignment, A2A
 nexus_seed/storage/       SQLite stores, including orchestrator records
 nexus_seed/core/          the six fixed data models
 nexus_seed/runtime/       earlier durable event runtime
-nexus_seed/processes/     earlier Process handlers
+nexus_seed/processes/     Process handlers, including the human review gate
 nexus_seed/providers/     provider federation, A2A client, Project Agent transport
-nexus_seed/control/       Goal domain records (no command surface)
 nexus_seed/cockpit/       compatibility read model and dependency-free Web UI
 skills/                   directory Skills (skill.json + SKILL.md)
 tests/                    unit, acceptance, and restart-convergence tests

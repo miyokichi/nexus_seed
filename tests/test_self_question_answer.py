@@ -14,7 +14,6 @@ import pytest
 
 from nexus_seed.adapters.webhook import WebhookIngress, WebhookServer
 from nexus_seed.cockpit import CockpitService
-from nexus_seed.processes.control import bootstrap_control
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
 from nexus_seed.processes.semantic import bootstrap_semantic
 from nexus_seed.questions import (
@@ -34,7 +33,6 @@ TOKEN = "question-token"
 def asking_runtime(tmp_path, name: str) -> Runtime:
     runtime = Runtime(tmp_path / name)
     bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
     bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
     runtime.state_store.set(
         "self", "unresolved_questions", [{"question": "Which target is preferred?"}]

@@ -1342,8 +1342,7 @@ CLI / webhook / connector -> Ingress -> human_message -> route_request_to_projec
   person's answer becomes a second project beside the one already waiting.
 - Cockpit gained a **Projects** view over `orchestrator_projects` plus a detail
   route (`/cockpit/api/orchestrator/projects/<id>`) showing the Agent, the
-  blocker history and the audited A2A channel. The Goal-derived projection
-  stays as **Goal Projects**; the two are never merged into one list.
+  blocker history, the audited A2A channel, and its own ask/instruct thread.
 - With the flag on, a `human_message` still goes through the existing
   interpretation path into World State. The flag adds the Project route; it
   does not remove perception.
@@ -1366,7 +1365,8 @@ CLI / webhook / connector -> Ingress -> human_message -> route_request_to_projec
   deleted, and always attributable.
 - **231.** A person's answer goes back to the Project that is waiting for it,
   with the same Agent — never to a new Project.
-- **232.** Orchestrator Projects and Goal-derived projects are shown apart. Two
+- **232.** ~~Orchestrator Projects and Goal-derived projects are shown apart.~~
+  Retired: Goal is gone, so there is one kind of project and it is shown once. Two
   different things sharing a word must not share a list.
 ## Done in Project Instructions
 
@@ -1536,6 +1536,39 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
      thing it is about; resolving only live ones silently drops it.
 256. **Keep reading `goal_id`** in stored records and event payloads for as
      long as journals written before the rename may be loaded.
+
+## Done: Goal is gone
+
+- Deleted: `nexus_seed/control/`, `storage/control_store.py`,
+  `processes/control.py` (`evaluate_goal` and the LLM goal decomposition),
+  `nexus_seed/orchestration/` (the Goal loop), `projects/lifecycle.py`,
+  `nexus_seed/goals.py`, the Goal-derived half of `projects/projections.py`,
+  `ProcessResult.goals`/`goal_updates`, `ctx.record_goal`/`update_goal`,
+  `ctx.services.get_goal`/`get_active_goals`/`get_control_store`/
+  `get_work_for_goal`, and the `goals`, `commands`, `command_results` and
+  `human_identities` tables.
+- Kept: `review_human_work`, moved to `processes/work_review.py`. Approving
+  constrained Work was never a Goal concern — it is a Continuation waiting on
+  an event, settled through `nexus_seed/reviews.py` like any other review.
+- `projects/projections.py` is now a thin, stable name over
+  `orchestrator/situation.py`; `projects/models.py` keeps ProjectSituation
+  because its JSON shape is a public surface.
+- `WorkRequirement.goal_id` is now `str | None` and unset by anything in-tree.
+  The column and the A2A correlation key keep the name because those are wire
+  shapes; treat the value as a pursuit id.
+- The Cockpit shows Projects once. `snapshot["projects"]` and the **Goal
+  Projects** tab are gone; `GET /projects` still answers, over the same records.
+- The result-applier seam (invariants 241–244) has no registered applier left.
+  It stays: it is what let this deletion be a deletion.
+
+## Goal-removal invariants (keep them)
+
+257. **Do not reintroduce a goal object.** A Project is the goal. Work that
+     needs a parent references a pursuit id.
+258. **NEXUS SEED does not decompose.** The Agent breaks a Project into tasks;
+     nothing in-tree generates Work from an objective.
+259. **`projects/projections.py` stays a name, not a second implementation.**
+     Compilation belongs beside the records it reads.
 
 ## Later-phase candidates (do not build yet)
 

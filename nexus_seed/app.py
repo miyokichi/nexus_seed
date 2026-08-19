@@ -41,8 +41,7 @@ from .orchestrator import (
 from .orchestrator_config import ProjectAgentConfigurationError, build_orchestrator
 from .processes.autonomy import bootstrap_autonomy
 from .processes.project_orchestration import bootstrap_project_orchestration
-from .orchestration import bootstrap_orchestration
-from .processes.control import bootstrap_control
+from .processes.work_review import bootstrap_work_review
 from .processes.extension import bootstrap_extension
 from .processes.persistent_being import bootstrap_persistent_being
 from .processes.planning import bootstrap_planning
@@ -149,8 +148,7 @@ def bootstrap_application(
     bootstrap_observer(runtime)
     bootstrap_extension(runtime)
     bootstrap_autonomy(runtime)
-    bootstrap_control(runtime)
-    bootstrap_orchestration(runtime)
+    bootstrap_work_review(runtime)
     bootstrap_persistent_being(runtime, enabled=settings.phase6_enabled)
     runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)

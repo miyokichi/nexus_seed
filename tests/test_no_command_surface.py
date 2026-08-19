@@ -55,9 +55,7 @@ async def test_a_runtime_has_no_console(tmp_path):
     runtime = Runtime(tmp_path / "runtime.db")
     try:
         assert not hasattr(runtime, "console")
-        # The durable records are untouched: this removed the command surface,
-        # not the data behind it.
-        assert runtime.control_store.goals() == []
+        assert not hasattr(runtime, "control_store")
         assert runtime.state_store is not None
         assert runtime.work_requirement_store is not None
     finally:
@@ -105,8 +103,8 @@ async def test_the_cockpit_no_longer_advertises_a_control_plane(tmp_path):
             runtime, phase6_enabled=True, master_id="op"
         ).snapshot()
         assert "control" not in snapshot
-        # Reading a project still works; acting on one goes to the Orchestrator.
-        assert "projects" in snapshot
+        # Reading projects still works; acting on one goes to the Orchestrator.
+        assert "orchestrator" in snapshot
     finally:
         runtime.close()
 

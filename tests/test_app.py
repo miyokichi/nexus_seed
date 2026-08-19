@@ -74,7 +74,7 @@ def test_build_runtime_bootstraps_the_complete_stack(tmp_path):
         assert "analyze_capability_gap" in names
         assert "advance_capability_acquisition" in names
         assert "activate_installed_extension" in names
-        assert "evaluate_goal" in names
+        assert "review_human_work" in names
         assert "local_file" in runtime.backends
         assert "llm" not in runtime.backends
     finally:

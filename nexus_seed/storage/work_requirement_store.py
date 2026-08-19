@@ -11,6 +11,12 @@ from ..work.work_requirement import WorkRequirement, WorkStatus
 from .database import Database, dumps, loads
 
 
+def _text(value) -> str | None:
+    """A stored identifier that is text, not a UUID."""
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
 def _uuid(value: str | None) -> uuid.UUID | None:
     return uuid.UUID(value) if value else None
 
@@ -198,7 +204,7 @@ class WorkRequirementStore:
             (dumps(directive), utcnow().isoformat(), str(requirement_id)),
         )
 
-    def for_goal(self, goal_id: uuid.UUID) -> list[WorkRequirement]:
+    def for_goal(self, goal_id) -> list[WorkRequirement]:
         rows = self.db.query(
             "SELECT * FROM work_requirements WHERE goal_id=? ORDER BY created_at", (str(goal_id),)
         )
@@ -267,7 +273,7 @@ class WorkRequirementStore:
             constraints=loads(_column(row, "constraints_json")) or {},
             completion_criteria=loads(_column(row, "completion_criteria_json")) or [],
             provider_directive=loads(_column(row, "provider_directive_json")),
-            goal_id=_uuid(_column(row, "goal_id")),
+            goal_id=_text(_column(row, "goal_id")),
             command_id=_uuid(_column(row, "command_id")),
             pre_pause_status=_column(row, "pre_pause_status"),
             id=uuid.UUID(row["id"]),

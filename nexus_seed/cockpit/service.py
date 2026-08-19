@@ -21,7 +21,6 @@ from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
 from ..questions import answer_question
 from ..reviews import decide_review, pending_reviews
-from ..orchestration.loop import get_goal_loops
 from ..projects.projections import get_project_situation, get_project_summaries
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
 from ..work.work_requirement import WorkStatus
@@ -80,8 +79,6 @@ class CockpitService:
     def snapshot(self) -> dict[str, Any]:
         """Return one JSON-safe, point-in-time view of the running system."""
 
-        goals = self.runtime.control_store.goals()
-        active_goals = [goal for goal in goals if goal.status.value == "ACTIVE"]
         intentions = get_intentions(self.runtime)
         active_intentions = [item for item in intentions if not item.status.terminal]
         works = self.runtime.get_work_requirements()
@@ -99,7 +96,6 @@ class CockpitService:
             blocked=[
                 work for work in blocked if work.status is WorkStatus.BLOCKED_CAPABILITY
             ],
-            goals=goals,
             intentions=intentions,
             reviews=reviews,
             processes=processes,
@@ -130,7 +126,9 @@ class CockpitService:
                 "llm": llm,
                 "phase6": {"enabled": self.phase6_enabled},
                 "counts": {
-                    "active_goals": len(active_goals),
+                    "active_projects": len(
+                        [item for item in self.orchestrator_projects.all() if item.is_live]
+                    ),
                     "active_intentions": len(active_intentions),
                     "running_work": sum(work.status in ACTIVE_WORK for work in works),
                     "pending_reviews": len(reviews),
@@ -142,8 +140,7 @@ class CockpitService:
             },
             "needs_attention": needs,
             "capability_assistance": capability_assistance,
-            "goals": [self._goal(goal, intentions, works) for goal in goals],
-            "intentions": [self._intention(item, goals) for item in intentions],
+            "intentions": [self._intention(item) for item in intentions],
             "being": self._being(self_view, master_view, active_intentions),
             "activities": self._activities(processes, works),
             "work": {
@@ -157,9 +154,7 @@ class CockpitService:
             },
             "reviews": reviews,
             "providers": [self._provider(item) for item in providers],
-            "projects": self.projects(),
             "orchestrator": self.orchestrator(),
-            "goal_loops": self.goal_loops(),
             "system": {
                 "phase6_enabled": self.phase6_enabled,
                 "delivery": _json_safe(self.runtime.get_delivery_health()),
@@ -171,20 +166,14 @@ class CockpitService:
         }
 
     def projects(self) -> list[dict[str, Any]]:
-        """Return compact, explicitly-associated project summaries read-only.
+        """Return compact project summaries, read-only.
 
-        These are the Goal-derived projects of the earlier runtime.  The
-        Project Orchestrator's own projects are a different thing and are
-        reported separately by :meth:`orchestrator` — never merged into this
-        list, so it is always clear which one a row came from.
+        Kept for ``GET /projects``; the snapshot reports Projects once, through
+        :meth:`orchestrator`, so the interface never shows the same records
+        twice under two names.
         """
 
-        # Goal-derived projects only: orchestrator Projects have their own view,
-        # and invariant 232 keeps the two visibly apart while both exist.
-        return [
-            item.to_dict()
-            for item in get_project_summaries(self.runtime, include_orchestrator=False)
-        ]
+        return [item.to_dict() for item in get_project_summaries(self.runtime)]
 
     def orchestrator(self) -> dict[str, Any]:
         """Return the Project Orchestrator's projects, read-only.
@@ -342,9 +331,6 @@ class CockpitService:
                 else None
             ),
         }
-
-    def goal_loops(self) -> list[dict[str, Any]]:
-        """Return where each Goal stands in the loop, read-only."""
 
         return [item.to_dict() for item in get_goal_loops(self.runtime)]
 
@@ -577,7 +563,7 @@ class CockpitService:
         return sorted(items, key=lambda item: (order[item["severity"]], item["title"]))
 
     def _capability_assistance(
-        self, *, blocked, goals, intentions, reviews, processes
+        self, *, blocked, intentions, reviews, processes
     ) -> list[dict[str, Any]]:
         """Explain capability gaps only after automatic acquisition needs a human.
 
@@ -587,8 +573,7 @@ class CockpitService:
         human intervention while Phase 5D can still make progress.
         """
 
-        goal_by_id = {goal.id: goal for goal in goals}
-        intention_by_goal = {item.pursuit_id: item for item in intentions}
+        intention_by_pursuit = {item.pursuit_id: item for item in intentions}
         active_capability_processes = [
             process
             for process in processes
@@ -622,8 +607,10 @@ class CockpitService:
                     *(name for gap in gaps for name in gap.missing_names),
                 }
             )
-            goal = goal_by_id.get(work.goal_id)
-            intention = intention_by_goal.get(str(work.goal_id) if work.goal_id else None)
+            pursuit = (
+                self.runtime.get_pursuit(work.goal_id) if work.goal_id else None
+            )
+            intention = intention_by_pursuit.get(str(work.goal_id or ""))
             linked_reviews = self._capability_reviews(
                 reviews=reviews, work=work, gaps=gaps, sessions=sessions
             )
@@ -646,7 +633,7 @@ class CockpitService:
             candidates.append(
                 {
                     "work": work,
-                    "goal": goal,
+                    "goal": pursuit,
                     "intention": intention,
                     "missing": missing,
                     "gaps": gaps,
@@ -664,7 +651,7 @@ class CockpitService:
         groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in candidates:
             if item["goal"] is not None:
-                key = f"goal:{item['goal'].id}"
+                key = f"pursuit:{item['goal'].id}"
             else:
                 key = "capability:" + ",".join(item["missing"] or ["unknown"])
             groups[key].append(item)
@@ -697,10 +684,10 @@ class CockpitService:
                     "id": key,
                     "goal": (
                         {
-                            "id": str(goal.id),
-                            "title": goal.title,
+                            "id": goal.id,
+                            "title": goal.name,
                             "objective": goal.objective,
-                            "status": goal.status.value,
+                            "status": "ACTIVE" if goal.active else "INACTIVE",
                         }
                         if goal is not None
                         else None
@@ -933,30 +920,15 @@ class CockpitService:
             failed.append(process)
         return sorted(failed, key=lambda item: item.updated_at)
 
-    def _goal(self, goal, intentions, works) -> dict[str, Any]:
-        intention = next((item for item in intentions if item.pursuit_id == str(goal.id)), None)
-        related = [work for work in works if work.goal_id == goal.id]
-        return {
-            "id": str(goal.id),
-            "title": goal.title,
-            "objective": goal.objective,
-            "status": goal.status.value,
-            "priority": goal.priority.value,
-            "deadline": _iso(goal.deadline),
-            "updated_at": _iso(goal.updated_at),
-            "intention_id": str(intention.id) if intention else None,
-            "work_counts": _counts(item.status.value for item in related),
-        }
-
-    def _intention(self, intention, goals) -> dict[str, Any]:
-        goal = next((item for item in goals if str(item.id) == intention.pursuit_id), None)
+    def _intention(self, intention) -> dict[str, Any]:
+        pursuit = self.runtime.get_pursuit(intention.pursuit_id)
         return {
             "id": str(intention.id),
             "goal_id": intention.pursuit_id,
-            "goal_title": goal.title if goal else None,
+            "pursuit_id": intention.pursuit_id,
+            "goal_title": pursuit.name if pursuit else None,
             "focus": intention.focus,
             "status": intention.status.value,
-            "priority": goal.priority.value if goal else None,
             "reason": intention.reason,
             "reconsider_on": list(intention.reconsider_on),
             "work_requirement_ids": [str(value) for value in intention.work_requirement_ids],
@@ -1018,7 +990,7 @@ class CockpitService:
         return {
             "self": self_data,
             "master": master_data,
-            "intentions": [self._intention(item, self.runtime.control_store.goals()) for item in intentions],
+            "intentions": [self._intention(item) for item in intentions],
             "claim_statuses": [status.value for status in ClaimStatus],
         }
 

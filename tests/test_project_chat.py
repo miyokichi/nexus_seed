@@ -11,14 +11,10 @@ from nexus_seed.chat.guards import detect_state_change_request
 from nexus_seed.chat.models import ChatAnswerStatus, ChatRole
 from nexus_seed.chat.service import ProjectChatService
 from nexus_seed.cockpit import CockpitService
-from nexus_seed.cockpit.assets import APP_JS
-from nexus_seed.control.models import Goal
-from nexus_seed.core.continuation import Continuation
-from nexus_seed.core.event import Event
-from nexus_seed.core.process import ProcessInstance, ProcessStatus
-from nexus_seed.presence.models import IntentionRecord
+from nexus_seed.cockpit.assets import APP_JS, INDEX_HTML
+from nexus_seed.orchestrator.models import A2AMessage, A2AMessageType, Project, ProjectStatus
 from nexus_seed.runtime.runtime import Runtime
-from nexus_seed.work.work_requirement import WorkRequirement, WorkStatus
+from nexus_seed.storage.orchestrator_store import A2AMessageStore, ProjectStore
 
 
 TOKEN = "project-chat-token"
@@ -32,15 +28,10 @@ def _backend(*answers: dict) -> FakeLLMBackend:
     return FakeLLMBackend([proposal_response(item) for item in answers])
 
 
-def _goal(runtime: Runtime, project_id: str, *, title: str) -> Goal:
-    goal = Goal(
-        title=title,
-        objective=f"{title} を完了させる",
-        owner_identity_id="operator",
-        metadata={"project_id": project_id, "project_title": title},
-    )
-    runtime.control_store.save_goal(goal)
-    return goal
+def _project(runtime: Runtime, project_id: str, *, title: str, **fields) -> Project:
+    project = Project(goal=f"{title} を完了させる", id=project_id, **fields)
+    ProjectStore(runtime.db).save(project)
+    return project
 
 
 def _project_runtime(tmp_path, *, backend=None, name: str = "chat.db") -> Runtime:
@@ -49,34 +40,36 @@ def _project_runtime(tmp_path, *, backend=None, name: str = "chat.db") -> Runtim
     runtime = Runtime(tmp_path / name)
     if backend is not None:
         runtime.register_backend("llm", backend)
-    goal = _goal(runtime, "project-a", title="Project A")
-    intention = IntentionRecord.for_pursuit(goal.id, "測定の不確かさを解消する")
-    runtime.state_store.set(
-        f"intention:{intention.id}", "record", intention.to_dict()
+    _project(
+        runtime,
+        "project-a",
+        title="Project A",
+        status=ProjectStatus.BLOCKED,
+        assigned_agent_id="agent-a",
+        summary="レポートを作成する段でDocument Renderが足りず止まっています",
+        tasks=[
+            {"id": "task-1", "description": "最新の測定結果を解析する"},
+            {"id": "task-2", "description": "レポートを作成する"},
+        ],
+        blockers=[
+            {
+                "kind": "NEED_CAPABILITY",
+                "reason": "document.render がない",
+                "detail": {},
+                "raised_at": "2026-08-01T00:00:00+00:00",
+            }
+        ],
     )
-    source = runtime.event_store.append(
-        Event("deadline_updated", "test", {"project_id": "project-a"})
+    A2AMessageStore(runtime.db).append(
+        A2AMessage(
+            type=A2AMessageType.PROJECT_BLOCKED,
+            project_id="project-a",
+            source_agent_id="agent-a",
+            payload={"reason": "document.render がない"},
+        ),
+        direction="inbound",
     )
-    runtime.work_requirement_store.save(
-        WorkRequirement(
-            work_type="analyze_measurement",
-            work_key="project-a:active",
-            objective="最新の測定結果を解析する",
-            goal_id=goal.id,
-            source_event_id=source.id,
-        )
-    )
-    runtime.work_requirement_store.save(
-        WorkRequirement(
-            work_type="render_report",
-            work_key="project-a:blocked",
-            objective="レポートを作成する",
-            goal_id=goal.id,
-            status=WorkStatus.BLOCKED_CAPABILITY,
-            missing_capabilities=("document.render",),
-        )
-    )
-    _goal(runtime, "project-b", title="Project B")
+    _project(runtime, "project-b", title="Project B")
     return runtime
 
 
@@ -120,15 +113,15 @@ async def test_questions_are_answered_from_the_project_situation(tmp_path):
 
         situation = backend.calls[0].context["project_situation"]
         assert situation["project_id"] == "project-a"
-        assert [item["objective"] for item in situation["active_work"]] == [
-            "最新の測定結果を解析する"
+        assert [item["objective"] for item in situation["blocked_work"]] == [
+            "最新の測定結果を解析する",
+            "レポートを作成する",
         ]
-        assert situation["blocked_work"][0]["missing_capabilities"] == ["document.render"]
         assert any(
-            item["type"] == "BLOCKED_CAPABILITY" for item in situation["blockers"]
+            item["type"] == "NEED_CAPABILITY" for item in situation["blockers"]
         )
         assert situation["recent_changes"]
-        assert [item["title"] for item in situation["active_goals"]] == ["Project A"]
+        assert situation["objective"] == "Project A を完了させる"
 
         # The whole context is this project, its own thread, and the question.
         assert set(backend.calls[0].context) == {
@@ -148,8 +141,7 @@ async def test_answering_changes_no_runtime_state(tmp_path):
     runtime = _project_runtime(tmp_path, backend=_backend(_answer("停止していません。")))
     chat = ProjectChatService(runtime)
     try:
-        goals = runtime.control_store.goals()
-        works = runtime.work_requirement_store.all()
+        projects = ProjectStore(runtime.db).all()
         events = len(runtime.event_store.all())
         state = {
             (entry.entity, entry.attribute): entry.value
@@ -159,8 +151,7 @@ async def test_answering_changes_no_runtime_state(tmp_path):
         await chat.ask("project-a", "今どうなってる？")
 
         assert len(runtime.event_store.all()) == events
-        assert runtime.control_store.goals() == goals
-        assert runtime.work_requirement_store.all() == works
+        assert ProjectStore(runtime.db).all() == projects
         assert {
             (entry.entity, entry.attribute): entry.value
             for entry in runtime.state_store.all_current()
@@ -192,9 +183,8 @@ async def test_state_change_requests_are_refused_without_touching_state(tmp_path
     runtime = _project_runtime(tmp_path, backend=backend)
     chat = ProjectChatService(runtime)
     try:
-        work = runtime.work_requirement_store.get_by_work_key("project-a:active")
         for request in (
-            f"Work {work.id} をキャンセルして",
+            "Work task-1 をキャンセルして",
             "レポート作成を優先して",
             "この方針で進めて",
             "please cancel the blocked work",
@@ -204,10 +194,7 @@ async def test_state_change_requests_are_refused_without_touching_state(tmp_path
             assert "read-only" in reply["answer"]
 
         assert backend.calls == []
-        assert (
-            runtime.work_requirement_store.get_by_work_key("project-a:active").status
-            is WorkStatus.EXPECTED
-        )
+        assert ProjectStore(runtime.db).get("project-a").status is ProjectStatus.BLOCKED
         assert runtime.event_store.by_type("work_cancelled") == []
     finally:
         runtime.close()
@@ -287,15 +274,18 @@ async def test_thread_survives_restart_and_uses_the_current_situation(tmp_path):
             "停止中のWorkがあります。",
         ]
 
-        blocked = restarted.work_requirement_store.get_by_work_key("project-a:blocked")
-        restarted.work_requirement_store.update_status(blocked.id, WorkStatus.SATISFIED)
+        store = ProjectStore(restarted.db)
+        project = store.get("project-a")
+        project.status = ProjectStatus.COMPLETED
+        store.save(project)
 
         reply = await ProjectChatService(restarted).ask("project-a", "今どうなってる？")
         assert reply["thread_id"] == thread_id
         situation = backend.calls[-1].context["project_situation"]
         assert situation["blocked_work"] == []
         assert [item["objective"] for item in situation["recently_completed_work"]] == [
-            "レポートを作成する"
+            "最新の測定結果を解析する",
+            "レポートを作成する",
         ]
         assert [item["text"] for item in backend.calls[-1].context["recent_chat"]] == [
             "何で止まってる？",
@@ -325,52 +315,20 @@ async def test_chat_history_is_not_treated_as_confirmed_world_state(tmp_path):
         runtime.close()
 
 
-async def test_pending_review_reaches_the_answer_context(tmp_path):
-    backend = _backend(_answer("Reviewを待っています。"))
-    runtime = _project_runtime(tmp_path, backend=backend)
-    try:
-        work = runtime.work_requirement_store.get_by_work_key("project-a:active")
-        process = ProcessInstance(
-            "review_human_work",
-            "1",
-            status=ProcessStatus.SUSPENDED,
-            work_requirement_id=work.id,
-        )
-        runtime.process_store.save_instance(process)
-        runtime.continuation_store.save(
-            Continuation(
-                process_instance_id=process.id,
-                resume_point="await_work_review",
-                waiting_for={
-                    "event_type": "work_reviewed",
-                    "work_requirement_id": str(work.id),
-                },
-            )
-        )
-
-        await ProjectChatService(runtime).ask("project-a", "次に何を確認すべき？")
-
-        situation = backend.calls[-1].context["project_situation"]
-        assert situation["pending_reviews"][0]["event_type"] == "work_reviewed"
-    finally:
-        runtime.close()
-
-
 async def test_invented_references_are_dropped_from_an_answer(tmp_path):
     runtime = _project_runtime(tmp_path)
-    work = runtime.work_requirement_store.get_by_work_key("project-a:blocked")
     runtime.register_backend(
         "llm",
         _backend(
             _answer(
                 "レポート作成が停止しています。",
-                references=[str(work.id), "made-up-identifier"],
+                references=["task-2", "made-up-identifier"],
             )
         ),
     )
     try:
         reply = await ProjectChatService(runtime).ask("project-a", "何で止まってる？")
-        assert reply["references"] == [str(work.id)]
+        assert reply["references"] == ["task-2"]
     finally:
         runtime.close()
 
@@ -467,10 +425,10 @@ async def test_chat_routes_disappear_with_cockpit_but_runtime_keeps_running(tmp_
 
 
 def test_cockpit_asset_exposes_the_read_only_chat_panel():
-    assert 'data-view="projects"' in APP_JS or "projects:renderProjects" in APP_JS
-    assert "chat-form" in APP_JS
-    # The thread now carries questions and instructions, so the pending label is
-    # shared; the question form and its read-only note are still its own.
+    # Projects are one view now, and its thread carries both asking and
+    # instructing; the question form and its read-only note are still its own.
+    assert 'data-view="orchestrator"' in INDEX_HTML
+    assert "orchestrator-chat-form" in APP_JS
     assert "処理しています" in APP_JS
     assert "質問欄は説明専用です" in APP_JS
     assert "LLM未接続" in APP_JS

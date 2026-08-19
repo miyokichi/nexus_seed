@@ -436,15 +436,6 @@ def bootstrap_persistent_being(
         return False
     if getattr(runtime, "_phase6_bootstrapped", False):
         return True
-    # The existing Goal evaluator gains a bounded LLM retry budget only inside
-    # the enabled Phase 6 composition. Phase 6 OFF leaves the Phase 5G
-    # definition byte-for-byte at its original max_retries=0 behavior.
-    from .control import EVALUATE_GOAL, evaluate_goal
-
-    if runtime.process_store.get_definition(
-        EVALUATE_GOAL.name, EVALUATE_GOAL.version
-    ) is not None:
-        runtime.register_process(replace(EVALUATE_GOAL, max_retries=2), evaluate_goal)
     attention = ATTENTION_EVALUATION
     if attention_event_types is not None:
         attention = replace(attention, trigger_event_types=tuple(attention_event_types))
