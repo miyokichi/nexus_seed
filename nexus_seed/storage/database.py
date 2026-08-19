@@ -1158,6 +1158,18 @@ CREATE TABLE IF NOT EXISTS orchestrator_a2a_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_orch_a2a_project ON orchestrator_a2a_messages(project_id);
 
+CREATE TABLE IF NOT EXISTS orchestrator_instructions (
+    instruction_key     TEXT PRIMARY KEY,
+    origin_project_id   TEXT,
+    request_id          TEXT NOT NULL,
+    source              TEXT NOT NULL,
+    message             TEXT NOT NULL,
+    decision            TEXT NOT NULL DEFAULT '{}',
+    affected_project_id TEXT,
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orch_instr_project ON orchestrator_instructions(origin_project_id);
+
 """
 
 #: Columns added to pre-existing tables after they shipped.  ``CREATE TABLE IF

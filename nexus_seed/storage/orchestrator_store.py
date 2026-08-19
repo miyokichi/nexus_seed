@@ -193,6 +193,87 @@ class AgentStore:
         )
 
 
+class InstructionLedger:
+    """Remembers instructions that already ran, so a resend cannot repeat them.
+
+    Delegating a Project is not free: a duplicated instruction sends the Agent
+    the same task twice, and the Agent may act on the outside world.  A caller
+    that supplies a ``request_id`` gets exactly-once handling — the second
+    delivery replays the recorded answer instead of routing again.
+
+    Same idea as ``process_activations`` for Process activations: the ledger is
+    the guarantee, not the caller's good behaviour.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    @staticmethod
+    def key(source: str, origin_project_id: str | None, request_id: str) -> str:
+        """Build the ledger key for one instruction delivery."""
+        return f"{source}:{origin_project_id or '-'}:{request_id}"
+
+    def get(self, instruction_key: str) -> dict[str, Any] | None:
+        """Return the recorded outcome for ``instruction_key``, or ``None``."""
+        row = self.db.query_one(
+            "SELECT * FROM orchestrator_instructions WHERE instruction_key = ?",
+            (instruction_key,),
+        )
+        if row is None:
+            return None
+        return {
+            "instruction_key": row["instruction_key"],
+            "origin_project_id": row["origin_project_id"],
+            "request_id": row["request_id"],
+            "source": row["source"],
+            "message": row["message"],
+            "decision": loads(row["decision"]) or {},
+            "affected_project_id": row["affected_project_id"],
+            "created_at": row["created_at"],
+        }
+
+    def record(
+        self,
+        instruction_key: str,
+        *,
+        origin_project_id: str | None,
+        request_id: str,
+        source: str,
+        message: str,
+        decision: dict[str, Any],
+        affected_project_id: str | None,
+    ) -> bool:
+        """Record one handled instruction.  ``False`` means it was already there."""
+        cursor = self.db.execute(
+            """
+            INSERT OR IGNORE INTO orchestrator_instructions
+                (instruction_key, origin_project_id, request_id, source, message,
+                 decision, affected_project_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                instruction_key,
+                origin_project_id,
+                request_id,
+                source,
+                message,
+                dumps(decision),
+                affected_project_id,
+                utcnow().isoformat(),
+            ),
+        )
+        return cursor.rowcount > 0
+
+    def for_project(self, origin_project_id: str) -> list[dict[str, Any]]:
+        """Return the instructions recorded against one project, oldest first."""
+        rows = self.db.query(
+            "SELECT instruction_key FROM orchestrator_instructions "
+            "WHERE origin_project_id = ? ORDER BY created_at ASC",
+            (origin_project_id,),
+        )
+        return [self.get(row["instruction_key"]) for row in rows]
+
+
 class A2AMessageStore:
     """Append-only audit of the NEXUS SEED <-> Project Agent channel."""
 
@@ -245,4 +326,4 @@ class A2AMessageStore:
         )
 
 
-__all__ = ["A2AMessageStore", "AgentStore", "ProjectStore"]
+__all__ = ["A2AMessageStore", "AgentStore", "InstructionLedger", "ProjectStore"]

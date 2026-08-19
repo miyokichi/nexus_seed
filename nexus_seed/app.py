@@ -80,6 +80,9 @@ class AppSettings:
     #: Route incoming messages to the Project Orchestrator.  False leaves a
     #: ``human_message`` handled exactly as the pre-redesign application did.
     project_orchestrator_enabled: bool = False
+    #: The Phase 5G human command surface.  Being wound down in favour of the
+    #: Project Orchestrator; set false to run without it.
+    control_plane_enabled: bool = True
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -121,6 +124,7 @@ class AppSettings:
         orchestrator_enabled = _read_bool(
             "NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED", False
         )
+        control_plane_enabled = _read_bool("NEXUS_SEED_CONTROL_PLANE_ENABLED", True)
         return cls(
             data_dir=data_dir,
             host=host,
@@ -133,6 +137,7 @@ class AppSettings:
             phase6_enabled=phase6_enabled,
             cockpit_enabled=cockpit_enabled,
             project_orchestrator_enabled=orchestrator_enabled,
+            control_plane_enabled=control_plane_enabled,
         )
 
 
@@ -156,14 +161,18 @@ def bootstrap_application(
     bootstrap_control(runtime)
     bootstrap_orchestration(runtime)
     bootstrap_persistent_being(runtime, enabled=settings.phase6_enabled)
-    runtime.control_store.save_identity(
-        HumanIdentity(
-            identity_id=settings.control_identity_id,
-            display_name="Configured control operator",
-            permissions=settings.control_permissions,
-            metadata={"source": "application configuration"},
+    # The identity exists only to be authorized against, so it is written only
+    # while the Control Plane is on.  Everything below it is independent of the
+    # Control Plane and must still run when it is off.
+    if runtime.console is not None:
+        runtime.control_store.save_identity(
+            HumanIdentity(
+                identity_id=settings.control_identity_id,
+                display_name="Configured control operator",
+                permissions=settings.control_permissions,
+                metadata={"source": "application configuration"},
+            )
         )
-    )
     runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)
     _configure_external_agents(runtime, env_file=env_file)
@@ -245,6 +254,7 @@ def build_runtime(settings: AppSettings, *, env_file: str | Path = ".env") -> Ru
         settings.data_dir / "nexus_seed.db",
         construction_root=settings.data_dir / "construction",
         installation_root=settings.data_dir / "installed_extensions",
+        control_enabled=settings.control_plane_enabled,
     )
     try:
         bootstrap_application(runtime, settings, env_file=env_file)

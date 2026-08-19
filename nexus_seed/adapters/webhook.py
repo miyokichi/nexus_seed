@@ -469,7 +469,12 @@ class WebhookServer:
                         {"error": "message must be a non-empty string"},
                         headers=security_headers,
                     )
-                result = await self.cockpit.orchestrator_instruct(project_id, message)
+                request_id = body.get("request_id")
+                result = await self.cockpit.orchestrator_instruct(
+                    project_id,
+                    message,
+                    request_id=str(request_id) if request_id else None,
+                )
             else:
                 note = body.get("note")
                 result = await self.cockpit.orchestrator_unblock(

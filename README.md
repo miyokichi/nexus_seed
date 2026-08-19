@@ -308,6 +308,34 @@ project the instruction came from. Only then does the same authorized, audited
 nothing, and an explicit `/command` needs no LLM at all. Both the instruction
 and its outcome are appended to the project's own thread.
 
+### Winding down the Control Plane
+
+The Phase 5G human command surface is being retired in favour of the Project
+Orchestrator. It is now switchable:
+
+```dotenv
+NEXUS_SEED_CONTROL_PLANE_ENABLED=false
+```
+
+With it off, `runtime.console` is `None`, and the command surface disappears:
+the `/control` endpoint returns 404, the Cockpit hides its control actions, and
+the Control Plane instruction box refuses cleanly instead of executing. Nothing
+else changes — the Runtime, every store, the Goal records already written, and
+the whole orchestrator path (including `human_message` → `ProjectRouter`) keep
+working. It removes the way a person issues commands, not the data behind it.
+
+Still to be moved before the Control Plane can be deleted outright:
+
+| Concern | Where it is today | Note |
+| --- | --- | --- |
+| Approval of a REVIEW | `/approve`, `/reject` | Only emits the Event the waiting Continuation expects; any channel that can emit it works |
+| Goal records | `control_store` | Read by Phase 6 presence, `orchestration/loop`, Goal Projects, and written by `runtime/executor` |
+| Who issued an instruction | `commands` table | The orchestrator records no human actor yet |
+
+Authorization is *not* on that list: the shipped app grants one identity
+`command.*`, so it never denies anything, and the real gate is the webhook
+bearer token that the orchestrator endpoints already use.
+
 ### Instructing an orchestrator Project
 
 The orchestrator's own Projects take instructions from their Cockpit page:
@@ -323,6 +351,19 @@ semantically — whether this is more work for the Project (`ADD_TASK_TO_PROJECT
 same Agent) or an independent Goal (`CREATE_PROJECT`, a child Project with its
 own Agent). NEXUS SEED still only creates or extends a Project and delegates it;
 it never executes the work.
+
+Pass a `request_id` to make the delivery exactly-once:
+
+```text
+POST .../instruct  {"message": "...", "request_id": "b0f1…"}
+```
+
+A resend with the same id replays the recorded decision instead of routing,
+spawning or delegating again, so a double click or a retried HTTP call cannot
+hand the Agent the same task twice. The ledger is durable, so a replay is still
+a replay after a restart. Without a `request_id` the call is handled as a fresh
+request, exactly as before. The Cockpit mints one key per instruction and keeps
+it until the request succeeds.
 
 `unblock` resolves the Project's blockers and hands it back to its Agent.
 Blockers are not deleted: each is stamped `resolved_at` / `resolved_by`, so why

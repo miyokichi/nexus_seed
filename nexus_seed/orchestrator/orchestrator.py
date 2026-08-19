@@ -20,7 +20,12 @@ from typing import Any
 
 from ..backends.base import ExecutionBackend
 from ..storage.database import Database
-from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
+from ..storage.orchestrator_store import (
+    A2AMessageStore,
+    AgentStore,
+    InstructionLedger,
+    ProjectStore,
+)
 from .a2a_gateway import A2AGateway
 from .agent_manager import AgentManager
 from .agent_runtime import (
@@ -94,6 +99,7 @@ class ProjectOrchestrator:
         self.project_store = ProjectStore(self.db)
         self.agent_store = AgentStore(self.db)
         self.message_store = A2AMessageStore(self.db)
+        self.instruction_ledger = InstructionLedger(self.db)
 
         self.projects = ProjectManager(self.project_store)
         self.context = ContextManager(
@@ -122,6 +128,7 @@ class ProjectOrchestrator:
         user_context: dict[str, Any] | None = None,
         origin_project_id: str | None = None,
         priority: int = 0,
+        request_id: str | None = None,
     ) -> RoutingDecision:
         """Route one request, act on the decision, then settle the system.
 
@@ -134,6 +141,7 @@ class ProjectOrchestrator:
             user_context=user_context,
             origin_project_id=origin_project_id,
             priority=priority,
+            request_id=request_id,
         )
         return decision
 
@@ -145,13 +153,24 @@ class ProjectOrchestrator:
         user_context: dict[str, Any] | None = None,
         origin_project_id: str | None = None,
         priority: int = 0,
+        request_id: str | None = None,
     ) -> tuple[RoutingDecision, Project | None]:
         """Handle one request and return the decision *and* the Project it touched.
 
         The Project is re-read after the Agents have been drained, so what
         comes back is the settled state rather than the state at delegation.
         ``None`` means the request deliberately produced no project work.
+
+        Passing ``request_id`` makes the call exactly-once: a resend of the same
+        delivery replays the recorded decision instead of routing again, so a
+        double click or a retried HTTP call cannot hand the Agent the same task
+        twice.  Without one the call is handled as a fresh request, exactly as
+        before.
         """
+        replay = self._replay(source, origin_project_id, request_id)
+        if replay is not None:
+            return replay
+
         context = self.context.build(
             request,
             source=source,
@@ -166,7 +185,45 @@ class ProjectOrchestrator:
             decision, priority=priority, origin_project_id=origin_project_id
         )
         await self.drain()
-        return decision, (self.projects.get(touched.id) if touched else None)
+        settled = self.projects.get(touched.id) if touched else None
+        if request_id:
+            self.instruction_ledger.record(
+                InstructionLedger.key(source, origin_project_id, request_id),
+                origin_project_id=origin_project_id,
+                request_id=request_id,
+                source=source,
+                message=request,
+                decision=decision.to_dict(),
+                affected_project_id=settled.id if settled else None,
+            )
+        return decision, settled
+
+    def _replay(
+        self, source: str, origin_project_id: str | None, request_id: str | None
+    ) -> tuple[RoutingDecision, Project | None] | None:
+        """Return the recorded outcome of an already-handled delivery, if any."""
+        if not request_id:
+            return None
+        recorded = self.instruction_ledger.get(
+            InstructionLedger.key(source, origin_project_id, request_id)
+        )
+        if recorded is None:
+            return None
+        logger.info(
+            "instruction %s already handled; replaying %s",
+            request_id,
+            recorded["decision"].get("action"),
+        )
+        decision = RoutingDecision(
+            action=RoutingAction(recorded["decision"]["action"]),
+            target_project_id=recorded["decision"].get("target_project_id"),
+            proposed_goal=recorded["decision"].get("proposed_goal"),
+            proposed_task=recorded["decision"].get("proposed_task"),
+            reason=recorded["decision"].get("reason", ""),
+            confidence=float(recorded["decision"].get("confidence", 0.0)),
+        )
+        affected = recorded["affected_project_id"]
+        return decision, (self.projects.get(affected) if affected else None)
 
     async def apply(
         self,

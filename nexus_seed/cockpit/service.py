@@ -227,7 +227,7 @@ class CockpitService:
         return detail
 
     async def orchestrator_instruct(
-        self, project_id: str, message: str
+        self, project_id: str, message: str, *, request_id: str | None = None
     ) -> dict[str, Any] | None:
         """Give one instruction to an orchestrator Project, or ``None`` if unknown.
 
@@ -236,6 +236,9 @@ class CockpitService:
         this Project or an independent Goal, and either way NEXUS SEED only
         creates or extends a Project and delegates it.  The Cockpit never
         executes the work itself.
+
+        ``request_id`` makes the delivery exactly-once, so a double click or a
+        retried request cannot hand the Agent the same task twice.
         """
 
         orchestrator = getattr(self.runtime, "project_orchestrator", None)
@@ -248,10 +251,14 @@ class CockpitService:
             raise ValueError("message must not be empty")
 
         decision, touched = await orchestrator.submit(
-            text, source="cockpit-instruct", origin_project_id=project_id
+            text,
+            source="cockpit-instruct",
+            origin_project_id=project_id,
+            request_id=request_id,
         )
         return {
             "project_id": project_id,
+            "request_id": request_id,
             "decision": decision.to_dict(),
             "affected_project_id": touched.id if touched else None,
             "project": self.orchestrator_project(project_id),

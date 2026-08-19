@@ -1407,6 +1407,27 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 - Cockpit shows the Project's Tasks as the instruction history, and offers
   ブロック解除 only while a Project has unresolved blockers.
 
+## Done in orchestrator idempotency + Control Plane wind-down
+
+- `ProjectOrchestrator.submit(..., request_id=...)` is exactly-once, backed by
+  the durable `orchestrator_instructions` ledger (`InstructionLedger`). A
+  resend replays the recorded decision: no second routing call, no second task,
+  no second delegation. The guarantee lives in `submit`, so every caller gets
+  it, not only the Cockpit. Without a `request_id` behaviour is unchanged.
+- `Runtime(..., control_enabled=False)` (env `NEXUS_SEED_CONTROL_PLANE_ENABLED`)
+  makes `runtime.console` `None`, which removes `/control`, the Cockpit control
+  actions and the Control Plane instruction box. Stores, Goal records and the
+  whole orchestrator path keep working.
+
+## Wind-down invariants (keep them)
+
+238. **Delegation is not free.** Anything that can hand an Agent a task must be
+     idempotent under retry; add the key, do not rely on the client.
+239. **Turning the Control Plane off removes the command surface, never data.**
+     Guard on `console is None`; never make a store conditional.
+240. **Do not grow the Control Plane.** New human actions belong on the
+     orchestrator side. `chat/instruct.py` is maintained, not extended.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,
