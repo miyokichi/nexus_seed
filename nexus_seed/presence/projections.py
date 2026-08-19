@@ -11,7 +11,7 @@ from .models import (
     MasterClaim,
     MasterProjection,
     SelfProjection,
-    intention_id_for_goal,
+    intention_id_for_pursuit,
 )
 
 
@@ -37,10 +37,10 @@ def get_intention(runtime, intention_id: uuid.UUID | str) -> IntentionRecord | N
         return None
 
 
-def get_intention_for_goal(runtime, goal_id: uuid.UUID | str) -> IntentionRecord | None:
-    """Read the stable Intention associated with a Goal."""
+def get_intention_for_pursuit(runtime, pursuit_id) -> IntentionRecord | None:
+    """Read the stable Intention associated with one pursuit."""
 
-    return get_intention(runtime, intention_id_for_goal(goal_id))
+    return get_intention(runtime, intention_id_for_pursuit(pursuit_id))
 
 
 def get_intentions(runtime, *, include_terminal: bool = True) -> list[IntentionRecord]:
@@ -72,7 +72,7 @@ def project_self(runtime) -> SelfProjection:
         entry.attribute: entry.value
         for entry in runtime.state_store.current_for_entity("self")
     }
-    goals = tuple(runtime.active_pursuits())
+    pursuits = tuple(runtime.active_pursuits())
     intentions = tuple(get_intentions(runtime, include_terminal=False))
     capabilities = tuple(
         sorted(runtime.capabilities.provided_capability_names())
@@ -83,7 +83,7 @@ def project_self(runtime) -> SelfProjection:
         commitments=_tuple(facts.get("commitments")),
         unresolved_questions=_tuple(facts.get("unresolved_questions")),
         beliefs=_tuple(facts.get("beliefs")),
-        active_goal_ids=goals,
+        active_pursuit_ids=tuple(item.id for item in pursuits),
         active_intentions=intentions,
         available_capabilities=capabilities,
     )
@@ -139,7 +139,7 @@ def _tuple(value: Any) -> tuple[Any, ...]:
 __all__ = [
     "MASTER_CATEGORIES",
     "get_intention",
-    "get_intention_for_goal",
+    "get_intention_for_pursuit",
     "get_intentions",
     "project_master",
     "project_self",

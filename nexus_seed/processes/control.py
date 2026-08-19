@@ -10,9 +10,10 @@ import uuid
 from ..backends.base import BackendRequest, LLMInvocation
 from ..capabilities.models import CapabilityRequirement
 from ..control.models import GoalStatus
+from ..pursuit import Pursuit, PursuitSource
 from ..core.event import utcnow
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
-from ..presence.models import intention_id_for_goal
+from ..presence.models import intention_id_for_pursuit
 from ..work.work_requirement import WorkRequirement, WorkStatus
 
 
@@ -254,7 +255,7 @@ async def _evaluate_decomposed_goal(
     # generic capability gap. The Intention Process emits a targeted
     # goal_evaluation_requested Event once its StateDelta is applied.
     intention = ctx.services.get_current_state(
-        f"intention:{intention_id_for_goal(goal.id)}", "record"
+        f"intention:{intention_id_for_pursuit(goal.id)}", "record"
     )
     if intention is None and not ctx.event.payload.get("intention_id"):
         return [], [], False
@@ -834,21 +835,46 @@ def apply_goal_effects(runtime):
     return apply
 
 
-def active_goal_ids(runtime):
-    """Return the source that reports which Goals are being pursued.
+class GoalPursuits(PursuitSource):
+    """Answer "what are we pursuing?" with Goals.
 
-    Phase 6 asks the Runtime what is active; the Control Plane is what knows
-    that the answer is "ACTIVE Goals".  Replacing this registration is how the
-    same question gets answered by Projects instead.
+    Phase 6 asks the Runtime what is being pursued; this is what knows the
+    answer is currently "ACTIVE Goals".  Replacing this registration is how the
+    same question gets answered by orchestrator Projects instead.
     """
 
-    def source() -> list:
-        store = runtime.control_store
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+
+    def live(self) -> list[Pursuit]:
+        store = self.runtime.control_store
         if store is None:
             return []
-        return [goal.id for goal in store.goals("ACTIVE")]
+        return [self._pursuit(goal) for goal in store.goals("ACTIVE")]
 
-    return source
+    def get(self, pursuit_id: str) -> Pursuit | None:
+        store = self.runtime.control_store
+        if store is None:
+            return None
+        try:
+            identifier = uuid.UUID(str(pursuit_id))
+        except (TypeError, ValueError):
+            return None
+        goal = store.get_goal(identifier)
+        return self._pursuit(goal) if goal is not None else None
+
+    @staticmethod
+    def _pursuit(goal) -> Pursuit:
+        return Pursuit(
+            id=str(goal.id),
+            objective=goal.objective,
+            title=goal.title,
+            active=goal.status is GoalStatus.ACTIVE,
+            reconsider_on=tuple(
+                str(value) for value in goal.metadata.get("reconsider_on", ()) or ()
+            ),
+            source={"kind": "goal", "status": goal.status.value},
+        )
 
 
 def bootstrap_control(runtime) -> None:
@@ -857,11 +883,11 @@ def bootstrap_control(runtime) -> None:
     runtime.register_process(EVALUATE_GOAL, evaluate_goal)
     runtime.register_process(REVIEW_HUMAN_WORK, review_human_work)
     runtime.register_result_applier("control.goals", apply_goal_effects(runtime))
-    runtime.register_pursuit_source("control.goals", active_goal_ids(runtime))
+    runtime.register_pursuit_source("control.goals", GoalPursuits(runtime))
 
 
 __all__ = [
-    "active_goal_ids",
+    "GoalPursuits",
     "apply_goal_effects",
     "EVALUATE_GOAL",
     "GOAL_DECOMPOSITION_FAILED",

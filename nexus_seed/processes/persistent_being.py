@@ -12,7 +12,6 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from ..control.models import GoalStatus
 from ..core.event import Event, utcnow
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
 from ..presence.models import (
@@ -21,7 +20,7 @@ from ..presence.models import (
     ExperienceRecord,
     IntentionRecord,
     IntentionStatus,
-    intention_id_for_goal,
+    intention_id_for_pursuit,
     self_question_id,
 )
 from ..presence.projections import MASTER_CATEGORIES
@@ -232,9 +231,9 @@ async def attention_evaluation(ctx: ProcessContext) -> ProcessResult:
     """Classify one Event without requiring or generating Work."""
 
     assert ctx.event is not None and ctx.services is not None
-    goals = ctx.services.get_active_goals()
+    pursuits = ctx.services.get_active_pursuits()
     intentions = _intentions(ctx)
-    disposition, reason, goal_ids = _attention_decision(ctx.event, goals, intentions, ctx)
+    disposition, reason, goal_ids = _attention_decision(ctx.event, pursuits, intentions, ctx)
     payload = {
         "source_event_id": str(ctx.event.id),
         "source_event_type": ctx.event.type,
@@ -267,19 +266,19 @@ async def attention_evaluation(ctx: ProcessContext) -> ProcessResult:
 
 
 async def maintain_intention(ctx: ProcessContext) -> ProcessResult:
-    """Create or revise long-lived Intention State beneath existing Goals."""
+    """Create or revise long-lived Intention State beneath what is pursued."""
 
     assert ctx.event is not None and ctx.services is not None
     event_type = ctx.event.type
-    goal_ids = _goal_ids_for_intention_event(ctx)
+    pursuit_ids = _pursuit_ids_for_intention_event(ctx)
     emitted: list[Event] = []
     changed: list[str] = []
-    for goal_id in goal_ids:
-        goal = ctx.services.get_goal(goal_id)
-        if goal is None:
+    for pursuit_id in pursuit_ids:
+        pursuit = ctx.services.get_pursuit(pursuit_id)
+        if pursuit is None:
             continue
-        current = _intention_for_goal(ctx, goal_id)
-        next_record, should_evaluate = _next_intention(ctx, goal, current)
+        current = _intention_for_pursuit(ctx, pursuit_id)
+        next_record, should_evaluate = _next_intention(ctx, pursuit, current)
         if next_record is None:
             continue
         state_event = _propose_fact(
@@ -299,24 +298,25 @@ async def maintain_intention(ctx: ProcessContext) -> ProcessResult:
                     "intention_state_changed",
                     {
                         "intention_id": str(next_record.id),
-                        "goal_id": str(goal_id),
+                        "goal_id": str(pursuit_id),
+                        "pursuit_id": str(pursuit_id),
                         "status": next_record.status.value,
                         "source_event_id": str(ctx.event.id),
                     },
                 )
             )
-        if should_evaluate and goal.status is GoalStatus.ACTIVE:
+        if should_evaluate and pursuit.active:
             emitted.append(
                 ctx.new_event(
                     "goal_evaluation_requested",
                     {
-                        "goal_id": str(goal_id),
+                        "goal_id": str(pursuit_id),
                         "intention_id": str(next_record.id),
                         "source_event_id": str(ctx.event.id),
                     },
                 )
             )
-    if event_type == "intention_declaration_requested" and not goal_ids:
+    if event_type == "intention_declaration_requested" and not pursuit_ids:
         return ctx.fail("intention declaration requires an existing goal_id")
     return ctx.complete(output={"intentions_changed": changed}, emitted_events=emitted)
 
@@ -337,7 +337,7 @@ async def record_experience(ctx: ProcessContext) -> ProcessResult:
     if work_id is not None:
         work = ctx.services.get_work_requirement(work_id)
     goal_id = work.goal_id if work is not None else _uuid(payload.get("goal_id"))
-    intention_id = intention_id_for_goal(goal_id) if goal_id else None
+    intention_id = intention_id_for_pursuit(goal_id) if goal_id else None
     action = {
         "action_proposal_id": str(proposal.id) if proposal else None,
         "action_execution_id": payload.get("action_execution_id"),
@@ -525,8 +525,9 @@ def _propose_fact(
     )
 
 
-def _attention_decision(event, goals, intentions, ctx):
-    goal_ids = [goal.id for goal in goals]
+def _attention_decision(event, pursuits, intentions, ctx):
+    goal_ids = [item.id for item in pursuits]
+    goals = pursuits
     if event.type == "state_changed":
         entity = str(event.payload.get("entity") or "")
         attribute = event.payload.get("attribute")
@@ -540,7 +541,7 @@ def _attention_decision(event, goals, intentions, ctx):
     if event.type == "existence_wakeup":
         active = [value for value in intentions if value.status is IntentionStatus.ACTIVE]
         if active:
-            return AttentionDisposition.RECONSIDER, "active intention survived restart", [value.goal_id for value in active]
+            return AttentionDisposition.RECONSIDER, "active intention survived restart", [value.pursuit_id for value in active]
         if goals and not intentions:
             return AttentionDisposition.RECONSIDER, "active Goal has no maintained intention", goal_ids
         questions = ctx.services.get_current_state("self", "unresolved_questions")
@@ -552,7 +553,7 @@ def _attention_decision(event, goals, intentions, ctx):
             return AttentionDisposition.RECONSIDER, "reflection found a surprise", goal_ids
         return AttentionDisposition.IGNORE, "reflection confirmed expectations", []
     matching = [
-        value.goal_id
+        value.pursuit_id
         for value in intentions
         if value.status is IntentionStatus.WAITING and event.type in value.reconsider_on
     ]
@@ -572,7 +573,7 @@ def _attention_decision(event, goals, intentions, ctx):
     return AttentionDisposition.IGNORE, "no active concern or condition matched", []
 
 
-def _next_intention(ctx, goal, current):
+def _next_intention(ctx, pursuit, current):
     event_type = ctx.event.type
     payload = ctx.event.payload
     should_evaluate = False
@@ -581,21 +582,21 @@ def _next_intention(ctx, goal, current):
             status = IntentionStatus(str(payload.get("status", "ACTIVE")).upper())
         except ValueError:
             status = IntentionStatus.ACTIVE
-        record = IntentionRecord.for_goal(
-            goal.id,
-            str(payload.get("focus") or goal.objective),
+        record = IntentionRecord.for_pursuit(
+            pursuit.id,
+            str(payload.get("focus") or pursuit.objective),
             status=status,
             reason=str(payload.get("reason") or "explicit intention declaration"),
             reconsider_on=tuple(str(value) for value in payload.get("reconsider_on", ()) or ()),
         )
         return record, status is IntentionStatus.ACTIVE
     if current is None:
-        record = IntentionRecord.for_goal(
-            goal.id,
-            goal.objective,
+        record = IntentionRecord.for_pursuit(
+            pursuit.id,
+            pursuit.objective,
             status=IntentionStatus.ACTIVE,
-            reason=f"Goal {goal.status.value} requires a current intention",
-            reconsider_on=tuple(str(value) for value in goal.metadata.get("reconsider_on", ()) or ()),
+            reason="an active pursuit requires a current intention",
+            reconsider_on=pursuit.reconsider_on,
         )
         return record, event_type in {"goal_created", "goal_resumed", "intention_reconsideration_requested"}
     status = current.status
@@ -637,7 +638,7 @@ def _next_intention(ctx, goal, current):
     return record, should_evaluate
 
 
-def _goal_ids_for_intention_event(ctx) -> list[uuid.UUID]:
+def _pursuit_ids_for_intention_event(ctx) -> list[str]:
     ids = _payload_goal_ids(ctx.event.payload)
     if ids:
         return ids
@@ -645,9 +646,9 @@ def _goal_ids_for_intention_event(ctx) -> list[uuid.UUID]:
     if work_id and ctx.services:
         work = ctx.services.get_work_requirement(work_id)
         if work is not None and work.goal_id is not None:
-            return [work.goal_id]
+            return [str(work.goal_id)]
     if ctx.event.type == "intention_reconsideration_requested":
-        return [goal.id for goal in ctx.services.get_active_goals()]
+        return [item.id for item in ctx.services.get_active_pursuits()]
     return []
 
 
@@ -663,8 +664,10 @@ def _intentions(ctx) -> list[IntentionRecord]:
     return records
 
 
-def _intention_for_goal(ctx, goal_id):
-    entry = ctx.services.get_current_state(f"intention:{intention_id_for_goal(goal_id)}", "record")
+def _intention_for_pursuit(ctx, pursuit_id):
+    entry = ctx.services.get_current_state(
+        f"intention:{intention_id_for_pursuit(pursuit_id)}", "record"
+    )
     if entry is None or not isinstance(entry.value, dict):
         return None
     try:
@@ -673,9 +676,19 @@ def _intention_for_goal(ctx, goal_id):
         return None
 
 
-def _payload_goal_ids(payload) -> list[uuid.UUID]:
-    values = payload.get("goal_ids") or ([payload.get("goal_id")] if payload.get("goal_id") else [])
-    return [value for value in (_uuid(item) for item in values) if value is not None]
+def _payload_goal_ids(payload) -> list[str]:
+    """Pursuit ids an event names, under either key.
+
+    ``goal_id``/``goal_ids`` stay readable because events already in a journal
+    carry them; a pursuit id is text now, so it is no longer parsed as a UUID.
+    """
+
+    values = (
+        payload.get("pursuit_ids")
+        or payload.get("goal_ids")
+        or [payload.get("pursuit_id") or payload.get("goal_id")]
+    )
+    return [str(item) for item in values if item]
 
 
 def _uuid(value) -> uuid.UUID | None:

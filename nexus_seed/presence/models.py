@@ -49,10 +49,14 @@ class IntentionStatus(str, Enum):
         return self in {IntentionStatus.SATISFIED, IntentionStatus.ABANDONED}
 
 
-def intention_id_for_goal(goal_id: uuid.UUID | str) -> uuid.UUID:
-    """Return the stable logical Intention id beneath one durable Goal."""
+def intention_id_for_pursuit(pursuit_id: Any) -> uuid.UUID:
+    """Return the stable logical Intention id beneath one pursuit.
 
-    return uuid.uuid5(INTENTION_NAMESPACE, str(goal_id))
+    Derived from the identifier as text, so it is stable whether the pursuit is
+    a Goal (a UUID) or an orchestrator Project (``project-<uuid>``).
+    """
+
+    return uuid.uuid5(INTENTION_NAMESPACE, str(pursuit_id))
 
 
 def self_question_id(question: Any) -> str:
@@ -66,10 +70,11 @@ def self_question_id(question: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class IntentionRecord:
-    """Long-lived World State value describing the current pursuit of a Goal."""
+    """Long-lived World State value describing how one pursuit is being held."""
 
     id: uuid.UUID
-    goal_id: uuid.UUID
+    #: What is being pursued, as text — a Goal id today, a Project id next.
+    pursuit_id: str
     focus: str
     status: IntentionStatus = IntentionStatus.ACTIVE
     reason: str = ""
@@ -79,20 +84,20 @@ class IntentionRecord:
     updated_at: datetime = field(default_factory=utcnow)
 
     @classmethod
-    def for_goal(
+    def for_pursuit(
         cls,
-        goal_id: uuid.UUID,
+        pursuit_id: Any,
         focus: str,
         *,
         status: IntentionStatus = IntentionStatus.ACTIVE,
         reason: str = "",
         reconsider_on: tuple[str, ...] = (),
     ) -> "IntentionRecord":
-        """Build the one stable intention position associated with ``goal_id``."""
+        """Build the one stable intention position associated with ``pursuit_id``."""
 
         return cls(
-            id=intention_id_for_goal(goal_id),
-            goal_id=goal_id,
+            id=intention_id_for_pursuit(pursuit_id),
+            pursuit_id=str(pursuit_id),
             focus=focus,
             status=status,
             reason=reason,
@@ -104,7 +109,10 @@ class IntentionRecord:
 
         return {
             "id": str(self.id),
-            "goal_id": str(self.goal_id),
+            "pursuit_id": self.pursuit_id,
+            # Written for as long as anything may read a journal produced
+            # before pursuits had a name of their own.
+            "goal_id": self.pursuit_id,
             "focus": self.focus,
             "status": self.status.value,
             "reason": self.reason,
@@ -122,7 +130,8 @@ class IntentionRecord:
 
         return cls(
             id=uuid.UUID(str(data["id"])),
-            goal_id=uuid.UUID(str(data["goal_id"])),
+            # ``goal_id`` is what records written before the rename carry.
+            pursuit_id=str(data.get("pursuit_id") or data["goal_id"]),
             focus=str(data.get("focus") or ""),
             status=IntentionStatus(str(data.get("status", "ACTIVE")).upper()),
             reason=str(data.get("reason") or ""),
@@ -178,7 +187,7 @@ class SelfProjection:
     commitments: tuple[Any, ...] = ()
     unresolved_questions: tuple[Any, ...] = ()
     beliefs: tuple[Any, ...] = ()
-    active_goal_ids: tuple[uuid.UUID, ...] = ()
+    active_pursuit_ids: tuple[str, ...] = ()
     active_intentions: tuple[IntentionRecord, ...] = ()
     available_capabilities: tuple[str, ...] = ()
 

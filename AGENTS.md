@@ -1506,6 +1506,37 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 252. **`nexus_seed/goals.py` is scaffolding.** It exists only while Goals do;
      do not grow it into a Goal service.
 
+## Done: Phase 6 holds Intentions about pursuits, not Goals
+
+- `nexus_seed/pursuit.py` names the four things Phase 6 needs about what is
+  being pursued: an id, an objective, whether it is live, and what should make
+  it reconsider. `PursuitSource` supplies them — `live()` lists, `get()`
+  resolves one whether or not it is still live, because an Intention must keep
+  describing a pursuit that has just finished.
+- `processes/control.GoalPursuits` is today's source. Swapping it for an
+  orchestrator-Project source is the whole of the remaining switch.
+- `IntentionRecord.goal_id` became `pursuit_id: str` (ids are text now: a Goal
+  id is a UUID, a Project id is `project-<uuid>`). `for_goal` → `for_pursuit`,
+  `intention_id_for_goal` → `intention_id_for_pursuit`,
+  `SelfProjection.active_goal_ids` → `active_pursuit_ids`.
+- Compatibility is one-directional and deliberate: `to_dict` still **writes**
+  `goal_id` and `from_dict` still **reads** it, so a journal written before the
+  rename stays loadable. Event payloads still carry `goal_id` for the same
+  reason, with `pursuit_id` alongside.
+- Phase 6 with no registered pursuit source now maintains no Intentions. That
+  is the intended reading of invariant 246, and a test that wants Intentions
+  must register a source.
+
+## Pursuit invariants (keep them)
+
+253. **Phase 6 must not name Goal.** It asks `ctx.services.get_pursuit` /
+     `get_active_pursuits`; only the registered source knows what a pursuit is.
+254. **A pursuit id is text.** Do not parse it as a UUID above the source.
+255. **`get()` must resolve finished pursuits.** An Intention outlives the
+     thing it is about; resolving only live ones silently drops it.
+256. **Keep reading `goal_id`** in stored records and event payloads for as
+     long as journals written before the rename may be loaded.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

@@ -588,7 +588,7 @@ class CockpitService:
         """
 
         goal_by_id = {goal.id: goal for goal in goals}
-        intention_by_goal = {item.goal_id: item for item in intentions}
+        intention_by_goal = {item.pursuit_id: item for item in intentions}
         active_capability_processes = [
             process
             for process in processes
@@ -623,7 +623,7 @@ class CockpitService:
                 }
             )
             goal = goal_by_id.get(work.goal_id)
-            intention = intention_by_goal.get(work.goal_id)
+            intention = intention_by_goal.get(str(work.goal_id) if work.goal_id else None)
             linked_reviews = self._capability_reviews(
                 reviews=reviews, work=work, gaps=gaps, sessions=sessions
             )
@@ -934,7 +934,7 @@ class CockpitService:
         return sorted(failed, key=lambda item: item.updated_at)
 
     def _goal(self, goal, intentions, works) -> dict[str, Any]:
-        intention = next((item for item in intentions if item.goal_id == goal.id), None)
+        intention = next((item for item in intentions if item.pursuit_id == str(goal.id)), None)
         related = [work for work in works if work.goal_id == goal.id]
         return {
             "id": str(goal.id),
@@ -949,10 +949,10 @@ class CockpitService:
         }
 
     def _intention(self, intention, goals) -> dict[str, Any]:
-        goal = next((item for item in goals if item.id == intention.goal_id), None)
+        goal = next((item for item in goals if str(item.id) == intention.pursuit_id), None)
         return {
             "id": str(intention.id),
-            "goal_id": str(intention.goal_id),
+            "goal_id": intention.pursuit_id,
             "goal_title": goal.title if goal else None,
             "focus": intention.focus,
             "status": intention.status.value,

@@ -140,6 +140,14 @@ class RuntimeServices:
             return []
         return self._control_store.goals("ACTIVE")
 
+    def get_active_pursuits(self) -> list:
+        """Return what is currently being pursued, whatever supplies it."""
+        return self._runtime.active_pursuits() if self._runtime is not None else []
+
+    def get_pursuit(self, pursuit_id):
+        """Return one pursuit by id, live or not, or ``None`` when unknown."""
+        return self._runtime.get_pursuit(pursuit_id) if self._runtime is not None else None
+
     def get_control_store(self):
         """Read-side access to Goal records and command provenance."""
         return self._control_store

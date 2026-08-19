@@ -601,10 +601,10 @@ class Runtime:
     def register_pursuit_source(self, name: str, source) -> None:
         """Let a domain say what is currently being pursued.
 
-        ``source()`` returns the identifiers of whatever that domain considers
-        active — Goals today, Projects once the Control Plane is gone.  The
-        Runtime does not interpret them; it only asks.  Registering the same
-        name twice replaces the earlier source.
+        ``source()`` returns :class:`~nexus_seed.pursuit.Pursuit` records for
+        whatever that domain considers live — Goals today, Projects once the
+        Goal spine is gone.  The Runtime does not interpret them; it only asks.
+        Registering the same name twice replaces the earlier source.
         """
         self.pursuit_sources[:] = [
             (existing, fn) for existing, fn in self.pursuit_sources if existing != name
@@ -613,7 +613,7 @@ class Runtime:
         logger.info("registered pursuit source %s", name)
 
     def active_pursuits(self) -> list:
-        """Return the identifiers of everything actively being pursued.
+        """Return everything actively being pursued.
 
         Empty when nothing registered a source, which is what "this deployment
         pursues nothing on its own" should look like.
@@ -625,6 +625,26 @@ class Runtime:
             except Exception:  # noqa: BLE001 - one bad source must not blind the rest
                 logger.exception("pursuit source %s failed", name)
         return found
+
+    def get_pursuit(self, pursuit_id):
+        """Return one pursuit by id, live or not, or ``None`` when unknown.
+
+        Asked separately from :meth:`active_pursuits` because an Intention has
+        to keep describing something that has just stopped being live.
+        """
+        wanted = str(pursuit_id)
+        for name, source in self.pursuit_sources:
+            lookup = getattr(source, "get", None)
+            if lookup is None:
+                continue
+            try:
+                found = lookup(wanted)
+            except Exception:  # noqa: BLE001 - one bad source must not blind the rest
+                logger.exception("pursuit source %s failed", name)
+                continue
+            if found is not None:
+                return found
+        return None
 
     def register_result_applier(self, name: str, applier) -> None:
         """Let a domain commit its own records inside every activation.

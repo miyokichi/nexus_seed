@@ -163,7 +163,7 @@ def test_capability_assistance_aggregates_goal_trace_without_writing(tmp_path):
         owner_identity_id="operator",
     )
     runtime.control_store.save_goal(goal)
-    intention = IntentionRecord.for_goal(
+    intention = IntentionRecord.for_pursuit(
         goal.id,
         "診断結果を得て次の対応を決める",
         reason="Goalを具体的なWorkへ分解した",

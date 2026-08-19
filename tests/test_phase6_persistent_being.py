@@ -21,7 +21,7 @@ from nexus_seed.presence import (
     IntentionStatus,
     get_experience_trace,
     get_intention,
-    intention_id_for_goal,
+    intention_id_for_pursuit,
     project_master,
     project_self,
 )
@@ -33,6 +33,7 @@ from nexus_seed.processes.actions import (
 from nexus_seed.processes.autonomy import bootstrap_autonomy
 from nexus_seed.processes.control import (
     GOAL_DECOMPOSITION_PROPOSED,
+    GoalPursuits,
     _validate_goal_decomposition,
     bootstrap_control,
 )
@@ -163,7 +164,7 @@ async def test_bare_phase6_goal_never_opens_advance_human_goal_gap(tmp_path):
     try:
         await runtime.submit_event(Event("goal_created", "test", {"goal_id": str(goal.id)}))
 
-        assert get_intention(runtime, intention_id_for_goal(goal.id)) is not None
+        assert get_intention(runtime, intention_id_for_pursuit(goal.id)) is not None
         assert runtime.work_requirement_store.for_goal(goal.id) == []
         assert runtime.get_capability("advance_human_goal", "1") is None
         assert runtime.get_capability_gaps() == []
@@ -344,7 +345,7 @@ async def test_unresolved_goal_can_start_from_durable_wakeup_without_a_command(t
     try:
         await runtime.run_pending()
         work = runtime.work_requirement_store.for_goal(goal.id)
-        intention = get_intention(runtime, intention_id_for_goal(goal.id))
+        intention = get_intention(runtime, intention_id_for_pursuit(goal.id))
         assert len(runtime.event_store.by_type("existence_wakeup")) == 1
         assert len(work) == 1 and work[0].status is WorkStatus.SATISFIED
         assert intention is not None and intention.status is IntentionStatus.SATISFIED
@@ -370,6 +371,10 @@ async def test_persistent_existence_loop_survives_restart_and_acts_without_new_t
 
     first = Runtime(database)
     bootstrap_semantic(first)
+    # An Intention is held about a *pursuit*, so something has to be supplying
+    # them; without a registered source Phase 6 is pursuing nothing.  Only the
+    # source is registered here — the Goal evaluator belongs to the restart.
+    first.register_pursuit_source("control.goals", GoalPursuits(first))
     bootstrap_persistent_being(first, enabled=True, wake_on_start=False)
     first.control_store.save_goal(goal)
     await first.submit_event(Event(
@@ -382,7 +387,7 @@ async def test_persistent_existence_loop_survives_restart_and_acts_without_new_t
             "reconsider_on": ["external_signal"],
         },
     ))
-    intention_id = intention_id_for_goal(goal.id)
+    intention_id = intention_id_for_pursuit(goal.id)
     before = get_intention(first, intention_id)
     assert before is not None and before.status is IntentionStatus.WAITING
     assert first.work_requirement_store.for_goal(goal.id) == []

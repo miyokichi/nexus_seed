@@ -220,7 +220,8 @@ def _compile(
     works = [work for work in source.works if work_project.get(work.id) == project_id]
     work_ids = {work.id for work in works}
 
-    intentions = [item for item in source.intentions if item.goal_id in goal_ids]
+    goal_id_text = {str(value) for value in goal_ids}
+    intentions = [item for item in source.intentions if item.pursuit_id in goal_id_text]
     intention_ids = {item.id for item in intentions}
     related_ids = {
         *[str(value) for value in goal_ids],
@@ -328,7 +329,7 @@ def _compile(
         (
             _intention(item)
             for item in current_intentions
-            if root is None or item.goal_id == root.id
+            if root is None or item.pursuit_id == str(root.id)
         ),
         None,
     )
@@ -537,7 +538,7 @@ def _blockers(*, goals, intentions, works, blocked_work, processes, reviews):
                     "type": "BLOCKED_INTENTION",
                     "severity": "blocked",
                     "intention_id": str(intention.id),
-                    "goal_id": str(intention.goal_id),
+                    "goal_id": intention.pursuit_id,
                     "summary": intention.reason or intention.focus,
                 }
             )
@@ -731,7 +732,7 @@ def _goal(goal) -> dict[str, Any]:
 def _intention(intention) -> dict[str, Any]:
     return {
         "id": str(intention.id),
-        "goal_id": str(intention.goal_id),
+        "goal_id": intention.pursuit_id,
         "focus": intention.focus,
         "status": intention.status.value,
         "reason": intention.reason,

@@ -53,7 +53,7 @@ def _goal(project_id: str, *, title: str = "Review readiness") -> Goal:
 
 
 def _save_intention(runtime: Runtime, goal: Goal, focus: str) -> IntentionRecord:
-    intention = IntentionRecord.for_goal(goal.id, focus)
+    intention = IntentionRecord.for_pursuit(goal.id, focus)
     runtime.state_store.set(f"intention:{intention.id}", "record", intention.to_dict())
     return intention
 

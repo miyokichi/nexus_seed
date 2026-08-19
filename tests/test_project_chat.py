@@ -50,7 +50,7 @@ def _project_runtime(tmp_path, *, backend=None, name: str = "chat.db") -> Runtim
     if backend is not None:
         runtime.register_backend("llm", backend)
     goal = _goal(runtime, "project-a", title="Project A")
-    intention = IntentionRecord.for_goal(goal.id, "測定の不確かさを解消する")
+    intention = IntentionRecord.for_pursuit(goal.id, "測定の不確かさを解消する")
     runtime.state_store.set(
         f"intention:{intention.id}", "record", intention.to_dict()
     )

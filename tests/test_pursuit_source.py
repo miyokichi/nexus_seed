@@ -17,11 +17,25 @@ from nexus_seed.control.models import Goal
 from nexus_seed.core.event import Event
 from nexus_seed.presence import project_self
 from nexus_seed.processes.control import bootstrap_control
+from nexus_seed.pursuit import Pursuit, PursuitSource
 from nexus_seed.processes.persistent_being import bootstrap_persistent_being
 from nexus_seed.runtime.runtime import Runtime
 
 
 pytestmark = pytest.mark.asyncio
+
+
+class ListSource(PursuitSource):
+    """A source backed by a fixed list, standing in for a real domain."""
+
+    def __init__(self, pursuits):
+        self.pursuits = list(pursuits)
+
+    def live(self):
+        return [item for item in self.pursuits if item.active]
+
+    def get(self, pursuit_id):
+        return next((item for item in self.pursuits if item.id == str(pursuit_id)), None)
 
 
 def active_goal(title: str = "Ship the thing") -> Goal:
@@ -32,7 +46,7 @@ async def test_runtime_pursues_nothing_until_a_domain_says_otherwise(tmp_path):
     runtime = Runtime(tmp_path / "bare.db")
     try:
         assert runtime.active_pursuits() == []
-        assert project_self(runtime).active_goal_ids == ()
+        assert project_self(runtime).active_pursuit_ids == ()
     finally:
         runtime.close()
 
@@ -43,20 +57,27 @@ async def test_control_plane_registers_active_goals_as_the_pursuit_source(tmp_pa
         bootstrap_control(runtime)
         goal = active_goal()
         runtime.control_store.save_goal(goal)
-        assert runtime.active_pursuits() == [goal.id]
-        assert project_self(runtime).active_goal_ids == (goal.id,)
+        [pursuit] = runtime.active_pursuits()
+        assert pursuit.id == str(goal.id)
+        assert pursuit.objective == goal.objective
+        assert pursuit.active is True
+        assert project_self(runtime).active_pursuit_ids == (str(goal.id),)
+        # Resolvable by id whether or not it is still live.
+        assert runtime.get_pursuit(goal.id).id == str(goal.id)
     finally:
         runtime.close()
 
 
-async def test_completed_goals_stop_being_pursued(tmp_path):
+async def test_achieved_goals_stop_being_pursued(tmp_path):
     runtime = Runtime(tmp_path / "completed.db")
     try:
         bootstrap_control(runtime)
         goal = active_goal()
         runtime.control_store.save_goal(goal)
-        runtime.control_store.update_goal_status(goal.id, "COMPLETED")
+        runtime.control_store.update_goal_status(goal.id, "ACHIEVED")
         assert runtime.active_pursuits() == []
+        # An Intention still has to be able to describe what it was about.
+        assert runtime.get_pursuit(goal.id).active is False
     finally:
         runtime.close()
 
@@ -66,10 +87,14 @@ async def test_phase6_reads_a_source_that_has_nothing_to_do_with_goals(tmp_path)
 
     runtime = Runtime(tmp_path / "projects.db")
     try:
-        project_ids = [uuid.uuid4(), uuid.uuid4()]
-        runtime.register_pursuit_source("orchestrator.projects", lambda: list(project_ids))
-        assert runtime.active_pursuits() == project_ids
-        assert project_self(runtime).active_goal_ids == tuple(project_ids)
+        pursuits = [
+            Pursuit(id="project-1", objective="調べる"),
+            Pursuit(id="project-2", objective="直す"),
+        ]
+        runtime.register_pursuit_source("orchestrator.projects", ListSource(pursuits))
+        assert runtime.active_pursuits() == pursuits
+        assert project_self(runtime).active_pursuit_ids == ("project-1", "project-2")
+        assert runtime.get_pursuit("project-2").objective == "直す"
         # No Goal was ever created, and no Control Plane bootstrapped.
         assert runtime.control_store.goals() == []
     finally:
@@ -79,14 +104,16 @@ async def test_phase6_reads_a_source_that_has_nothing_to_do_with_goals(tmp_path)
 async def test_registering_the_same_name_twice_replaces_the_source(tmp_path):
     runtime = Runtime(tmp_path / "replace.db")
     try:
-        runtime.register_pursuit_source("domain", lambda: ["first"])
-        runtime.register_pursuit_source("domain", lambda: ["second"])
-        assert runtime.active_pursuits() == ["second"]
+        first = Pursuit(id="first", objective="a")
+        second = Pursuit(id="second", objective="b")
+        runtime.register_pursuit_source("domain", ListSource([first]))
+        runtime.register_pursuit_source("domain", ListSource([second]))
+        assert runtime.active_pursuits() == [second]
         bootstrap_control(runtime)
         bootstrap_control(runtime)
         goal = active_goal()
         runtime.control_store.save_goal(goal)
-        assert runtime.active_pursuits() == ["second", goal.id]
+        assert [item.id for item in runtime.active_pursuits()] == ["second", str(goal.id)]
     finally:
         runtime.close()
 
@@ -98,8 +125,8 @@ async def test_one_broken_source_does_not_blind_the_others(tmp_path):
             raise RuntimeError("source is down")
 
         runtime.register_pursuit_source("broken", explode)
-        runtime.register_pursuit_source("working", lambda: ["still-here"])
-        assert runtime.active_pursuits() == ["still-here"]
+        runtime.register_pursuit_source("working", ListSource([Pursuit("still-here", "b")]))
+        assert [item.id for item in runtime.active_pursuits()] == ["still-here"]
     finally:
         runtime.close()
 
@@ -107,7 +134,9 @@ async def test_one_broken_source_does_not_blind_the_others(tmp_path):
 async def test_startup_wake_counts_pursuits_from_the_seam(tmp_path):
     runtime = Runtime(tmp_path / "wake.db")
     try:
-        runtime.register_pursuit_source("orchestrator.projects", lambda: ["project-1"])
+        runtime.register_pursuit_source(
+            "orchestrator.projects", ListSource([Pursuit("project-1", "調べる")])
+        )
         assert bootstrap_persistent_being(runtime, enabled=True, wake_on_start=True) is True
         wakeups = [event for event in runtime.event_store.all() if event.type == "existence_wakeup"]
         assert len(wakeups) == 1
