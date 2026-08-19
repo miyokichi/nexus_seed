@@ -469,5 +469,8 @@ async def test_chat_routes_disappear_with_cockpit_but_runtime_keeps_running(tmp_
 def test_cockpit_asset_exposes_the_read_only_chat_panel():
     assert 'data-view="projects"' in APP_JS or "projects:renderProjects" in APP_JS
     assert "chat-form" in APP_JS
-    assert "回答を生成しています" in APP_JS
+    # The thread now carries questions and instructions, so the pending label is
+    # shared; the question form and its read-only note are still its own.
+    assert "処理しています" in APP_JS
+    assert "質問欄は説明専用です" in APP_JS
     assert "LLM未接続" in APP_JS

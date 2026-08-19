@@ -1368,6 +1368,32 @@ CLI / webhook / connector -> Ingress -> human_message -> route_request_to_projec
   with the same Agent — never to a new Project.
 - **232.** Orchestrator Projects and Goal-derived projects are shown apart. Two
   different things sharing a word must not share a list.
+## Done in Project Instructions
+
+Each project's chat can now *act*, without weakening the read-only guarantee:
+
+- `POST /projects/{id}/chat` is unchanged and still read-only.
+- `POST /projects/{id}/instruct` (`chat/instruct.py`) executes one instruction.
+- The LLM only ever **proposes one explicit command**; it never executes.
+- `ALLOWED_COMMANDS` allow-lists the verbs, and `project_scope()` restricts
+  every target id to the project the instruction came from. `/task` is bound to
+  that project. Both checks are deterministic and run before execution.
+- Execution is `ConsoleService.execute` — the same authorized, audited path as
+  `/control`. Nothing in the chat layer writes Goal/Work/Event/World State.
+- An explicit `/command` works with no LLM configured.
+- Instruction and outcome are appended to the same durable project thread with
+  `INSTRUCTION_EXECUTED` / `INSTRUCTION_REFUSED` / `INSTRUCTION_FAILED`.
+
+## Project Instruction invariants (keep them)
+
+233. **Asking never changes anything.** Keep `chat/service.py` free of write paths.
+234. **The model proposes, the guard decides.** Never execute a command because
+   the LLM said it was fine; the allow-list and scope check are the guarantee.
+235. **A project's instruction box may only touch that project.** Widening scope
+   needs a new, explicit decision — not a prompt change.
+236. **Change still belongs to the Control Plane.** Route new verbs by adding
+   them to `ALLOWED_COMMANDS`, never by writing records from the chat layer.
+237. **No LLM must not mean no control.** Explicit `/commands` keep working.
 
 ## Later-phase candidates (do not build yet)
 

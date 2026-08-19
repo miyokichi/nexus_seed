@@ -15,6 +15,7 @@ from typing import Any
 
 from ..actions.models import ActionExecutionStatus
 from ..autonomy.models import AcquisitionStatus
+from ..chat.instruct import ProjectInstructionService
 from ..chat.service import ProjectChatService
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
@@ -76,6 +77,9 @@ class CockpitService:
         self.orchestrator_projects = ProjectStore(runtime.db)
         self.orchestrator_agents = AgentStore(runtime.db)
         self.orchestrator_messages = A2AMessageStore(runtime.db)
+        #: Project Instructions.  Explanations stay read-only; acting on a
+        #: project goes through the Control Plane, as the same human identity.
+        self.instructions = ProjectInstructionService(runtime, getattr(runtime, "console", None))
 
     def snapshot(self) -> dict[str, Any]:
         """Return one JSON-safe, point-in-time view of the running system."""
@@ -267,7 +271,10 @@ class CockpitService:
     def project_chat_history(self, project_id: str) -> dict[str, Any] | None:
         """Return one project's durable chat thread, or ``None`` if unknown."""
 
-        return self.chat.history(project_id)
+        history = self.chat.history(project_id)
+        if history is not None:
+            history["instructions"] = {"enabled": self.instructions.available}
+        return history
 
     async def project_chat_ask(
         self, project_id: str, message: str
@@ -275,6 +282,15 @@ class CockpitService:
         """Answer one project question read-only, or ``None`` if unknown."""
 
         return await self.chat.ask(project_id, message)
+
+    async def project_instruct(
+        self, project_id: str, message: str, *, issuer_identity_id: str
+    ) -> dict[str, Any] | None:
+        """Execute one instruction about a project, or ``None`` if unknown."""
+
+        return await self.instructions.instruct(
+            project_id, message, issuer_identity_id=issuer_identity_id
+        )
 
     def _llm_status(self) -> dict[str, Any]:
         backend = self.runtime.backends.get("llm")

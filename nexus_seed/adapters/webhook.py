@@ -419,7 +419,11 @@ class WebhookServer:
     async def _project_chat_response(
         self, path: str, headers: dict[str, str], raw_body: bytes
     ) -> WebhookResponse:
-        """Answer one Project Chat question; the answer changes no state."""
+        """Answer a Project Chat question, or execute a Project instruction.
+
+        ``/chat`` stays read-only.  ``/instruct`` runs one allow-listed,
+        project-scoped Control Plane command as the configured identity.
+        """
 
         if self.cockpit is None:
             return WebhookResponse(404, {"error": "cockpit is disabled"})
@@ -432,7 +436,7 @@ class WebhookServer:
                 401, {"error": "unauthorized"}, headers=security_headers
             )
         parts = path.strip("/").split("/")
-        if len(parts) != 3 or parts[0] != "projects" or parts[2] != "chat":
+        if len(parts) != 3 or parts[0] != "projects" or parts[2] not in {"chat", "instruct"}:
             return WebhookResponse(
                 404, {"error": "unknown project path"}, headers=security_headers
             )
@@ -449,7 +453,22 @@ class WebhookServer:
                 {"error": "message must be a non-empty string"},
                 headers=security_headers,
             )
-        answer = await self.cockpit.project_chat_ask(unquote(parts[1]), message)
+        project_id = unquote(parts[1])
+        if parts[2] == "instruct":
+            if self.console is None:
+                return WebhookResponse(
+                    404, {"error": "control endpoint is disabled"}, headers=security_headers
+                )
+            try:
+                answer = await self.cockpit.project_instruct(
+                    project_id, message, issuer_identity_id=self.control_identity_id
+                )
+            except ValueError as exc:
+                return WebhookResponse(
+                    400, {"error": str(exc)}, headers=security_headers
+                )
+        else:
+            answer = await self.cockpit.project_chat_ask(project_id, message)
         if answer is None:
             return WebhookResponse(
                 404, {"error": "project not found"}, headers=security_headers

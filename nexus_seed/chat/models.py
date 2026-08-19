@@ -39,6 +39,12 @@ class ChatAnswerStatus(str, Enum):
     LLM_FAILED = "LLM_FAILED"
     #: The LLM answered with output that did not match the answer schema.
     LLM_INVALID = "LLM_INVALID"
+    #: An instruction was mapped to a control command and executed.
+    INSTRUCTION_EXECUTED = "INSTRUCTION_EXECUTED"
+    #: An instruction could not be turned into an allowed, in-scope command.
+    INSTRUCTION_REFUSED = "INSTRUCTION_REFUSED"
+    #: An allowed command was executed but the Control Plane rejected it.
+    INSTRUCTION_FAILED = "INSTRUCTION_FAILED"
 
     @property
     def answered_by_llm(self) -> bool:

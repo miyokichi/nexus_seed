@@ -289,6 +289,25 @@ nexus-seed control '/status'
 These commands exercise the earlier durable Goal/Work/Capability runtime, not
 the new `ProjectOrchestrator` API.
 
+Each project in that Cockpit has a thread with two boxes. Asking stays
+read-only; instructing goes through the Control Plane:
+
+```text
+POST /projects/project-a/chat       {"message": "今なんで止まってる？"}
+POST /projects/project-a/instruct   {"message": "地域別の内訳も出して"}
+```
+
+An instruction becomes exactly one explicit control command — proposed by the
+LLM, or typed directly as `/task ...` — and is checked before it runs: the verb
+must be allow-listed (`/task`, `/pause`, `/resume`, `/cancel`, `/priority`,
+`/deadline`, `/provider`, `/approve`, `/reject`, `/goal …`), and every
+identifier it names must already belong to *this* project, so a proposed command
+cannot reach another project's Work, review or Goal. `/task` is bound to the
+project the instruction came from. Only then does the same authorized, audited
+`ConsoleService` behind `/control` execute it. A refused instruction executes
+nothing, and an explicit `/command` needs no LLM at all. Both the instruction
+and its outcome are appended to the project's own thread.
+
 ## Design boundaries
 
 The six fixed primitives remain `Event`, `Process`, `State`, `Context`,
