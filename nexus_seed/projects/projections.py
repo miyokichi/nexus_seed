@@ -17,6 +17,7 @@ import uuid
 from typing import Any, Iterable
 
 from ..control.models import GoalStatus
+from ..orchestrator.situation import orchestrator_situation, orchestrator_situations
 from ..core.process import ProcessStatus
 from ..presence.models import IntentionStatus, self_question_id
 from ..presence.projections import get_intentions
@@ -75,7 +76,11 @@ def get_project_situation(
     source = _read_source(runtime)
     catalog = _project_catalog(source)
     if normalized not in catalog:
-        return None
+        # An orchestrator Project is a durable record rather than something
+        # derived from Goals, so it is looked up rather than reconstructed.
+        # Callers — Project Chat, the HTTP situation route, the Cockpit — do
+        # not need to know which kind of project they were handed.
+        return orchestrator_situation(runtime, normalized, recent_limit=recent_limit)
     return _compile(runtime, source, normalized, catalog[normalized], recent_limit)
 
 
@@ -94,9 +99,21 @@ def get_project_situations(
     ]
 
 
-def get_project_summaries(runtime) -> list[ProjectSituationSummary]:
-    """Return compact summaries without introducing a separate Project store."""
+def get_project_summaries(
+    runtime, *, include_orchestrator: bool = True
+) -> list[ProjectSituationSummary]:
+    """Return compact summaries of every project a person could be talking about.
 
+    Orchestrator Projects are included by default because callers that ask
+    "which projects exist?" — the chat scope guard above all — must not treat a
+    real project as unknown.  The Cockpit's Goal-Projects list passes
+    ``include_orchestrator=False`` so the two kinds stay visibly apart while
+    both still exist.
+    """
+
+    situations = list(get_project_situations(runtime, recent_limit=1))
+    if include_orchestrator:
+        situations += orchestrator_situations(runtime, recent_limit=1)
     return [
         ProjectSituationSummary(
             project_id=item.project_id,
@@ -113,7 +130,7 @@ def get_project_summaries(runtime) -> list[ProjectSituationSummary]:
             objective=item.objective,
             completed_work=item.completed_total,
         )
-        for item in get_project_situations(runtime, recent_limit=1)
+        for item in situations
     ]
 
 

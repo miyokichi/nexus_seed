@@ -189,7 +189,12 @@ class CockpitService:
         list, so it is always clear which one a row came from.
         """
 
-        return [item.to_dict() for item in get_project_summaries(self.runtime)]
+        # Goal-derived projects only: orchestrator Projects have their own view,
+        # and invariant 232 keeps the two visibly apart while both exist.
+        return [
+            item.to_dict()
+            for item in get_project_summaries(self.runtime, include_orchestrator=False)
+        ]
 
     def orchestrator(self) -> dict[str, Any]:
         """Return the Project Orchestrator's projects, read-only.
