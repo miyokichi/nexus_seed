@@ -1100,8 +1100,8 @@ class CockpitService:
         names = {process.definition_name for process in processes}
         if "attention_evaluation" in names:
             steps.append("重要性と現在の関心との関連を評価")
-        if "maintain_intention" in names or "evaluate_goal" in names:
-            steps.append("Goal / Intentionへの影響を確認")
+        if "maintain_intention" in names:
+            steps.append("Project / Intentionへの影響を確認")
         if deltas or "apply_state_delta" in names:
             steps.append(f"World Stateを{len(deltas) or 1}件更新")
         if works:
