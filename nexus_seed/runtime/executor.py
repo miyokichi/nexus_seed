@@ -86,7 +86,7 @@ class Executor:
         installation_manager=None,
         autonomy_store=None,
         provider_registry=None,
-        control_store=None,
+        result_appliers=None,
     ) -> None:
         self.capability_store = capability_store
         self.plan_store = plan_store
@@ -97,7 +97,11 @@ class Executor:
         self.installation_manager = installation_manager
         self.autonomy_store = autonomy_store
         self.provider_registry = provider_registry
-        self.control_store = control_store
+        #: ``(name, callable)`` pairs a domain registered to commit its own
+        #: records alongside the activation.  Held by reference, not copied:
+        #: domains register during bootstrap, which happens after the Executor
+        #: is built, so a copy taken here would stay empty forever.
+        self.result_appliers = result_appliers if result_appliers is not None else []
         self.db = db
         self.registry = registry
         self.process_store = process_store
@@ -407,11 +411,13 @@ class Executor:
                         self.autonomy_store.save_decision(autonomy_decision)
                     for attempt in result.acquisition_attempts:
                         self.autonomy_store.save_attempt(attempt)
-                if self.control_store is not None:
-                    for goal in result.goals:
-                        self.control_store.save_goal(goal)
-                    for goal_id, status in result.goal_updates:
-                        self.control_store.update_goal_status(goal_id, status)
+                # Domain-owned effects.  The Runtime is mechanism: it commits
+                # whatever a domain registered an applier for, in this same
+                # transaction, without knowing what the records mean.  Goals are
+                # applied this way so the Control Plane can be removed by
+                # deleting its module, not by editing the executor.
+                for _name, apply_effects in self.result_appliers:
+                    apply_effects(result)
                 self._persist_journals(result)
                 if self.proposal_store is not None:
                     for proposal in result.proposals:

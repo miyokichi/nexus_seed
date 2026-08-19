@@ -329,7 +329,7 @@ Still to be moved before the Control Plane can be deleted outright:
 | Concern | Where it is today | Note |
 | --- | --- | --- |
 | Approval of a REVIEW | `/approve`, `/reject` | Only emits the Event the waiting Continuation expects; any channel that can emit it works |
-| Goal records | `control_store` | Read by Phase 6 presence, `orchestration/loop`, Goal Projects, and written by `runtime/executor` |
+| Goal records | `control_store` | Read by Phase 6 presence, `orchestration/loop`, Goal Projects, and by `ctx.services.get_goal`. No longer *written* by the Runtime: `bootstrap_control` registers a `control.goals` result applier, so the executor commits Goals without knowing they exist |
 | Who issued an instruction | `commands` table | The orchestrator records no human actor yet |
 
 Authorization is *not* on that list: the shipped app grants one identity

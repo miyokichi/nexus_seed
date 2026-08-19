@@ -1428,6 +1428,31 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 240. **Do not grow the Control Plane.** New human actions belong on the
      orchestrator side. `chat/instruct.py` is maintained, not extended.
 
+## Done in Goal decoupling (executor)
+
+- The executor no longer writes Goals. `Runtime.register_result_applier(name, fn)`
+  lets a domain commit its own records inside the activation's transaction, and
+  `bootstrap_control` registers `control.goals`. The executor does not receive
+  `control_store` at all any more.
+- `ProcessResult.goals` / `goal_updates` and `ctx.record_goal` / `ctx.update_goal`
+  are unchanged: this moves *who applies*, not the handler API (effects §77), and
+  adds no generic `Effect(type, payload)` (effects §75).
+- Removing the Control Plane is now deleting its module plus its bootstrap call;
+  `runtime/executor.py` and `core/process.py` need no edit.
+- The applier list is held **by reference**, not copied: domains register during
+  bootstrap, which happens after the Executor is built.
+
+## Effect applier invariants (keep them)
+
+241. **The Runtime commits, the domain decides what.** An applier may write only
+     its own records, and only from fields already on `ProcessResult`.
+242. **Appliers run inside the activation transaction.** A rollback must take the
+     domain's records with it.
+243. **Registering the same name twice replaces, never duplicates.** A
+     re-bootstrapped runtime must not apply the same effects twice.
+244. **Do not add a generic effect bag** to satisfy a new domain; give it typed
+     fields and an applier, as Goal has.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

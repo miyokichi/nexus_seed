@@ -812,14 +812,38 @@ def _uuid(value) -> uuid.UUID | None:
         return None
 
 
+def apply_goal_effects(runtime):
+    """Return the applier that commits a result's Goal records.
+
+    Goals belong to the Control Plane, not to the Runtime, so the Control Plane
+    is what knows how to write them.  The Runtime only calls this inside the
+    activation's transaction, which keeps ``ProcessResult.goals`` /
+    ``goal_updates`` exactly as handlers already use them while leaving the
+    executor with no knowledge of Goal at all.
+    """
+
+    def apply(result) -> None:
+        store = runtime.control_store
+        if store is None:
+            return
+        for goal in result.goals:
+            store.save_goal(goal)
+        for goal_id, status in result.goal_updates:
+            store.update_goal_status(goal_id, status)
+
+    return apply
+
+
 def bootstrap_control(runtime) -> None:
-    """Register the ordinary Goal evaluator Process."""
+    """Register the ordinary Goal evaluator Process and the Goal effect applier."""
 
     runtime.register_process(EVALUATE_GOAL, evaluate_goal)
     runtime.register_process(REVIEW_HUMAN_WORK, review_human_work)
+    runtime.register_result_applier("control.goals", apply_goal_effects(runtime))
 
 
 __all__ = [
+    "apply_goal_effects",
     "EVALUATE_GOAL",
     "GOAL_DECOMPOSITION_FAILED",
     "GOAL_DECOMPOSITION_PROPOSED",

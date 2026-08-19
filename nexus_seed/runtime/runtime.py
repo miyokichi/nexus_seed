@@ -204,6 +204,12 @@ class Runtime:
         self.state_delta_store = StateDeltaStore(self.db)
         self.work_requirement_store = WorkRequirementStore(self.db)
         self.control_store = ControlStore(self.db)
+        #: Domains register ``(name, callable)`` here to commit their own
+        #: records inside a process activation's transaction.  The Runtime does
+        #: not know what those records mean — this is the seam that lets a
+        #: domain (the Control Plane first) be removed without editing the
+        #: executor.
+        self.result_appliers: list = []
         self.context_snapshot_store = ContextSnapshotStore(self.db)
         self.proposal_store = ProposalStore(self.db)
         self.llm_invocation_store = LLMInvocationStore(self.db)
@@ -408,7 +414,7 @@ class Runtime:
             installation_manager=self.installation_manager,
             autonomy_store=self.autonomy_store,
             provider_registry=self.providers,
-            control_store=self.control_store,
+            result_appliers=self.result_appliers,
         )
         #: How much one drain call may do.  Unlimited by default, so callers
         #: written before Phase 4B.1 behave exactly as they did.
@@ -600,6 +606,21 @@ class Runtime:
         """
         self.project_orchestrator = orchestrator
         self.executor.project_orchestrator = orchestrator
+
+    def register_result_applier(self, name: str, applier) -> None:
+        """Let a domain commit its own records inside every activation.
+
+        ``applier(result)`` is called inside the activation's transaction, so
+        what it writes lands or rolls back with everything else.  The Runtime
+        stays mechanism: it never inspects the records.  Registering the same
+        name twice replaces the earlier applier, so a re-bootstrapped runtime
+        does not apply the same effects twice.
+        """
+        self.result_appliers[:] = [
+            (existing, fn) for existing, fn in self.result_appliers if existing != name
+        ]
+        self.result_appliers.append((name, applier))
+        logger.info("registered result applier %s", name)
 
     def register_backend(self, name: str, backend: ExecutionBackend) -> None:
         """Register an execution backend under ``name`` (e.g. ``"llm"``).
