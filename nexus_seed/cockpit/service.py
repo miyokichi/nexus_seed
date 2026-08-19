@@ -20,6 +20,7 @@ from ..chat.service import ProjectChatService
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
+from ..reviews import decide_review, pending_reviews
 from ..orchestration.loop import get_goal_loops
 from ..projects.projections import get_project_situation, get_project_summaries
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
@@ -277,6 +278,29 @@ class CockpitService:
             return None
         return {"project_id": project_id, "project": self.orchestrator_project(project_id)}
 
+    async def review_decision(
+        self, review_id: str, decision: str, *, note: str | None = None
+    ) -> dict[str, Any] | None:
+        """Approve or reject one waiting review, or ``None`` if none is waiting.
+
+        This is the one write the Cockpit performs that is not an instruction,
+        and it needs no command vocabulary: a review is a Continuation waiting
+        for an event, so deciding it is emitting that event.  Deciding an
+        already-settled review finds nothing and changes nothing.
+        """
+
+        event = await decide_review(
+            self.runtime, review_id, decision, actor=self.master_id or "human", note=note
+        )
+        if event is None:
+            return None
+        return {
+            "review_id": str(review_id),
+            "decision": decision,
+            "event_id": str(event.id),
+            "event_type": event.type,
+        }
+
     def _orchestrator_project(self, project) -> dict[str, Any]:
         """One orchestrator Project as the interface shows it."""
 
@@ -401,42 +425,44 @@ class CockpitService:
         }
 
     def _reviews(self, processes) -> list[dict[str, Any]]:
-        process_by_id = {item.id: item for item in processes}
+        """Decorate the waiting reviews with what the interface needs to show.
+
+        The identities come from :mod:`nexus_seed.reviews` rather than being
+        recomputed here, because the ids shown are the ids the approve endpoint
+        is called with; two derivations of the same id would eventually differ.
+        """
+
+        process_by_id = {str(item.id): item for item in processes}
+        continuation_by_id = {
+            str(item.id): item for item in self.runtime.continuation_store.all()
+        }
         reviews: list[dict[str, Any]] = []
-        for continuation in self.runtime.continuation_store.all():
-            conditions = continuation.waiting_for.get("any") or [continuation.waiting_for]
-            for condition in conditions:
-                if not isinstance(condition, dict):
-                    continue
-                event_type = str(condition.get("event_type") or "")
-                if not event_type.endswith("_reviewed"):
-                    continue
-                identifiers = [
-                    str(value) for key, value in condition.items() if key.endswith("_id")
-                ]
-                process = process_by_id.get(continuation.process_instance_id)
-                review_id = identifiers[0] if identifiers else str(continuation.id)
-                category = (
-                    "capability_acquisition"
-                    if any(
-                        token in event_type
-                        for token in ("extension", "construction", "installation", "acquisition")
-                    )
-                    else "review"
+        for review in pending_reviews(self.runtime):
+            process = process_by_id.get(review.process_instance_id)
+            continuation = continuation_by_id.get(review.continuation_id)
+            category = (
+                "capability_acquisition"
+                if any(
+                    token in review.event_type
+                    for token in ("extension", "construction", "installation", "acquisition")
                 )
-                reviews.append(
-                    {
-                        "id": review_id,
-                        "continuation_id": str(continuation.id),
-                        "event_type": event_type,
-                        "category": category,
-                        "process": process.definition_name if process else None,
-                        "created_at": _iso(continuation.created_at),
-                        "condition": _json_safe(condition),
-                        "summary": _review_summary(event_type),
-                    }
-                )
-        return sorted(reviews, key=lambda item: item["created_at"] or "")
+                else "review"
+            )
+            reviews.append(
+                {
+                    "id": review.review_id,
+                    "continuation_id": review.continuation_id,
+                    "event_type": review.event_type,
+                    "category": category,
+                    "process": process.definition_name if process else None,
+                    "created_at": _iso(continuation.created_at) if continuation else None,
+                    "condition": _json_safe(
+                        {"event_type": review.event_type, **review.condition}
+                    ),
+                    "summary": _review_summary(review.event_type),
+                }
+            )
+        return reviews
 
     def _needs_attention(
         self,

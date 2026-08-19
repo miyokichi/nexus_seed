@@ -30,6 +30,7 @@ from urllib.parse import unquote
 
 from ..core.event import utcnow
 from ..ingress.models import IngressEnvelope, IngressStatus
+from ..reviews import DECISIONS
 
 logger = logging.getLogger("nexus_seed.adapters.webhook")
 
@@ -295,6 +296,8 @@ class WebhookServer:
             "/cockpit/api/orchestrator/projects/"
         ):
             return await self._orchestrator_action_response(clean_path, headers, raw_body)
+        if method.upper() == "POST" and clean_path.startswith("/cockpit/api/reviews/"):
+            return await self._review_decision_response(clean_path, headers, raw_body)
         if method.upper() == "POST" and clean_path.startswith("/projects/"):
             return await self._project_chat_response(clean_path, headers, raw_body)
         if method.upper() != "POST":
@@ -486,6 +489,60 @@ class WebhookServer:
             return WebhookResponse(
                 404,
                 {"error": "project not found or orchestrator is disabled"},
+                headers=security_headers,
+            )
+        return WebhookResponse(200, result, headers=security_headers)
+
+    async def _review_decision_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Settle one waiting review.
+
+        Approval is not a command: the waiting Continuation named an event, and
+        this emits it.  Any channel that can reach here can decide, which is
+        the point — the review path must outlive the command surface.
+        """
+
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if self.cockpit is None:
+            return WebhookResponse(
+                404, {"error": "cockpit is disabled"}, headers=security_headers
+            )
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        # cockpit/api/reviews/<id>/<decision>
+        if len(parts) != 5 or parts[4] not in DECISIONS:
+            return WebhookResponse(
+                404, {"error": "unknown review path"}, headers=security_headers
+            )
+        review_id, decision = unquote(parts[3]), parts[4]
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        if not isinstance(body, dict):
+            return WebhookResponse(
+                400, {"error": "body must be a JSON object"}, headers=security_headers
+            )
+        note = body.get("note")
+        try:
+            result = await self.cockpit.review_decision(
+                review_id, decision, note=note if isinstance(note, str) else None
+            )
+        except ValueError as exc:
+            return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
+        if result is None:
+            return WebhookResponse(
+                404,
+                {"error": "no review is waiting on that identifier"},
                 headers=security_headers,
             )
         return WebhookResponse(200, result, headers=security_headers)
