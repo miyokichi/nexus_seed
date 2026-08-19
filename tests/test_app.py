@@ -23,7 +23,7 @@ _ENV_NAMES = (
     "NEXUS_SEED_TICK_SECONDS",
     "NEXUS_SEED_LOG_LEVEL",
     "NEXUS_SEED_CONTROL_IDENTITY",
-    "NEXUS_SEED_CONTROL_PERMISSIONS",
+    "NEXUS_SEED_OPERATOR_ID",
     "NEXUS_SEED_COCKPIT_ENABLED",
     "NEXUS_SEED_LLM_ENABLED",
     "NEXUS_SEED_LLM_PROVIDER",
@@ -77,7 +77,6 @@ def test_build_runtime_bootstraps_the_complete_stack(tmp_path):
         assert "evaluate_goal" in names
         assert "local_file" in runtime.backends
         assert "llm" not in runtime.backends
-        assert runtime.control_store.get_identity("local-operator") is not None
     finally:
         runtime.close()
 

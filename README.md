@@ -283,54 +283,46 @@ nexus-seed status
 nexus-seed task "Analyze this request"
 nexus-seed reviews
 nexus-seed review <review-id> approve
-nexus-seed control '/status'
 ```
 
 These commands exercise the earlier durable Goal/Work/Capability runtime, not
 the new `ProjectOrchestrator` API.
 
-Each project in that Cockpit has a thread with two boxes. Asking stays
-read-only; instructing goes through the Control Plane:
+Each Goal-rooted project in that Cockpit has a read-only thread:
 
 ```text
-POST /projects/project-a/chat       {"message": "今なんで止まってる？"}
-POST /projects/project-a/instruct   {"message": "地域別の内訳も出して"}
+POST /projects/project-a/chat   {"message": "今なんで止まってる？"}
 ```
 
-An instruction becomes exactly one explicit control command — proposed by the
-LLM, or typed directly as `/task ...` — and is checked before it runs: the verb
-must be allow-listed (`/task`, `/pause`, `/resume`, `/cancel`, `/priority`,
-`/deadline`, `/provider`, `/approve`, `/reject`, `/goal …`), and every
-identifier it names must already belong to *this* project, so a proposed command
-cannot reach another project's Work, review or Goal. `/task` is bound to the
-project the instruction came from. Only then does the same authorized, audited
-`ConsoleService` behind `/control` execute it. A refused instruction executes
-nothing, and an explicit `/command` needs no LLM at all. Both the instruction
-and its outcome are appended to the project's own thread.
+Asking explains; it never changes anything. Acting on a project goes to the
+Project Orchestrator instead — see below.
 
-### Winding down the Control Plane
+### The command surface is gone
 
-The Phase 5G human command surface is being retired in favour of the Project
-Orchestrator. It is now switchable:
+`/control`, the slash-command parser, `ConsoleService` and the Control Plane
+instruction box no longer exist. What they gated is reachable directly:
 
-```dotenv
-NEXUS_SEED_CONTROL_PLANE_ENABLED=false
-```
+| What a person does | Where it goes now |
+| --- | --- |
+| Start or extend work | `POST /cockpit/api/orchestrator/projects/<id>/instruct`, or a `human_message` — both reach the `ProjectRouter` |
+| Approve or reject a review | `POST /cockpit/api/reviews/<id>/<approve\|reject>` (`nexus_seed/reviews.py`) |
+| Answer a self question | `POST /cockpit/api/questions/<id>/answer` (`nexus_seed/questions.py`) |
+| Unblock a Project | `POST /cockpit/api/orchestrator/projects/<id>/unblock` |
+| Create or end a Goal | `nexus_seed.goals.create_goal` / `end_goal` — deliberately temporary, see below |
 
-With it off, `runtime.console` is `None`, and the command surface disappears:
-the `/control` endpoint returns 404, the Cockpit hides its control actions, and
-the Control Plane instruction box refuses cleanly instead of executing. Nothing
-else changes — the Runtime, every store, the Goal records already written, and
-the whole orchestrator path (including `human_message` → `ProjectRouter`) keep
-working. It removes the way a person issues commands, not the data behind it.
+A review is a Continuation waiting for an event whose type ends in
+`_reviewed`, so deciding one is emitting that event; a self question is
+answered the same way. Both are idempotent by construction — the second call
+finds nothing waiting and changes nothing — and neither authorizes anything,
+because the gate is the channel's own (the webhook bearer token). The shipped
+app only ever granted one identity `command.*`, so nothing was being denied.
 
-Still to be moved before the Control Plane can be deleted outright:
-
-| Concern | Where it is today | Note |
-| --- | --- | --- |
-| Approval of a REVIEW | `/approve`, `/reject` | Only emits the Event the waiting Continuation expects; any channel that can emit it works |
-| Goal records | `control_store` | Still read by `orchestration/loop`, Goal Projects and `ctx.services.get_goal`. No longer *written* by the Runtime (`bootstrap_control` registers a `control.goals` result applier, so the executor commits Goals without knowing they exist), and no longer read by Phase 6, which asks `runtime.active_pursuits()` instead |
-| Who issued an instruction | `commands` table | The orchestrator records no human actor yet |
+Goals are what remains of the old spine. They are no longer written by the
+Runtime (`bootstrap_control` registers a `control.goals` result applier, so the
+executor commits Goals without knowing they exist) and no longer read by Phase
+6, which asks `runtime.active_pursuits()`. Still Goal-shaped:
+`orchestration/loop`, the Goal-derived Project projection, and
+`ctx.services.get_goal`.
 
 Phase 6 asks the Runtime what is being pursued rather than reading Goals:
 `Runtime.register_pursuit_source(name, fn)` registers an answer,
@@ -340,9 +332,6 @@ no active ids and the Phase 6 startup wake stays silent — and pointing the sam
 question at Orchestrator Projects is one registration change, with no edit to
 `presence/` or `processes/persistent_being.py`.
 
-Authorization is *not* on that list: the shipped app grants one identity
-`command.*`, so it never denies anything, and the real gate is the webhook
-bearer token that the orchestrator endpoints already use.
 
 ### Instructing an orchestrator Project
 
@@ -406,7 +395,7 @@ nexus_seed/core/          the six fixed data models
 nexus_seed/runtime/       earlier durable event runtime
 nexus_seed/processes/     earlier Process handlers
 nexus_seed/providers/     provider federation, A2A client, Project Agent transport
-nexus_seed/control/       authenticated compatibility commands and Goals
+nexus_seed/control/       Goal domain records (no command surface)
 nexus_seed/cockpit/       compatibility read model and dependency-free Web UI
 skills/                   directory Skills (skill.json + SKILL.md)
 tests/                    unit, acceptance, and restart-convergence tests

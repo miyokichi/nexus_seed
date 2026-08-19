@@ -1,4 +1,11 @@
-"""Phase 5G control-plane domain models (never Runtime/core primitives)."""
+"""Goal domain models (never Runtime/core primitives).
+
+What remains here is the Goal and what a Goal carries.  The human *command*
+vocabulary that used to live alongside it — Command, CommandResult,
+HumanIdentity — is gone: people now instruct the Project Orchestrator and
+decide reviews directly, so there is nothing left to parse, authorize or audit
+as a command.
+"""
 
 from __future__ import annotations
 
@@ -9,18 +16,6 @@ from enum import Enum
 from typing import Any
 
 from ..core.event import utcnow
-
-
-class CommandStatus(str, Enum):
-    """Durable lifecycle of a human command."""
-
-    RECEIVED = "RECEIVED"
-    VALIDATED = "VALIDATED"
-    REJECTED = "REJECTED"
-    WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
-    EXECUTED = "EXECUTED"
-    FAILED = "FAILED"
-    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
 
 
 class WorkPriority(str, Enum):
@@ -56,75 +51,6 @@ class GoalStatus(str, Enum):
     @property
     def terminal(self) -> bool:
         return self in {GoalStatus.ACHIEVED, GoalStatus.CANCELLED}
-
-
-@dataclass(frozen=True, slots=True)
-class HumanIdentity:
-    """Authenticated human principal and its explicit command permissions."""
-
-    identity_id: str
-    display_name: str
-    permissions: tuple[str, ...]
-    enabled: bool = True
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utcnow)
-    updated_at: datetime = field(default_factory=utcnow)
-
-    def allows(self, permission: str) -> bool:
-        """Return whether an exact or namespace-wildcard grant authorizes it."""
-
-        if not self.enabled:
-            return False
-        grants = set(self.permissions)
-        if "*" in grants or permission in grants:
-            return True
-        parts = permission.split(".")
-        return any(".".join(parts[:index]) + ".*" in grants for index in range(1, len(parts)))
-
-
-@dataclass(slots=True)
-class Command:
-    """One explicit or proposed control-plane request."""
-
-    command_type: str
-    issuer_identity_id: str
-    source_channel: str
-    source_message_id: str
-    target_type: str | None = None
-    target_id: str | None = None
-    arguments: dict[str, Any] = field(default_factory=dict)
-    status: CommandStatus = CommandStatus.RECEIVED
-    idempotency_key: str = ""
-    validation_reasons: list[str] = field(default_factory=list)
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
-    created_at: datetime = field(default_factory=utcnow)
-    executed_at: datetime | None = None
-
-
-@dataclass(slots=True)
-class CommandResult:
-    """Auditable explanation of what a command changed."""
-
-    command_id: uuid.UUID
-    status: CommandStatus
-    affected_entities: list[dict[str, str]] = field(default_factory=list)
-    emitted_events: list[str] = field(default_factory=list)
-    message: str = ""
-    failure_reason: str | None = None
-    data: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=utcnow)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "command_id": str(self.command_id),
-            "status": self.status.value,
-            "affected_entities": self.affected_entities,
-            "emitted_events": self.emitted_events,
-            "message": self.message,
-            "failure_reason": self.failure_reason,
-            "data": self.data,
-            "created_at": self.created_at.isoformat(),
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,22 +105,6 @@ class ProviderDirective:
         return cls(ProviderDirectiveKind(str(data["kind"]).upper()), str(data["provider"]))
 
 
-@dataclass(frozen=True, slots=True)
-class StructuredWorkRequest:
-    """Validated human input for creating one WorkRequirement."""
-
-    objective: str
-    scope: dict[str, Any] = field(default_factory=dict)
-    project: str | None = None
-    priority: WorkPriority = WorkPriority.NORMAL
-    deadline: datetime | None = None
-    input_resources: tuple[str, ...] = ()
-    constraints: WorkConstraints = field(default_factory=WorkConstraints)
-    completion_criteria: tuple[Any, ...] = ()
-    provider_directive: ProviderDirective | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass(slots=True)
 class Goal:
     """Long-lived human intent that may generate several WorkRequirements."""
@@ -212,17 +122,3 @@ class Goal:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
-
-
-@dataclass(frozen=True, slots=True)
-class CommandProposal:
-    """Untrusted natural-language interpretation; never executable as-is."""
-
-    proposed_command_type: str
-    target_type: str | None
-    target_id: str | None
-    arguments: dict[str, Any]
-    confidence: float
-    explanation: str
-    candidate_target_ids: tuple[str, ...] = ()
-    id: uuid.UUID = field(default_factory=uuid.uuid4)

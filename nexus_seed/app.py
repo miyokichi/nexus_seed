@@ -30,9 +30,7 @@ from .operations import (
     read_status,
     resolve_pending_review,
     submit_webhook_event,
-    submit_control_command,
 )
-from .control.models import HumanIdentity
 from .orchestrator import (
     Agent,
     AssignmentStatus,
@@ -71,8 +69,10 @@ class AppSettings:
     webhook_token: str | None = None
     tick_seconds: float = 1.0
     log_level: str = "INFO"
-    control_identity_id: str = "local-operator"
-    control_permissions: tuple[str, ...] = ("command.*",)
+    #: Who is at the keyboard.  Recorded as the actor on review decisions and
+    #: self-question answers; no longer authorized against anything, because
+    #: there is no longer a command surface to authorize.
+    operator_id: str = "local-operator"
     #: Phase 6 is on by default; False restores the complete Phase 5G wiring.
     phase6_enabled: bool = True
     #: Human Interface Layer; False removes every Cockpit HTTP route.
@@ -80,9 +80,6 @@ class AppSettings:
     #: Route incoming messages to the Project Orchestrator.  False leaves a
     #: ``human_message`` handled exactly as the pre-redesign application did.
     project_orchestrator_enabled: bool = False
-    #: The Phase 5G human command surface.  Being wound down in favour of the
-    #: Project Orchestrator; set false to run without it.
-    control_plane_enabled: bool = True
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -109,22 +106,18 @@ class AppSettings:
             raise ApplicationConfigurationError(
                 "NEXUS_SEED_WEBHOOK_TOKEN is required when listening beyond localhost"
             )
-        identity_id = os.environ.get("NEXUS_SEED_CONTROL_IDENTITY", "local-operator").strip()
-        permissions = tuple(
-            value.strip()
-            for value in os.environ.get("NEXUS_SEED_CONTROL_PERMISSIONS", "command.*").split(",")
-            if value.strip()
-        )
-        if not identity_id or not permissions:
-            raise ApplicationConfigurationError(
-                "control identity and at least one control permission are required"
-            )
+        operator_id = (
+            os.environ.get("NEXUS_SEED_OPERATOR_ID")
+            or os.environ.get("NEXUS_SEED_CONTROL_IDENTITY")
+            or "local-operator"
+        ).strip()
+        if not operator_id:
+            raise ApplicationConfigurationError("an operator id is required")
         phase6_enabled = _read_bool("NEXUS_SEED_PHASE6_ENABLED", True)
         cockpit_enabled = _read_bool("NEXUS_SEED_COCKPIT_ENABLED", True)
         orchestrator_enabled = _read_bool(
             "NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED", False
         )
-        control_plane_enabled = _read_bool("NEXUS_SEED_CONTROL_PLANE_ENABLED", True)
         return cls(
             data_dir=data_dir,
             host=host,
@@ -132,12 +125,10 @@ class AppSettings:
             webhook_token=token,
             tick_seconds=tick_seconds,
             log_level=log_level,
-            control_identity_id=identity_id,
-            control_permissions=permissions,
+            operator_id=operator_id,
             phase6_enabled=phase6_enabled,
             cockpit_enabled=cockpit_enabled,
             project_orchestrator_enabled=orchestrator_enabled,
-            control_plane_enabled=control_plane_enabled,
         )
 
 
@@ -161,18 +152,6 @@ def bootstrap_application(
     bootstrap_control(runtime)
     bootstrap_orchestration(runtime)
     bootstrap_persistent_being(runtime, enabled=settings.phase6_enabled)
-    # The identity exists only to be authorized against, so it is written only
-    # while the Control Plane is on.  Everything below it is independent of the
-    # Control Plane and must still run when it is off.
-    if runtime.console is not None:
-        runtime.control_store.save_identity(
-            HumanIdentity(
-                identity_id=settings.control_identity_id,
-                display_name="Configured control operator",
-                permissions=settings.control_permissions,
-                metadata={"source": "application configuration"},
-            )
-        )
     runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)
     _configure_external_agents(runtime, env_file=env_file)
@@ -254,7 +233,6 @@ def build_runtime(settings: AppSettings, *, env_file: str | Path = ".env") -> Ru
         settings.data_dir / "nexus_seed.db",
         construction_root=settings.data_dir / "construction",
         installation_root=settings.data_dir / "installed_extensions",
-        control_enabled=settings.control_plane_enabled,
     )
     try:
         bootstrap_application(runtime, settings, env_file=env_file)
@@ -339,10 +317,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_payload_arguments(review, label="additional review payload")
     review.add_argument("--source-key", default=None, help="stable external id for deduplication")
 
-    control = commands.add_parser("control", help="execute an explicit Phase 5G slash command")
-    _add_connection_arguments(control, suppress_defaults=True)
-    control.add_argument("text", help="for example: /status or /pause <work-id>")
-    control.add_argument("--idempotency-key", default=None, help="stable command delivery id")
     return parser
 
 
@@ -470,18 +444,6 @@ async def run(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    if command == "control":
-        result = await asyncio.to_thread(
-            submit_control_command,
-            host=settings.host,
-            port=settings.port,
-            token=settings.webhook_token,
-            command=args.text,
-            idempotency_key=args.idempotency_key,
-        )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result.get("status") == "EXECUTED" else 1
-
     runtime = build_runtime(settings, env_file=args.env_file)
     orchestrator = getattr(runtime, "project_orchestrator", None)
     server: WebhookServer | None = None
@@ -503,8 +465,7 @@ async def run(args: argparse.Namespace) -> int:
             CockpitService(
                 runtime,
                 phase6_enabled=settings.phase6_enabled,
-                master_id=settings.control_identity_id,
-                control_enabled=runtime.console is not None,
+                master_id=settings.operator_id,
             )
             if settings.cockpit_enabled
             else None
@@ -513,8 +474,6 @@ async def run(args: argparse.Namespace) -> int:
             ingress,
             host=settings.host,
             port=settings.port,
-            console=runtime.console,
-            control_identity_id=settings.control_identity_id,
             cockpit=cockpit,
         ).start()
         _print_started(runtime, settings, server.bound_port)

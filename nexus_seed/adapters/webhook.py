@@ -218,15 +218,11 @@ class WebhookServer:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
-        console=None,
-        control_identity_id: str = "local-operator",
         cockpit=None,
     ) -> None:
         self.ingress = ingress
         self.host = host
         self.port = port
-        self.console = console
-        self.control_identity_id = control_identity_id
         self.cockpit = cockpit
         self._server: asyncio.AbstractServer | None = None
 
@@ -298,32 +294,12 @@ class WebhookServer:
             return await self._orchestrator_action_response(clean_path, headers, raw_body)
         if method.upper() == "POST" and clean_path.startswith("/cockpit/api/reviews/"):
             return await self._review_decision_response(clean_path, headers, raw_body)
+        if method.upper() == "POST" and clean_path.startswith("/cockpit/api/questions/"):
+            return await self._question_answer_response(clean_path, headers, raw_body)
         if method.upper() == "POST" and clean_path.startswith("/projects/"):
             return await self._project_chat_response(clean_path, headers, raw_body)
         if method.upper() != "POST":
             return WebhookResponse(405, {"error": "only POST is supported outside Cockpit"})
-        if clean_path == "/control":
-            if self.console is None:
-                return WebhookResponse(404, {"error": "control endpoint is disabled"})
-            if not self.ingress.authorize(_token_from(headers)):
-                return WebhookResponse(401, {"error": "unauthorized"})
-            try:
-                body = json.loads(raw_body or b"{}")
-            except ValueError:
-                return WebhookResponse(400, {"error": "body is not valid JSON"})
-            if not isinstance(body, dict) or not isinstance(body.get("command"), str):
-                return WebhookResponse(400, {"error": "command must be a string"})
-            try:
-                result = self.console.execute_text(
-                    body["command"],
-                    issuer_identity_id=self.control_identity_id,
-                    source_channel=str(body.get("source_channel") or "http-control"),
-                    source_message_id=str(body.get("source_message_id") or "") or None,
-                    idempotency_key=str(body.get("idempotency_key") or "") or None,
-                )
-            except ValueError as exc:
-                return WebhookResponse(400, {"error": str(exc)})
-            return WebhookResponse(200, result.to_dict())
         adapter_id = _adapter_id_from_path(path)
         if adapter_id is None:
             return WebhookResponse(404, {"error": "unknown path"})
@@ -547,13 +523,66 @@ class WebhookServer:
             )
         return WebhookResponse(200, result, headers=security_headers)
 
+    async def _question_answer_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Answer one question NEXUS SEED asked about itself."""
+
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if self.cockpit is None:
+            return WebhookResponse(
+                404, {"error": "cockpit is disabled"}, headers=security_headers
+            )
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        # cockpit/api/questions/<id>/answer
+        if len(parts) != 5 or parts[4] != "answer":
+            return WebhookResponse(
+                404, {"error": "unknown question path"}, headers=security_headers
+            )
+        question_id = unquote(parts[3])
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        if not isinstance(body, dict):
+            return WebhookResponse(
+                400, {"error": "body must be a JSON object"}, headers=security_headers
+            )
+        answer = body.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            return WebhookResponse(
+                400,
+                {"error": "answer must be a non-empty string"},
+                headers=security_headers,
+            )
+        try:
+            result = await self.cockpit.answer_self_question(question_id, answer)
+        except ValueError as exc:
+            return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
+        if result is None:
+            return WebhookResponse(
+                404,
+                {"error": "no open question with that identifier"},
+                headers=security_headers,
+            )
+        return WebhookResponse(200, result, headers=security_headers)
+
     async def _project_chat_response(
         self, path: str, headers: dict[str, str], raw_body: bytes
     ) -> WebhookResponse:
-        """Answer a Project Chat question, or execute a Project instruction.
+        """Answer one Project Chat question.
 
-        ``/chat`` stays read-only.  ``/instruct`` runs one allow-listed,
-        project-scoped Control Plane command as the configured identity.
+        Read-only by construction: asking explains, and acting on a project
+        goes to the Project Orchestrator instead.
         """
 
         if self.cockpit is None:
@@ -567,7 +596,7 @@ class WebhookServer:
                 401, {"error": "unauthorized"}, headers=security_headers
             )
         parts = path.strip("/").split("/")
-        if len(parts) != 3 or parts[0] != "projects" or parts[2] not in {"chat", "instruct"}:
+        if len(parts) != 3 or parts[0] != "projects" or parts[2] != "chat":
             return WebhookResponse(
                 404, {"error": "unknown project path"}, headers=security_headers
             )
@@ -585,21 +614,7 @@ class WebhookServer:
                 headers=security_headers,
             )
         project_id = unquote(parts[1])
-        if parts[2] == "instruct":
-            if self.console is None:
-                return WebhookResponse(
-                    404, {"error": "control endpoint is disabled"}, headers=security_headers
-                )
-            try:
-                answer = await self.cockpit.project_instruct(
-                    project_id, message, issuer_identity_id=self.control_identity_id
-                )
-            except ValueError as exc:
-                return WebhookResponse(
-                    400, {"error": str(exc)}, headers=security_headers
-                )
-        else:
-            answer = await self.cockpit.project_chat_ask(project_id, message)
+        answer = await self.cockpit.project_chat_ask(project_id, message)
         if answer is None:
             return WebhookResponse(
                 404, {"error": "project not found"}, headers=security_headers

@@ -167,11 +167,11 @@ async def test_only_approve_and_reject_are_decisions(tmp_path):
         runtime.close()
 
 
-async def test_reviews_are_decidable_with_the_control_plane_off(tmp_path):
-    runtime = Runtime(tmp_path / "control-off.db", control_enabled=False)
+async def test_reviews_are_decidable_with_no_command_surface(tmp_path):
+    runtime = Runtime(tmp_path / "no-console.db")
     runtime.register_process(NEEDS_REVIEW, needs_review)
     try:
-        assert runtime.console is None
+        assert not hasattr(runtime, "console")
         await waiting(runtime)
         assert await decide_review(runtime, "thing-1", "approve") is not None
         assert runtime.process_store.all_instances()[0].status is ProcessStatus.COMPLETED

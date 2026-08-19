@@ -15,7 +15,8 @@ from capability_helpers import work_pipeline
 from extension_helpers import POWERPOINT, extension_runtime, needs, register_disabled_provider
 
 from nexus_seed.capabilities.models import CapabilityRef, CapabilityRequirement
-from nexus_seed.control.models import GoalStatus, HumanIdentity
+from nexus_seed.control.models import GoalStatus
+from nexus_seed.goals import create_goal as _create_goal
 from nexus_seed.core.event import Event
 from nexus_seed.core.process import ProcessDefinition
 from nexus_seed.orchestration import (
@@ -60,12 +61,6 @@ def review_ready_criteria(*, entity: str = "project-a", capability: str = "prepa
     )
 
 
-def authorize(runtime) -> None:
-    runtime.control_store.save_identity(
-        HumanIdentity("operator", "operator", ("command.*",))
-    )
-
-
 def goal_runtime(tmp_path, name: str = "loop.db") -> Runtime:
     """The ordinary application stack: world model, work planning, goals, loop."""
 
@@ -74,19 +69,20 @@ def goal_runtime(tmp_path, name: str = "loop.db") -> Runtime:
     bootstrap_work_intelligence(runtime)
     bootstrap_control(runtime)
     bootstrap_orchestration(runtime)
-    authorize(runtime)
     return runtime
 
 
 async def create_goal(runtime, *, criteria: str, title: str = "Review readiness",
                       objective: str = "レビュー可能な状態にする", message_id: str = "goal-1"):
-    created = runtime.console.execute_text(
-        f'/goal create title="{title}" objective="{objective}" success=\'{criteria}\'',
-        issuer_identity_id="operator",
-        source_message_id=message_id,
+    goal = await _create_goal(
+        runtime,
+        objective,
+        title=title,
+        owner="operator",
+        success_criteria=json.loads(criteria),
     )
     await runtime.run_pending()
-    return uuid.UUID(created.data["id"])
+    return goal.id
 
 
 def register_worker(runtime, capability: str, handler, *, name: str | None = None) -> None:
@@ -221,7 +217,6 @@ async def test_case_b_missing_capability_is_acquired_and_the_goal_completes(tmp_
     bootstrap_control(runtime)
     bootstrap_autonomy(runtime)
     bootstrap_orchestration(runtime)
-    authorize(runtime)
     register_disabled_provider(runtime, "review_preparer", "prepare_review")
     try:
         goal_id = await create_goal(runtime, criteria=review_ready_criteria())
@@ -346,7 +341,6 @@ async def test_case_d_unsolvable_capability_asks_a_person_for_help(tmp_path):
     bootstrap_control(runtime)
     bootstrap_autonomy(runtime)
     bootstrap_orchestration(runtime)
-    authorize(runtime)
     criteria = json.dumps(
         [
             {
@@ -393,7 +387,6 @@ async def test_a_blocked_acquisition_states_what_the_human_must_supply(tmp_path)
     bootstrap_control(runtime)
     bootstrap_autonomy(runtime)
     bootstrap_orchestration(runtime)
-    authorize(runtime)
     criteria = json.dumps(
         [
             {

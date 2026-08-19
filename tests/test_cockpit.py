@@ -20,7 +20,7 @@ from nexus_seed.autonomy.models import (
 from nexus_seed.capabilities.models import CapabilityRequirement
 from nexus_seed.cockpit import CockpitService, humanize_error
 from nexus_seed.cockpit.assets import APP_JS
-from nexus_seed.control.models import Goal, GoalStatus, HumanIdentity
+from nexus_seed.control.models import Goal
 from nexus_seed.core.event import Event
 from nexus_seed.extension.models import CapabilityGap
 from nexus_seed.presence.models import IntentionRecord
@@ -53,32 +53,6 @@ async def get_path(port: int, path: str, *, token: str | None = None):
         for name, _, value in [line.partition(":")]
     }
     return status, response_headers, body
-
-
-async def post_control(port: int, command: str, *, message_id: str = "message-1"):
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    body = json.dumps(
-        {
-            "command": command,
-            "source_channel": "cockpit-test",
-            "source_message_id": message_id,
-            "idempotency_key": f"cockpit-test:{message_id}",
-        }
-    ).encode("utf-8")
-    request = (
-        "POST /control HTTP/1.1\r\n"
-        "Host: 127.0.0.1\r\n"
-        f"Authorization: Bearer {TOKEN}\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body)}\r\n\r\n"
-    ).encode("latin-1") + body
-    writer.write(request)
-    await writer.drain()
-    response = await reader.read()
-    writer.close()
-    head, _, payload = response.partition(b"\r\n\r\n")
-    status = int(head.split(b"\r\n", 1)[0].split()[1])
-    return status, json.loads(payload)
 
 
 async def test_snapshot_is_read_only_and_groups_causal_activity(tmp_path):
@@ -166,53 +140,6 @@ async def test_disabled_cockpit_does_not_change_webhook_server(tmp_path):
         runtime.close()
 
 
-async def test_self_question_answer_uses_control_plane_and_phase6_process(tmp_path):
-    runtime = Runtime(tmp_path / "answer.db")
-    bootstrap_semantic(runtime)
-    bootstrap_control(runtime)
-    bootstrap_persistent_being(runtime, enabled=True, wake_on_start=False)
-    runtime.control_store.save_identity(
-        HumanIdentity(
-            identity_id="operator",
-            display_name="Operator",
-            permissions=("command.*",),
-        )
-    )
-    runtime.state_store.set(
-        "self", "unresolved_questions", [{"question": "Which target is preferred?"}]
-    )
-    snapshot = CockpitService(
-        runtime, phase6_enabled=True, master_id="operator"
-    ).snapshot()
-    question_id = snapshot["being"]["self"]["unresolved_questions"][0]["id"]
-    server = await WebhookServer(
-        WebhookIngress(runtime.ingress, token=TOKEN),
-        console=runtime.console,
-        control_identity_id="operator",
-        cockpit=CockpitService(runtime, phase6_enabled=True, master_id="operator"),
-    ).start()
-    try:
-        status, result = await post_control(
-            server.bound_port,
-            f'/answer {question_id} answer="Use target A"',
-        )
-        assert status == 200
-        assert result["status"] == "EXECUTED"
-
-        await runtime.run_pending()
-
-        assert runtime.state_store.get("self", "unresolved_questions") == []
-        beliefs = runtime.state_store.get("self", "beliefs")
-        assert beliefs[-1]["answer"] == "Use target A"
-        assert beliefs[-1]["claim_status"] == "CONFIRMED"
-        assert runtime.control_store.command_by_idempotency_key(
-            "cockpit-test:message-1"
-        ).command_type == "self.question.answer"
-    finally:
-        await server.stop()
-        runtime.close()
-
-
 def test_human_error_translation_keeps_raw_fact_separate():
     raw = "schema validation failed: no proposed_state_deltas"
     translated = humanize_error(raw, source="interpret_event_llm")
@@ -226,23 +153,6 @@ def test_cockpit_refresh_is_manual_only():
     assert '$("#refresh").onclick=load' in APP_JS
     assert "setTimeout(load" not in APP_JS
     assert "state.timer" not in APP_JS
-
-
-def test_control_commands_do_not_need_a_secure_browser_context():
-    """Cockpit is served over http:// on a LAN address as well as localhost.
-
-    ``crypto.randomUUID`` is a secure-context API, so calling it directly made
-    every control button fail with "crypto.randomUUID is not a function" for
-    anyone not on localhost.
-    """
-
-    command_call = APP_JS[APP_JS.index("async function sendCommand") :]
-    command_call = command_call[: command_call.index("\n")]
-    assert "crypto.randomUUID()" not in command_call
-    assert "source_message_id:uid()" in command_call
-    assert "idempotency_key:`cockpit:${uid()}`" in command_call
-    assert "function uid()" in APP_JS
-    assert "getRandomValues" in APP_JS
 
 
 def test_capability_assistance_aggregates_goal_trace_without_writing(tmp_path):
@@ -427,57 +337,6 @@ def test_capability_assistance_ui_uses_existing_control_boundaries():
     assert 'data-action="${esc(action)}"' in APP_JS
     assert 'app.addEventListener("click"' in APP_JS
     assert 'action==="review-approve"' in APP_JS
-    assert "sendCommand(`/pause ${workId}`" in APP_JS
-    assert "fetch(\"/control\"" in APP_JS
     assert " onclick=" not in APP_JS
 
 
-async def test_cockpit_goal_buttons_map_to_authorized_control_commands(tmp_path):
-    runtime = Runtime(tmp_path / "goal-buttons.db")
-    bootstrap_control(runtime)
-    runtime.control_store.save_identity(
-        HumanIdentity(
-            identity_id="operator",
-            display_name="Operator",
-            permissions=("command.*",),
-        )
-    )
-    goal = Goal(
-        title="Operate from Cockpit",
-        objective="Verify Goal controls",
-        owner_identity_id="operator",
-    )
-    runtime.control_store.save_goal(goal)
-    server = await WebhookServer(
-        WebhookIngress(runtime.ingress, token=TOKEN),
-        console=runtime.console,
-        control_identity_id="operator",
-        cockpit=CockpitService(runtime, phase6_enabled=False, master_id="operator"),
-    ).start()
-    try:
-        status, result = await post_control(
-            server.bound_port,
-            f"/goal pause {goal.id}",
-            message_id="goal-pause",
-        )
-        assert status == 200 and result["status"] == "EXECUTED"
-        assert runtime.control_store.get_goal(goal.id).status is GoalStatus.PAUSED
-
-        status, result = await post_control(
-            server.bound_port,
-            f"/goal resume {goal.id}",
-            message_id="goal-resume",
-        )
-        assert status == 200 and result["status"] == "EXECUTED"
-        assert runtime.control_store.get_goal(goal.id).status is GoalStatus.ACTIVE
-
-        status, result = await post_control(
-            server.bound_port,
-            f"/goal cancel {goal.id}",
-            message_id="goal-cancel",
-        )
-        assert status == 200 and result["status"] == "EXECUTED"
-        assert runtime.control_store.get_goal(goal.id).status is GoalStatus.CANCELLED
-    finally:
-        await server.stop()
-        runtime.close()

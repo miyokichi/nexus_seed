@@ -77,7 +77,6 @@ from ..storage.installation_store import InstallationStore
 from ..storage.autonomy_store import AutonomyStore
 from ..storage.provider_store import ProviderStore
 from ..storage.control_store import ControlStore
-from ..control.service import ConsoleService
 from ..providers.models import ExecutionProvider, ProviderBinding
 from ..providers.registry import ProviderRegistry
 from ..providers.skills import DirectorySkillAdapter, SkillImporter
@@ -185,7 +184,6 @@ class Runtime:
         clock: Clock | None = None,
         construction_root: str | Path | None = None,
         installation_root: str | Path | None = None,
-        control_enabled: bool = True,
     ) -> None:
         self.db = Database(db_path)
         self.clock = clock or Clock()
@@ -314,17 +312,6 @@ class Runtime:
         self.autonomy_store = AutonomyStore(self.db)
         self.autonomy_policy = AutonomyPolicy()
         self.default_autonomy_budget = AutonomyBudget()
-
-        # Phase 5G application service.  It is outside Runtime mechanism even
-        # though Runtime exposes the wired instance to CLI/HTTP adapters.
-        #
-        # The Control Plane is being wound down in favour of the Project
-        # Orchestrator, so it is switchable.  ``None`` removes the /control
-        # endpoint, the Cockpit's control actions and the Control Plane
-        # instruction box; every caller already guards for it.  Goals and the
-        # durable runtime are untouched — this turns off the human command
-        # surface, not the records behind it.
-        self.console = ConsoleService(self) if control_enabled else None
 
         self.registry = registry or HandlerRegistry()
         self.resolver = ContinuationResolver(self.continuation_store, self.process_store)

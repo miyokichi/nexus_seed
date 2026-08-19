@@ -105,52 +105,6 @@ def submit_webhook_event(
         "source_event_key": key,
         **result,
     }
-
-
-def submit_control_command(
-    *,
-    host: str,
-    port: int,
-    token: str | None,
-    command: str,
-    idempotency_key: str | None = None,
-    timeout_seconds: float = 15.0,
-) -> dict[str, Any]:
-    """Submit one explicit slash command to the running ConsoleService."""
-
-    url = _webhook_url(host, port).removesuffix("/ingress/webhook") + "/control"
-    body = json.dumps(
-        {
-            "command": command,
-            "source_channel": "cli",
-            "source_message_id": str(uuid.uuid4()),
-            "idempotency_key": idempotency_key,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    if token:
-        headers["X-Ingress-Token"] = token
-    http_request = request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with request.urlopen(http_request, timeout=timeout_seconds) as response:
-            result = json.loads(response.read().decode("utf-8") or "{}")
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise OperationalCommandError(
-            f"control endpoint rejected the command (HTTP {exc.code}): {detail}"
-        ) from exc
-    except (error.URLError, TimeoutError, OSError) as exc:
-        raise OperationalCommandError(
-            f"cannot reach {url}; start the server with 'nexus-seed' first: {exc}"
-        ) from exc
-    except ValueError as exc:
-        raise OperationalCommandError("control endpoint returned invalid JSON") from exc
-    if not isinstance(result, dict):
-        raise OperationalCommandError("control response must be a JSON object")
-    return result
-
-
 def read_status(database_path: Path, *, limit: int = 10) -> dict[str, Any]:
     """Read a compact operational status snapshot from SQLite."""
 

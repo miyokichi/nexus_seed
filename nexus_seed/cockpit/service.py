@@ -15,11 +15,11 @@ from typing import Any
 
 from ..actions.models import ActionExecutionStatus
 from ..autonomy.models import AcquisitionStatus
-from ..chat.instruct import ProjectInstructionService
 from ..chat.service import ProjectChatService
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
 from ..presence.projections import get_intentions, project_master, project_self
+from ..questions import answer_question
 from ..reviews import decide_review, pending_reviews
 from ..orchestration.loop import get_goal_loops
 from ..projects.projections import get_project_situation, get_project_summaries
@@ -60,13 +60,11 @@ class CockpitService:
         *,
         phase6_enabled: bool,
         master_id: str,
-        control_enabled: bool = True,
         activity_limit: int = 30,
     ) -> None:
         self.runtime = runtime
         self.phase6_enabled = phase6_enabled
         self.master_id = master_id
-        self.control_enabled = control_enabled
         self.activity_limit = activity_limit
         self.started_at = datetime.now(timezone.utc)
         #: Read-only Project Chat.  It lives with the interface layer, so
@@ -78,9 +76,6 @@ class CockpitService:
         self.orchestrator_projects = ProjectStore(runtime.db)
         self.orchestrator_agents = AgentStore(runtime.db)
         self.orchestrator_messages = A2AMessageStore(runtime.db)
-        #: Project Instructions.  Explanations stay read-only; acting on a
-        #: project goes through the Control Plane, as the same human identity.
-        self.instructions = ProjectInstructionService(runtime, getattr(runtime, "console", None))
 
     def snapshot(self) -> dict[str, Any]:
         """Return one JSON-safe, point-in-time view of the running system."""
@@ -172,11 +167,6 @@ class CockpitService:
                 "work_counts": _counts(item.status.value for item in works),
                 "recent_failures": [self._process_failure(item) for item in failed],
                 "raw_trace_available": True,
-            },
-            "control": {
-                "enabled": self.control_enabled,
-                "endpoint": "/control",
-                "boundary": "Phase 5G Control Plane",
             },
         }
 
@@ -306,6 +296,22 @@ class CockpitService:
             "event_type": event.type,
         }
 
+    async def answer_self_question(
+        self, question_id: str, answer: str
+    ) -> dict[str, Any] | None:
+        """Answer one open self question, or ``None`` when it is not open."""
+
+        event = await answer_question(
+            self.runtime, question_id, answer, actor=self.master_id or "human"
+        )
+        if event is None:
+            return None
+        return {
+            "question_id": str(question_id),
+            "event_id": str(event.id),
+            "event_type": event.type,
+        }
+
     def _orchestrator_project(self, project) -> dict[str, Any]:
         """One orchestrator Project as the interface shows it."""
 
@@ -351,10 +357,7 @@ class CockpitService:
     def project_chat_history(self, project_id: str) -> dict[str, Any] | None:
         """Return one project's durable chat thread, or ``None`` if unknown."""
 
-        history = self.chat.history(project_id)
-        if history is not None:
-            history["instructions"] = {"enabled": self.instructions.available}
-        return history
+        return self.chat.history(project_id)
 
     async def project_chat_ask(
         self, project_id: str, message: str
@@ -362,15 +365,6 @@ class CockpitService:
         """Answer one project question read-only, or ``None`` if unknown."""
 
         return await self.chat.ask(project_id, message)
-
-    async def project_instruct(
-        self, project_id: str, message: str, *, issuer_identity_id: str
-    ) -> dict[str, Any] | None:
-        """Execute one instruction about a project, or ``None`` if unknown."""
-
-        return await self.instructions.instruct(
-            project_id, message, issuer_identity_id=issuer_identity_id
-        )
 
     def _llm_status(self) -> dict[str, Any]:
         backend = self.runtime.backends.get("llm")

@@ -1478,6 +1478,34 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 248. **The Runtime does not interpret the identifiers.** It relays them; only the
      registering domain knows whether they are Goals or Projects.
 
+## Done: the command surface is deleted
+
+- `control/parser.py`, `control/service.py`, `control/adapters.py`,
+  `chat/instruct.py`, the `/control` route, `runtime.console`, the `nexus-seed
+  control` CLI verb and `submit_control_command` are gone. `control/models.py`
+  keeps only the Goal domain; `ControlStore` keeps only Goals.
+- What the commands gated moved to paths of its own: `nexus_seed/reviews.py`
+  (approve/reject), `nexus_seed/questions.py` (self-question answers),
+  `nexus_seed/goals.py` (create/end a Goal), and the Project Orchestrator for
+  everything that starts or extends work.
+- `AppSettings.control_identity_id`/`control_permissions` became `operator_id`
+  — who is at the keyboard, recorded as the actor, authorized against nothing.
+  `NEXUS_SEED_OPERATOR_ID` is the new variable; `NEXUS_SEED_CONTROL_IDENTITY`
+  still works.
+- `chat/models.py` keeps its `INSTRUCTION_*` statuses even though nothing
+  writes them: an existing chat journal must stay readable.
+
+## Command-surface invariants (keep them)
+
+249. **Do not reintroduce a verb vocabulary.** A new human action is a path
+     (like reviews and questions), or it goes to the Project Orchestrator.
+250. **A human decision is an Event.** Never a command record, never a
+     permission check — the channel is the gate.
+251. **Deciding twice must change nothing.** Every human-decision path finds
+     nothing waiting on the second call and returns None.
+252. **`nexus_seed/goals.py` is scaffolding.** It exists only while Goals do;
+     do not grow it into a Goal service.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

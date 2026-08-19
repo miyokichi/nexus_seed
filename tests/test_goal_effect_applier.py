@@ -47,8 +47,8 @@ async def test_goals_are_applied_when_the_control_plane_registered_its_applier(t
 
 
 async def test_without_the_applier_the_activation_still_succeeds(tmp_path):
-    """No Control Plane, no Goal writes — and no crash in the Runtime."""
-    runtime = Runtime(tmp_path / "off.db", control_enabled=False)
+    """No registered applier, no Goal writes — and no crash in the Runtime."""
+    runtime = Runtime(tmp_path / "off.db")
     runtime.register_process(MAKE_GOAL, make_goal)  # bootstrap_control not called
 
     await runtime.submit_event(Event("make_goal", "test", {}))

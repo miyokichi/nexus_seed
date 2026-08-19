@@ -8,7 +8,8 @@ import uuid
 from nexus_seed.backends.llm import FakeLLMBackend, proposal_response
 from nexus_seed.chat.service import ProjectChatService
 from nexus_seed.cockpit import CockpitService
-from nexus_seed.control.models import Goal, GoalStatus, HumanIdentity
+from nexus_seed.control.models import Goal, GoalStatus
+from nexus_seed.goals import create_goal, end_goal
 from nexus_seed.core.continuation import Continuation
 from nexus_seed.core.event import Event
 from nexus_seed.core.process import ProcessInstance, ProcessStatus
@@ -48,28 +49,24 @@ CRITERIA = json.dumps(
 def _runtime(tmp_path, name="lifecycle.db") -> Runtime:
     runtime = Runtime(tmp_path / name)
     bootstrap_control(runtime)
-    runtime.control_store.save_identity(
-        HumanIdentity("operator", "operator", ("command.*",))
-    )
     return runtime
 
 
 async def _create_goal(runtime, *, objective="Project Aをレビュー可能にする", criteria=CRITERIA,
                        title="Project A readiness", message_id="goal-1"):
-    command = f'/goal create title="{title}" objective="{objective}"'
-    if criteria:
-        command += f" success='{criteria}'"
-    created = runtime.console.execute_text(
-        command, issuer_identity_id="operator", source_message_id=message_id
+    goal = await create_goal(
+        runtime,
+        objective,
+        title=title,
+        owner="operator",
+        success_criteria=json.loads(criteria) if criteria else (),
     )
     await runtime.run_pending()
-    return created
+    return goal
 
 
-async def _command(runtime, text, *, message_id):
-    result = runtime.console.execute_text(
-        text, issuer_identity_id="operator", source_message_id=message_id
-    )
+async def _end_goal(runtime, goal_id, status):
+    result = await end_goal(runtime, goal_id, status, owner="operator")
     await runtime.run_pending()
     return result
 
@@ -78,11 +75,11 @@ async def test_creating_a_goal_creates_exactly_one_project(tmp_path):
     runtime = _runtime(tmp_path)
     try:
         created = await _create_goal(runtime)
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         goal = runtime.control_store.get_goal(goal_id)
 
         expected = project_id_for_goal(goal_id)
-        assert created.data["project_id"] == expected
+        assert project_id_of(created) == expected
         assert project_id_of(goal) == expected
 
         summaries = get_project_summaries(runtime)
@@ -112,8 +109,8 @@ async def test_two_goals_are_two_projects_and_never_share_work(tmp_path):
             objective="別の目的を達成する",
             message_id="goal-2",
         )
-        first_id = project_id_for_goal(first.data["id"])
-        second_id = project_id_for_goal(second.data["id"])
+        first_id = project_id_for_goal(first.id)
+        second_id = project_id_for_goal(second.id)
 
         assert sorted(item.project_id for item in get_project_summaries(runtime)) == sorted(
             [first_id, second_id]
@@ -124,8 +121,8 @@ async def test_two_goals_are_two_projects_and_never_share_work(tmp_path):
         second_work = {item["id"] for item in second_situation.remaining_tasks}
         assert first_work and second_work
         assert first_work.isdisjoint(second_work)
-        assert first_situation.goal["id"] == first.data["id"]
-        assert second_situation.goal["id"] == second.data["id"]
+        assert first_situation.goal["id"] == str(first.id)
+        assert second_situation.goal["id"] == str(second.id)
     finally:
         runtime.close()
 
@@ -135,7 +132,7 @@ async def test_goal_work_joins_the_project_and_survives_restart_without_duplicat
     runtime = _runtime(tmp_path, name="restart.db")
     try:
         created = await _create_goal(runtime)
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         project_id = project_id_for_goal(goal_id)
         works = runtime.work_requirement_store.for_goal(goal_id)
         assert len(works) == 2
@@ -171,7 +168,7 @@ async def test_replanned_and_later_work_stay_in_the_same_project(tmp_path):
     runtime = _runtime(tmp_path)
     try:
         created = await _create_goal(runtime)
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         project_id = project_id_for_goal(goal_id)
         work = runtime.work_requirement_store.for_goal(goal_id)[0]
 
@@ -202,7 +199,7 @@ async def test_one_single_task_is_already_a_project(tmp_path):
     runtime = _runtime(tmp_path)
     try:
         created = await _create_goal(runtime, criteria=None, title="Single task goal")
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         project_id = project_id_for_goal(goal_id)
 
         works = runtime.work_requirement_store.for_goal(goal_id)
@@ -220,7 +217,7 @@ async def test_project_status_follows_work_reviews_and_goal_lifecycle(tmp_path):
     runtime = _runtime(tmp_path)
     try:
         created = await _create_goal(runtime)
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         project_id = project_id_for_goal(goal_id)
         works = runtime.work_requirement_store.for_goal(goal_id)
 
@@ -264,20 +261,20 @@ async def test_goal_pause_resume_and_cancel_reach_the_project(tmp_path):
     runtime = _runtime(tmp_path)
     try:
         created = await _create_goal(runtime)
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         project_id = project_id_for_goal(goal_id)
 
-        await _command(runtime, f"/goal pause {goal_id}", message_id="pause-1")
+        await _end_goal(runtime, goal_id, GoalStatus.PAUSED)
         assert get_project_situation(runtime, project_id).overall_status is (
             ProjectOverallStatus.PAUSED
         )
 
-        await _command(runtime, f"/goal resume {goal_id}", message_id="resume-1")
+        await _end_goal(runtime, goal_id, GoalStatus.ACTIVE)
         assert get_project_situation(runtime, project_id).overall_status is (
             ProjectOverallStatus.ACTIVE
         )
 
-        await _command(runtime, f"/goal cancel {goal_id}", message_id="cancel-1")
+        await _end_goal(runtime, goal_id, GoalStatus.CANCELLED)
         situation = get_project_situation(runtime, project_id)
         assert situation.overall_status is ProjectOverallStatus.CANCELLED
         assert situation.project.status is ProjectOverallStatus.CANCELLED
@@ -335,7 +332,7 @@ async def test_situation_and_chat_work_on_an_auto_created_project(tmp_path):
     runtime.register_backend("llm", backend)
     try:
         created = await _create_goal(runtime)
-        goal_id = uuid.UUID(created.data["id"])
+        goal_id = created.id
         project_id = project_id_for_goal(goal_id)
 
         cockpit = CockpitService(runtime, phase6_enabled=False, master_id="operator")
