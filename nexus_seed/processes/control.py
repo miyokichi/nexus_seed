@@ -834,15 +834,34 @@ def apply_goal_effects(runtime):
     return apply
 
 
+def active_goal_ids(runtime):
+    """Return the source that reports which Goals are being pursued.
+
+    Phase 6 asks the Runtime what is active; the Control Plane is what knows
+    that the answer is "ACTIVE Goals".  Replacing this registration is how the
+    same question gets answered by Projects instead.
+    """
+
+    def source() -> list:
+        store = runtime.control_store
+        if store is None:
+            return []
+        return [goal.id for goal in store.goals("ACTIVE")]
+
+    return source
+
+
 def bootstrap_control(runtime) -> None:
     """Register the ordinary Goal evaluator Process and the Goal effect applier."""
 
     runtime.register_process(EVALUATE_GOAL, evaluate_goal)
     runtime.register_process(REVIEW_HUMAN_WORK, review_human_work)
     runtime.register_result_applier("control.goals", apply_goal_effects(runtime))
+    runtime.register_pursuit_source("control.goals", active_goal_ids(runtime))
 
 
 __all__ = [
+    "active_goal_ids",
     "apply_goal_effects",
     "EVALUATE_GOAL",
     "GOAL_DECOMPOSITION_FAILED",

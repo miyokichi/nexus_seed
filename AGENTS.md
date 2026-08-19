@@ -1453,6 +1453,31 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 244. **Do not add a generic effect bag** to satisfy a new domain; give it typed
      fields and an applier, as Goal has.
 
+## Done in Goal decoupling (Phase 6 reads)
+
+- Phase 6 no longer reads Goals. `Runtime.register_pursuit_source(name, fn)` lets
+  a domain say what is currently being pursued, and `runtime.active_pursuits()`
+  is what `project_self` and the Phase 6 startup wake ask. `bootstrap_control`
+  registers `control.goals` (ACTIVE Goals), so behaviour is unchanged today.
+- `presence/projections.py` and `processes/persistent_being.py` contain no
+  reference to `control_store` at all — a test asserts that, because the whole
+  value of the seam is that it stays unbroken.
+- Switching the answer from Goals to Orchestrator Projects is one registration
+  change (stage 2), not a Phase 6 change. `SelfProjection.active_goal_ids` keeps
+  its name for now so stored projections stay readable; renaming it is part of
+  stage 2 along with `IntentionRecord.goal_id`.
+
+## Pursuit source invariants (keep them)
+
+245. **Phase 6 asks the Runtime, never a domain store.** New "what are we working
+     on?" reads go through `active_pursuits()`.
+246. **No source means pursuing nothing.** An empty list is a legitimate answer,
+     not a missing dependency — a Control-Plane-off runtime must stay quiet.
+247. **One broken source must not blind the rest.** `active_pursuits()` logs and
+     continues; it never propagates a domain's failure into Phase 6.
+248. **The Runtime does not interpret the identifiers.** It relays them; only the
+     registering domain knows whether they are Goals or Projects.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

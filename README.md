@@ -329,8 +329,16 @@ Still to be moved before the Control Plane can be deleted outright:
 | Concern | Where it is today | Note |
 | --- | --- | --- |
 | Approval of a REVIEW | `/approve`, `/reject` | Only emits the Event the waiting Continuation expects; any channel that can emit it works |
-| Goal records | `control_store` | Read by Phase 6 presence, `orchestration/loop`, Goal Projects, and by `ctx.services.get_goal`. No longer *written* by the Runtime: `bootstrap_control` registers a `control.goals` result applier, so the executor commits Goals without knowing they exist |
+| Goal records | `control_store` | Still read by `orchestration/loop`, Goal Projects and `ctx.services.get_goal`. No longer *written* by the Runtime (`bootstrap_control` registers a `control.goals` result applier, so the executor commits Goals without knowing they exist), and no longer read by Phase 6, which asks `runtime.active_pursuits()` instead |
 | Who issued an instruction | `commands` table | The orchestrator records no human actor yet |
+
+Phase 6 asks the Runtime what is being pursued rather than reading Goals:
+`Runtime.register_pursuit_source(name, fn)` registers an answer,
+`runtime.active_pursuits()` collects them, and `bootstrap_control` supplies
+ACTIVE Goals. A runtime with no source pursues nothing — `project_self` reports
+no active ids and the Phase 6 startup wake stays silent — and pointing the same
+question at Orchestrator Projects is one registration change, with no edit to
+`presence/` or `processes/persistent_being.py`.
 
 Authorization is *not* on that list: the shipped app grants one identity
 `command.*`, so it never denies anything, and the real gate is the webhook

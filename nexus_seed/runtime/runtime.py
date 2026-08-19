@@ -204,6 +204,10 @@ class Runtime:
         self.state_delta_store = StateDeltaStore(self.db)
         self.work_requirement_store = WorkRequirementStore(self.db)
         self.control_store = ControlStore(self.db)
+        #: Domains register ``(name, callable)`` here to say what NEXUS SEED is
+        #: actively pursuing.  Phase 6 asks the Runtime, not the Control Plane,
+        #: so what is being pursued can change source without touching Phase 6.
+        self.pursuit_sources: list = []
         #: Domains register ``(name, callable)`` here to commit their own
         #: records inside a process activation's transaction.  The Runtime does
         #: not know what those records mean — this is the seam that lets a
@@ -606,6 +610,34 @@ class Runtime:
         """
         self.project_orchestrator = orchestrator
         self.executor.project_orchestrator = orchestrator
+
+    def register_pursuit_source(self, name: str, source) -> None:
+        """Let a domain say what is currently being pursued.
+
+        ``source()`` returns the identifiers of whatever that domain considers
+        active — Goals today, Projects once the Control Plane is gone.  The
+        Runtime does not interpret them; it only asks.  Registering the same
+        name twice replaces the earlier source.
+        """
+        self.pursuit_sources[:] = [
+            (existing, fn) for existing, fn in self.pursuit_sources if existing != name
+        ]
+        self.pursuit_sources.append((name, source))
+        logger.info("registered pursuit source %s", name)
+
+    def active_pursuits(self) -> list:
+        """Return the identifiers of everything actively being pursued.
+
+        Empty when nothing registered a source, which is what "this deployment
+        pursues nothing on its own" should look like.
+        """
+        found: list = []
+        for name, source in self.pursuit_sources:
+            try:
+                found.extend(source() or [])
+            except Exception:  # noqa: BLE001 - one bad source must not blind the rest
+                logger.exception("pursuit source %s failed", name)
+        return found
 
     def register_result_applier(self, name: str, applier) -> None:
         """Let a domain commit its own records inside every activation.

@@ -62,15 +62,17 @@ def get_intentions(runtime, *, include_terminal: bool = True) -> list[IntentionR
 
 
 def project_self(runtime) -> SelfProjection:
-    """Compile Self from World State, Goals, Intentions and CapabilityRegistry."""
+    """Compile Self from World State, pursuits, Intentions and CapabilityRegistry."""
+
+    # Pursuits come from whatever domain registered a pursuit source (today the
+    # Control Plane's ACTIVE Goals, tomorrow the Orchestrator's live Projects).
+    # Phase 6 must not know which one it is.
 
     facts = {
         entry.attribute: entry.value
         for entry in runtime.state_store.current_for_entity("self")
     }
-    goals = tuple(
-        goal.id for goal in runtime.control_store.goals("ACTIVE")
-    )
+    goals = tuple(runtime.active_pursuits())
     intentions = tuple(get_intentions(runtime, include_terminal=False))
     capabilities = tuple(
         sorted(runtime.capabilities.provided_capability_names())

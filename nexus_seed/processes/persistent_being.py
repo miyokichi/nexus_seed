@@ -455,7 +455,7 @@ def bootstrap_persistent_being(
     runtime.register_process(REFLECT_EXPERIENCE, reflect_experience)
     runtime._phase6_bootstrapped = True
     if wake_on_start:
-        active_goals = runtime.control_store.goals("ACTIVE")
+        active_goals = runtime.active_pursuits()
         unresolved_intentions = [
             entry
             for entry in runtime.state_store.all_current()
