@@ -107,12 +107,20 @@ class ProjectChatService:
 
     # --- one exchange ------------------------------------------------------
 
-    async def ask(self, project_id: str, message: str) -> dict[str, Any] | None:
+    async def ask(
+        self, project_id: str, message: str, *, refuse_state_changes: bool = True
+    ) -> dict[str, Any] | None:
         """Answer one question, or return ``None`` when the project is unknown.
 
         The situation is recompiled for every question, so an answer always
         describes the project as it is now rather than as it was when the
         thread started (Invariant 193).
+
+        ``refuse_state_changes=False`` is for the one caller that has already
+        decided this message asks for nothing to happen (see
+        :mod:`nexus_seed.chat.message`).  Judging it twice, by two different
+        rules, could only produce a contradiction.  It does not open a write
+        path: this module still has none.
         """
 
         text = (message or "").strip()
@@ -125,7 +133,9 @@ class ProjectChatService:
         thread = self.runtime.chat_store.ensure_thread(project_id)
         history = self.runtime.chat_store.messages(thread.id, limit=self.history_limit)
 
-        refusal = self._refusal(project_id, text)
+        refusal = self._refusal(
+            project_id, text, refuse_state_changes=refuse_state_changes
+        )
         if refusal is not None:
             answer, status, certainty, metadata = refusal
         else:
@@ -170,7 +180,7 @@ class ProjectChatService:
 
     # --- guards ------------------------------------------------------------
 
-    def _refusal(self, project_id: str, text: str):
+    def _refusal(self, project_id: str, text: str, *, refuse_state_changes: bool = True):
         """Refuse out-of-scope and state-changing requests before the LLM sees them."""
 
         foreign = detect_foreign_projects(
@@ -188,7 +198,7 @@ class ProjectChatService:
                 ChatCertainty.FACT,
                 {"out_of_scope_projects": foreign},
             )
-        change = detect_state_change_request(text)
+        change = detect_state_change_request(text) if refuse_state_changes else None
         if change is not None:
             return (
                 READ_ONLY_ANSWER,

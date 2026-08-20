@@ -424,11 +424,11 @@ async def test_chat_routes_disappear_with_cockpit_but_runtime_keeps_running(tmp_
         runtime.close()
 
 
-def test_cockpit_asset_exposes_the_read_only_chat_panel():
-    # Projects are one view now, and its thread carries both asking and
-    # instructing; the question form and its read-only note are still its own.
+def test_cockpit_asset_exposes_the_project_thread():
+    # Projects are one view with one box: asking and telling go to the same
+    # input, and NEXUS SEED decides which a message was.
     assert 'data-view="orchestrator"' in INDEX_HTML
-    assert "orchestrator-chat-form" in APP_JS
+    assert "project-message-form" in APP_JS
     assert "処理しています" in APP_JS
-    assert "質問欄は説明専用です" in APP_JS
+    assert "質問も指示も同じ欄に" in APP_JS
     assert "LLM未接続" in APP_JS

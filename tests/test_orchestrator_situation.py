@@ -176,8 +176,8 @@ async def test_a_question_about_an_orchestrator_project_is_answered(tmp_path):
         runtime.close()
 
 
-async def test_cockpit_renders_an_ask_panel_for_orchestrator_projects():
+async def test_cockpit_renders_the_project_thread():
     from nexus_seed.cockpit.assets import APP_JS
 
-    assert "orchestrator-chat-form" in APP_JS
-    assert "askOrchestrator" in APP_JS
+    assert "project-message-form" in APP_JS
+    assert "projectThreadPanel" in APP_JS

@@ -285,14 +285,33 @@ nexus-seed review <review-id> approve
 These commands exercise the durable Work/Capability runtime alongside the
 `ProjectOrchestrator` API.
 
-Each project has a read-only thread:
+Each project has one thread and one box:
 
 ```text
-POST /projects/<id>/chat   {"message": "今なんで止まってる？"}
+POST /projects/<id>/message  {"message": "今どうなってる？"}
+POST /projects/<id>/message  {"message": "地域別の内訳も出して"}
 ```
 
-Asking explains; it never changes anything. Acting on a project goes to the
-Project Orchestrator — see below.
+Both go to the same place, because deciding which one a message is, is NEXUS
+SEED's job rather than the person's. The `ProjectRouter` reads it for meaning;
+its `IGNORE` action already means "this needs no project work at all", which is
+what a question is. So `IGNORE` is answered read-only from the project's
+situation, and anything else is carried out and handed to the Agent. Both
+outcomes are appended to the same durable thread, so a project's history reads
+as one conversation.
+
+`POST /projects/<id>/chat` remains the read-only half on its own, for a caller
+that only ever asks.
+
+Either judge can be wrong, so `{"act": true}` lets the person overrule it: this
+message is an instruction, hand it over. The Cockpit offers it as **指示として
+渡す** on a reply that explained. That is the whole correction — one bit, not a
+second box and not a verb to learn.
+
+With no reasoning backend nothing can judge meaning, so the deterministic
+change-request guard decides instead, and everything it does not recognise is
+explained rather than delegated. An answer can be ignored; delegated work
+cannot be un-delegated.
 
 ### The command surface is gone
 
@@ -345,7 +364,8 @@ the rename stays loadable.
 
 ### Instructing an orchestrator Project
 
-The orchestrator's own Projects take instructions from their Cockpit page:
+`POST /projects/<id>/message` above is how a person does this. The direct
+endpoints are still there for a caller that has already decided:
 
 ```text
 POST /cockpit/api/orchestrator/projects/<id>/instruct  {"message": "地域別の内訳も出して"}

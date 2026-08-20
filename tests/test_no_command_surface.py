@@ -148,4 +148,4 @@ async def test_the_cockpit_page_has_no_command_channel_left():
     # What replaced it.
     assert "/cockpit/api/reviews/" in APP_JS
     assert "/cockpit/api/questions/" in APP_JS
-    assert "orchestrator-instruct-form" in APP_JS
+    assert "project-message-form" in APP_JS

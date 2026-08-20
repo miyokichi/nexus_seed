@@ -579,10 +579,11 @@ class WebhookServer:
     async def _project_chat_response(
         self, path: str, headers: dict[str, str], raw_body: bytes
     ) -> WebhookResponse:
-        """Answer one Project Chat question.
+        """Handle one message on a project's thread.
 
-        Read-only by construction: asking explains, and acting on a project
-        goes to the Project Orchestrator instead.
+        ``/chat`` is the read-only half on its own — asking, and only asking.
+        ``/message`` is the thread's single box: NEXUS SEED decides whether the
+        message asks or tells, and routes it accordingly.
         """
 
         if self.cockpit is None:
@@ -596,7 +597,7 @@ class WebhookServer:
                 401, {"error": "unauthorized"}, headers=security_headers
             )
         parts = path.strip("/").split("/")
-        if len(parts) != 3 or parts[0] != "projects" or parts[2] != "chat":
+        if len(parts) != 3 or parts[0] != "projects" or parts[2] not in {"chat", "message"}:
             return WebhookResponse(
                 404, {"error": "unknown project path"}, headers=security_headers
             )
@@ -614,7 +615,16 @@ class WebhookServer:
                 headers=security_headers,
             )
         project_id = unquote(parts[1])
-        answer = await self.cockpit.project_chat_ask(project_id, message)
+        if parts[2] == "message":
+            request_id = body.get("request_id")
+            answer = await self.cockpit.project_message(
+                project_id,
+                message,
+                request_id=str(request_id) if request_id else None,
+                act=body.get("act") is True,
+            )
+        else:
+            answer = await self.cockpit.project_chat_ask(project_id, message)
         if answer is None:
             return WebhookResponse(
                 404, {"error": "project not found"}, headers=security_headers

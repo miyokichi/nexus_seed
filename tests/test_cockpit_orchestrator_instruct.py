@@ -256,7 +256,9 @@ async def test_http_instruct_and_unblock(tmp_path):
         runtime.close()
 
 
-def test_cockpit_renders_the_orchestrator_instruction_form():
-    assert "orchestrator-instruct-form" in APP_JS
+def test_cockpit_renders_the_project_thread_and_unblock():
+    # The instruct endpoint tested above is still the API; the page reaches it
+    # through the project thread's single box.
+    assert "project-message-form" in APP_JS
     assert "unblock-orchestrator-project" in APP_JS
     assert "ブロック解除してAgentに戻す" in APP_JS

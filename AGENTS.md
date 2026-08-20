@@ -1570,6 +1570,39 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 259. **`projects/projections.py` stays a name, not a second implementation.**
      Compilation belongs beside the records it reads.
 
+## Done: one box per project
+
+- `POST /projects/<id>/message` is the project thread's single input.
+  `chat/message.py` routes it: `RoutingAction.IGNORE` means the message needs
+  no project work, which is what a question is, so it is answered read-only;
+  anything else is applied and handed to the Agent. Both are appended to the
+  same chat journal, so a project has one history.
+- `ProjectChatService.ask` gained `refuse_state_changes=False` for that one
+  caller. Judging the same message twice by two different rules could only
+  produce a contradiction; it opens no write path, because that module has
+  none.
+- `{"act": true}` overrules the judgement — the person's word wins, because
+  overruling them would leave no way to act at all. It skips the router (which
+  already read this message and was overruled), adds the Task to the project it
+  came from, and is idempotent through the instruction ledger under a distinct
+  `project_message.act` source.
+- `ProjectRouter._fallback` now returns `ADD_TASK_TO_PROJECT` when
+  `origin_project_id` is set. An unroutable in-project request used to become a
+  *second* project, splitting one goal across two Agents.
+- The Cockpit's two panels became one; `/cockpit/api/orchestrator/.../instruct`
+  stays as the API for a caller that has already decided.
+
+## One-box invariants (keep them)
+
+260. **The person never classifies their own message.** New input paths decide,
+     or they go through `/message`.
+261. **One message, one judge.** Do not stack the keyword guard on top of a
+     routing decision, in either direction.
+262. **Explaining is the safe default.** When meaning cannot be judged, answer;
+     never delegate on a guess.
+263. **`act` is one bit, not a vocabulary.** Do not grow it into prefixes,
+     verbs, or modes.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

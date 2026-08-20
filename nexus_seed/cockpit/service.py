@@ -15,6 +15,7 @@ from typing import Any
 
 from ..actions.models import ActionExecutionStatus
 from ..autonomy.models import AcquisitionStatus
+from ..chat.message import ProjectMessageService
 from ..chat.service import ProjectChatService
 from ..core.process import ProcessStatus
 from ..presence.models import ClaimStatus, IntentionStatus
@@ -69,6 +70,9 @@ class CockpitService:
         #: Read-only Project Chat.  It lives with the interface layer, so
         #: disabling Cockpit removes it and leaves Runtime untouched.
         self.chat = ProjectChatService(runtime)
+        #: The project thread's single box.  Asking and telling are the same
+        #: input because deciding which one a message is, is NEXUS SEED's job.
+        self.messages = ProjectMessageService(runtime, self.chat)
         #: Read-only views of the Project Orchestrator's own records.  Built on
         #: the same database, never on the Runtime's Goal projection: the two
         #: kinds of project are shown apart because they *are* apart.
@@ -351,6 +355,25 @@ class CockpitService:
         """Answer one project question read-only, or ``None`` if unknown."""
 
         return await self.chat.ask(project_id, message)
+
+    async def project_message(
+        self,
+        project_id: str,
+        message: str,
+        *,
+        request_id: str | None = None,
+        act: bool = False,
+    ) -> dict[str, Any] | None:
+        """Handle one message on a project's thread, or ``None`` if unknown.
+
+        Whether it turned out to be a question or an instruction is in the
+        result's ``kind``; both are appended to the same thread.  ``act``
+        overrules that judgement when the person has already made it.
+        """
+
+        return await self.messages.send(
+            project_id, message, request_id=request_id, act=act
+        )
 
     def _llm_status(self) -> dict[str, Any]:
         backend = self.runtime.backends.get("llm")

@@ -179,8 +179,8 @@ async def test_http_retry_with_the_same_request_id_is_safe(tmp_path):
 
 
 def test_cockpit_sends_a_stable_request_id():
-    # The key is minted once per instruction and only cleared on success, so a
+    # The key is minted once per message and only cleared on success, so a
     # retry after a lost response replays instead of repeating.
-    assert "instructionKey" in APP_JS
-    assert "request_id:o.instructionKey" in APP_JS
-    assert 'if(action==="instruct")o.instructionKey=null' in APP_JS
+    assert "messageKey" in APP_JS
+    assert "request_id:o.messageKey" in APP_JS
+    assert "o.messageKey=null" in APP_JS

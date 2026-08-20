@@ -31,7 +31,9 @@ INSTRUCTION = (
     "- CREATE_PROJECT: it is an independent goal. Set proposed_goal.\n"
     "- UPDATE_PROJECT: it only changes an existing project's framing or "
     "priority. Set target_project_id.\n"
-    "- IGNORE: it needs no project work at all.\n"
+    "- IGNORE: it needs no project work at all.  A question about how a "
+    "project is going, why it stopped, or what is left is one of these: "
+    "answering it changes nothing, so it is not work.\n"
     "A project listed as BLOCKED or WAITING_HUMAN is waiting for a person. If "
     "the request answers what one of them is waiting on — supplying what was "
     "missing, dropping the requirement, or telling it how to proceed without "
@@ -146,8 +148,23 @@ class ProjectRouter:
 
     @staticmethod
     def _fallback(context: RoutingContext, reason: str) -> RoutingDecision:
-        """The conservative decision: this request is its own Goal."""
+        """The conservative decision when meaning cannot be judged.
+
+        A request that came from inside a project belongs to that project: the
+        person was looking at it when they wrote this.  Making a second project
+        instead would split one goal in two and hand it to a second Agent, so
+        an unroutable in-project request becomes a Task on its own project.
+        Only a request with no origin is its own Goal.
+        """
         logger.info("routing fallback: %s", reason)
+        if context.origin_project_id:
+            return RoutingDecision(
+                action=RoutingAction.ADD_TASK_TO_PROJECT,
+                target_project_id=context.origin_project_id,
+                proposed_task=context.request,
+                reason=f"fallback ({reason})",
+                confidence=0.0,
+            )
         return RoutingDecision(
             action=RoutingAction.CREATE_PROJECT,
             proposed_goal=context.request,
