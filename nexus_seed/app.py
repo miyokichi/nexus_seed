@@ -22,6 +22,7 @@ from .backends.action import LocalFileActionBackend
 from .backends.base import BackendRequest
 from .cockpit import CockpitService
 from .federation_config import configure_external_agents
+from .config_report import build_report, format_report
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
 from .operations import (
     OperationalCommandError,
@@ -299,6 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_payload_arguments(event)
     event.add_argument("--source-key", default=None, help="stable external id for deduplication")
 
+    config = commands.add_parser(
+        "config", help="show the resolved configuration, grouped by what it is for"
+    )
+    config.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     status = commands.add_parser("status", help="show durable work and process status")
     _add_connection_arguments(status, suppress_defaults=True)
     status.add_argument("--limit", type=_positive_int, default=10, help="recent rows to show")
@@ -393,6 +399,15 @@ async def run(args: argparse.Namespace) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     database_path = settings.data_dir / "nexus_seed.db"
+    if command == "config":
+        report = build_report(args.env_file)
+        print(
+            json.dumps(report, ensure_ascii=False, indent=2)
+            if args.json
+            else format_report(report),
+            end="" if not args.json else "\n",
+        )
+        return 0
     if command == "status":
         report = read_status(database_path, limit=args.limit)
         _print_operational_status(report, as_json=args.json)

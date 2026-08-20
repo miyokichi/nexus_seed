@@ -1603,6 +1603,37 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 263. **`act` is one bit, not a vocabulary.** Do not grow it into prefixes,
      verbs, or modes.
 
+## Done: configuration says which model is which
+
+- Two models, one of them not configured here at all. `NEXUS_SEED_LLM_*` is the
+  model NEXUS SEED *thinks* with; the Project Agent's model lives in the
+  Agent's own configuration, and `NEXUS_SEED_PROJECT_AGENT_*` says only where
+  the Agent is. `in_process` calls no model whatsoever.
+- `skills_config.py` owns Skill discovery. It used to be reachable only through
+  the A2A federation settings, which made it look like a property of provider
+  federation; a Skill is a procedure offered to whoever executes.
+  `federation_config` re-exports `DEFAULT_SKILL_ROOTS` and reads
+  `read_roots()`, so nothing that imported it broke.
+- `NEXUS_SEED_SKILLS_STRICT` and `NEXUS_SEED_SKILLS_ON_DUPLICATE` were only
+  settable through `a2a.json`; they are env settings now too.
+- `nexus-seed config` (`config_report.py`) prints the resolved settings grouped
+  by purpose, with the Skills actually found and the roots searched. It reads
+  only: no database, no connection.
+- `.env.example` is laid out in the same groups, with the two-model distinction
+  at the top.
+
+## Configuration invariants (keep them)
+
+264. **Never print a secret.** A key is named by the variable holding it; the
+     report says `set` or `EMPTY`, never the value.
+265. **`nexus-seed config` starts nothing.** No database is created, no
+     endpoint contacted. It must stay safe to run against production settings.
+266. **One owner per setting.** A group that needs another group's value reads
+     that group's module; do not re-read the variable.
+267. **Do not add a setting for the delegated model.** It belongs to the Agent.
+     If NEXUS SEED ever needs to know, it asks the Agent — it does not
+     configure it.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

@@ -30,12 +30,14 @@ from typing import TYPE_CHECKING
 from .llm_config import load_env_file
 from .providers.a2a import A2AAgentAdapter, A2AEndpoint, A2AProtocolError, a2a_provider_record
 from .providers.skills import SkillCatalog, SkillImporter, SkillLoader
+from .skills_config import DEFAULT_SKILL_ROOTS as _DEFAULT_SKILL_ROOTS, read_roots
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .runtime.runtime import Runtime
 
-#: Roots searched when nothing is configured, highest precedence first.
-DEFAULT_SKILL_ROOTS = ("./skills", "~/.nexus_seed/skills")
+#: Re-exported so an existing import keeps working; Skill discovery is owned
+#: by :mod:`nexus_seed.skills_config` now.
+DEFAULT_SKILL_ROOTS = _DEFAULT_SKILL_ROOTS
 
 
 class FederationConfigurationError(ValueError):
@@ -280,10 +282,7 @@ def _routed_provider(descriptor, settings: FederationSettings) -> str | None:
 
 
 def _env_roots() -> tuple[str, ...]:
-    raw = os.environ.get("NEXUS_SEED_SKILL_ROOTS", "").strip()
-    if not raw:
-        return DEFAULT_SKILL_ROOTS
-    return tuple(part for part in raw.split(os.pathsep) if part.strip())
+    return read_roots()
 
 
 def _read_bool(name: str, *, default: bool) -> bool:

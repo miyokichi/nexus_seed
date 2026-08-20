@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .backends.base import ExecutionBackend
 from .backends.llm import LLMBackend
-from .federation_config import FederationSettings
 from .llm_config import LLMSettings, load_env_file
+from .skills_config import SkillSettings
 from .orchestrator import (
     A2AAgentRuntime,
     AgentRuntime,
@@ -32,7 +32,7 @@ from .orchestrator import (
 )
 from .providers.a2a import A2AEndpoint
 from .providers.project_agent import A2AProjectAgentTransport, skill_contracts
-from .providers.skills import SkillCatalog, SkillLoader
+from .providers.skills import SkillCatalog
 from .storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,9 @@ class ProjectAgentSettings:
     #: Workspace handed to a Project Agent, one directory per project.  Keep it
     #: relative unless the Agent Runtime can really write the absolute path.
     workspace_root: str | None = None
-    skill_roots: tuple[str, ...] = ()
+    #: Where the Skills offered to a Project Agent come from.  Not an Agent
+    #: setting: the same catalog is offered to every executor.
+    skills: SkillSettings = field(default_factory=SkillSettings)
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> ProjectAgentSettings:
@@ -85,9 +87,9 @@ class ProjectAgentSettings:
             )
         token_env = os.environ.get("NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV", "").strip() or None
         workspace = os.environ.get("NEXUS_SEED_PROJECT_WORKSPACE", "").strip() or None
-        # Skill roots are the existing external-agent setting; a Project Agent
-        # chooses between the same Skills any other executor would be offered.
-        skill_roots = FederationSettings.from_env(env_file).skill_roots
+        # A Project Agent is offered the same Skills any other executor would
+        # be, from the one place they are configured.
+        skills = SkillSettings.from_env(env_file)
         return cls(
             runtime=runtime,
             url=url,
@@ -102,7 +104,7 @@ class ProjectAgentSettings:
                 "NEXUS_SEED_PROJECT_AGENT_REQUEST_TIMEOUT_SECONDS", 30.0
             ),
             workspace_root=workspace,
-            skill_roots=skill_roots,
+            skills=skills,
         )
 
     def endpoint(self) -> A2AEndpoint:
@@ -126,7 +128,7 @@ def load_skills(settings: ProjectAgentSettings) -> SkillCatalog:
     itself which procedures apply, so a missing one narrows its choice rather
     than stopping the orchestrator from running.
     """
-    catalog = SkillLoader(settings.skill_roots).load()
+    catalog = settings.skills.load()
     for failure in catalog.failures:
         logger.error("skill package rejected: %s", failure)
     return catalog

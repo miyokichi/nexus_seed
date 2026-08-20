@@ -245,11 +245,52 @@ resolved, and by what, so the Project's history still says what once stopped it.
 
 This is the one decision NEXUS SEED makes for itself, so it depends on the
 routing model answering inside `NEXUS_SEED_LLM_TIMEOUT_SECONDS`. When it does
-not, the router falls back to creating a project — deliberately, because
-burying a request inside an unrelated project is worse than an extra one — and
-says so in the reason. If follow-ups keep becoming new projects, raise that
-timeout (a large local model can need several minutes) or route with a faster
-model.
+not, the router falls back: a request that came from inside a project becomes a
+Task on that project, because the person was looking at it when they wrote it;
+a request with no origin becomes its own project, because burying it inside an
+unrelated one is worse than an extra one. Either way the reason says
+`fallback`. If requests keep falling back, raise that timeout (a large local
+model can need several minutes) or route with a faster model.
+
+## Configuration
+
+Two language models are involved in a running system, and their settings look
+alike. They are not the same thing:
+
+| | What it is | Where it is configured |
+| --- | --- | --- |
+| **NEXUS SEED's own reasoning** | The model NEXUS SEED *thinks* with: routing a message to a Project, answering a question about one, interpreting an Event, choosing a plan | `NEXUS_SEED_LLM_*` in this `.env` |
+| **The model that does the work** | The Project Agent's own model | **Not here.** A Project is delegated whole; the Agent brings its own model, keys and config. `NEXUS_SEED_PROJECT_AGENT_*` says *where* the Agent is, never what it thinks with |
+
+`in_process`, the default Agent Runtime, calls no model at all — it is
+deterministic and network-free. Set `NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a` to
+delegate for real.
+
+Skills are their own group, because a Skill is a procedure NEXUS SEED knows
+about and offers to whoever executes — a Project Agent, an A2A provider:
+
+```dotenv
+# Highest precedence first; ";" on Windows, ":" elsewhere.
+# Unset means ./skills then ~/.nexus_seed/skills.
+NEXUS_SEED_SKILL_ROOTS=./skills:/team/shared-skills
+NEXUS_SEED_SKILLS_STRICT=false
+NEXUS_SEED_SKILLS_ON_DUPLICATE=override
+```
+
+Rather than reading `.env` to work out which is which, ask:
+
+```powershell
+nexus-seed config
+nexus-seed config --json
+```
+
+It prints the resolved settings in those same groups, says what each one is
+used for, and lists the Skills it actually found and the roots it looked in. It
+reads only — nothing is started and nothing is connected to. An API key is
+named by the variable that holds it, so the report says which variable is
+consulted and whether it has a value, never the value.
+
+`.env.example` is laid out in the same five groups.
 
 ## Compatibility application
 
