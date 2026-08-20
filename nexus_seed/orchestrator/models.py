@@ -321,8 +321,11 @@ class ProjectAgentConfig:
     """What a Project Agent is given when it is started.
 
     This is the whole contract: a goal, its context, its limits, somewhere to
-    work, what it may use, and how to call NEXUS SEED back.  Project Agents are
-    generic — there is no per-project agent code.
+    work, and how to call NEXUS SEED back.  Project Agents are generic — there
+    is no per-project agent code.
+
+    What the Agent *can do* is deliberately absent.  Its skills and tools are
+    its own configuration; NEXUS SEED delegates a goal, not a method.
     """
 
     agent_id: str
@@ -331,7 +334,6 @@ class ProjectAgentConfig:
     project_context: dict[str, Any] = field(default_factory=dict)
     constraints: dict[str, Any] = field(default_factory=dict)
     workspace: str | None = None
-    available_skills: tuple[str, ...] = ()
     nexus_seed_a2a_endpoint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -343,7 +345,6 @@ class ProjectAgentConfig:
             "project_context": self.project_context,
             "constraints": self.constraints,
             "workspace": self.workspace,
-            "available_skills": list(self.available_skills),
             "nexus_seed_a2a_endpoint": self.nexus_seed_a2a_endpoint,
         }
 

@@ -92,18 +92,39 @@ def test_an_unknown_duplicate_policy_is_refused(tmp_path, monkeypatch):
         SkillSettings.from_env(tmp_path / "missing.env")
 
 
-def test_the_project_agent_is_offered_the_configured_skills(tmp_path, monkeypatch):
-    """Skill roots are not an Agent setting; both sides read one place."""
+def test_the_project_agent_has_no_skill_setting_here(tmp_path, monkeypatch):
+    """A Project is delegated as a goal, not as a method.
+
+    The Agent reads its own skills from its own configuration file, so NEXUS
+    SEED's roots must not reach it — not even by accident.
+    """
 
     from nexus_seed.orchestrator_config import ProjectAgentSettings
 
-    root = tmp_path / "team-skills"
+    root = tmp_path / "nexus-seed-skills"
     root.mkdir()
     monkeypatch.setenv("NEXUS_SEED_SKILL_ROOTS", str(root))
 
     settings = ProjectAgentSettings.from_env(tmp_path / "missing.env")
 
-    assert settings.skills.roots == (str(root),)
+    assert not hasattr(settings, "skills")
+    assert not hasattr(settings, "skill_roots")
+
+
+def test_nothing_about_skills_reaches_a_delegated_agent(tmp_path):
+    """The delegation group must not describe what the Agent can do."""
+
+    env_file = write_env(
+        tmp_path / ".env",
+        NEXUS_SEED_LLM_ENABLED="false",
+        NEXUS_SEED_PROJECT_AGENT_RUNTIME="a2a",
+        NEXUS_SEED_PROJECT_AGENT_URL="http://127.0.0.1:8801",
+    )
+
+    delegation = build_report(env_file)["groups"][2]
+
+    assert not any("SKILL" in name.upper() for name in delegation["settings"])
+    assert any("own configuration file" in note for note in delegation["notes"])
 
 
 # --- the report -----------------------------------------------------------------
@@ -122,11 +143,11 @@ def test_the_report_separates_the_two_models(tmp_path, monkeypatch):
     report = build_report(env_file)
     names = [group["name"] for group in report["groups"]]
 
-    assert names == ["NEXUS SEED's own reasoning", "Skills", "Delegation"]
+    assert names == ["NEXUS SEED's own reasoning", "NEXUS SEED's own Skills", "Delegation"]
     reasoning, _skills, delegation = report["groups"]
     assert reasoning["settings"]["NEXUS_SEED_LLM_MODEL"] == "claude-sonnet-4-5"
     # The delegated model is not configured here, and the report says so.
-    assert any("not which model" in note for note in delegation["notes"])
+    assert any("not how the work is done" in note for note in delegation["notes"])
     assert not any("LLM" in name for name in delegation["settings"])
 
 
@@ -209,7 +230,7 @@ async def test_config_command_prints_the_groups(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "NEXUS SEED's own reasoning" in out
-    assert "Skills" in out
+    assert "NEXUS SEED's own Skills" in out
     assert "Delegation" in out
     # Reporting starts nothing.
     assert not (tmp_path / "data" / "nexus_seed.db").exists()
@@ -229,6 +250,6 @@ async def test_config_command_emits_json(tmp_path, capsys):
     assert payload["env_file"] == env_file
     assert [group["name"] for group in payload["groups"]] == [
         "NEXUS SEED's own reasoning",
-        "Skills",
+        "NEXUS SEED's own Skills",
         "Delegation",
     ]

@@ -17,7 +17,6 @@ from .project_agent import (
     PROJECT_ASSIGNMENT,
     REPLY_SCHEMA,
     A2AProjectAgentTransport,
-    skill_contracts,
 )
 from .adapters import (
     FakeExternalAgentAdapter,
@@ -58,7 +57,7 @@ __all__ = [
     "A2AEndpoint", "A2AProtocolError", "A2ATaskUnfinished",
     "a2a_provider_record", "await_task", "task_state",
     "A2AProjectAgentTransport", "PROJECT_AGENT_INSTRUCTION", "PROJECT_ASSIGNMENT",
-    "REPLY_SCHEMA", "skill_contracts",
+    "REPLY_SCHEMA",
     "LoadedSkill", "SkillCatalog", "SkillLoadFailure", "SkillLoader",
     "DelegationRequest", "DelegationResult", "DelegationStatus",
     "ExecutionProvider", "FakeExternalAgentAdapter", "GenericExternalAgentAdapter",

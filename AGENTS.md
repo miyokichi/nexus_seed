@@ -1252,12 +1252,14 @@ request -> ProjectRouter -> Project -> one Agent -> A2A -> external agent
   `providers/a2a.py` gained `await_task` / `A2ATaskUnfinished` / `task_state`,
   and `A2AAgentAdapter` now uses them, so there is exactly one poll loop.
 - One delegation is one `message/send` carrying a `PROJECT_ASSIGNMENT` derived
-  from `ProjectAgentConfig` (goal, context, constraints, workspace, Skill
-  contracts) plus the reply schema. Nothing about a project is tracked a second
-  time on the transport side.
-- The Skills in `skills/` are offered as *contracts* (`skill_contracts`), never
-  as an order or a plan. NEXUS SEED does not decide which one applies, and the
-  E2E agent chose and chained them itself.
+  from `ProjectAgentConfig` (goal, context, constraints, workspace) plus the
+  reply schema. Nothing about a project is tracked a second time on the
+  transport side.
+- ~~The Skills in `skills/` are offered as contracts (`skill_contracts`).~~
+  Retired: a Project is delegated as a *goal*, not as a method, so the
+  assignment says nothing about how to meet it. The Agent's skills are the
+  Agent's own configuration; `skill_contracts`, `ProjectAgentConfig.
+  available_skills` and `A2AProjectAgentTransport(skills=...)` are gone.
 - `AgentRuntime` gained `attach(config)`: an Agent read back from the database
   is re-adopted before anything is delegated, so a restart never spawns a second
   Agent for the same Project. `AgentManager.assign_or_spawn` and
@@ -1633,6 +1635,31 @@ Each project's chat can now *act*, without weakening the read-only guarantee:
 267. **Do not add a setting for the delegated model.** It belongs to the Agent.
      If NEXUS SEED ever needs to know, it asks the Agent — it does not
      configure it.
+
+## Done: two agents, two skill sets, two config files
+
+- `NEXUS_SEED_SKILL_ROOTS` is **NEXUS SEED's own** Skills: imported as
+  Processes, routed to an A2A provider when one is configured. It no longer
+  reaches a Project Agent in any form.
+- Removed from the delegation path: `skill_contracts`,
+  `ProjectAgentConfig.available_skills`, the `available_skills` key in the
+  `PROJECT_ASSIGNMENT` wire object, `A2AProjectAgentTransport(skills=...)`,
+  `orchestrator_config.load_skills`, and `ProjectAgentSettings.skills`.
+- The Project Agent instruction no longer speaks of "available skills": it says
+  the Agent chooses from *its own* skills and that NEXUS SEED does not know
+  what they are.
+- This is a wire change. An external Agent Runtime that was reading
+  `available_skills` from the assignment must read its own configuration
+  instead — which is the point.
+
+## Skill-ownership invariants (keep them)
+
+268. **A Project is delegated as a goal, never as a method.** The assignment
+     carries goal, context, constraints and workspace. Nothing about how.
+269. **NEXUS SEED does not read the Agent's skills.** Not to validate, not to
+     log, not to show. If it needs to know, it asks the Agent.
+270. **`NEXUS_SEED_SKILL_ROOTS` is NEXUS SEED's own.** Do not route it into
+     `orchestrator_config` or the A2A transport again.
 
 ## Later-phase candidates (do not build yet)
 

@@ -110,7 +110,6 @@ def orchestrator(db_path, transport, **kwargs):
         db_path,
         agent_runtime=A2AAgentRuntime(transport),
         backend=FakeLLMBackend(default=create_decision()),
-        available_skills=("load_and_clean_csv", "compute_sales_metrics"),
         **kwargs,
     )
 
@@ -134,7 +133,8 @@ async def test_a2a_runtime_assigns_project(tmp_path):
     assert envelope["goal"] == project.goal
     assert config.project_id == project.id
     assert config.workspace == f"projects/{project.id}"
-    assert config.available_skills == ("load_and_clean_csv", "compute_sales_metrics")
+    # A goal, not a method: nothing here says what the Agent may use.
+    assert not hasattr(config, "available_skills")
 
     agent = orch.agent_store.for_project(project.id)[0]
     assert agent.runtime == "a2a"

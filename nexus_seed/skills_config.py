@@ -1,12 +1,15 @@
-"""Where NEXUS SEED looks for Skills, and how it resolves duplicates.
+"""Where NEXUS SEED looks for **its own** Skills, and how it resolves duplicates.
 
-Skill roots were reachable only through the A2A federation settings, which made
-them look like a property of provider federation.  They are not: a Skill is a
-procedure NEXUS SEED knows about, and it is offered to whoever executes —
-a Project Agent, an A2A provider, or nothing at all.  So it gets its own
-setting, its own owner, and its own line in ``.env``::
+These are the procedures NEXUS SEED itself can carry out: they are imported as
+Processes and become its capabilities.  They are configured here, in NEXUS
+SEED's own ``.env``::
 
     NEXUS_SEED_SKILL_ROOTS=./skills;C:/team/skills
+
+They are *not* the Project Agent's skills.  A Project is delegated as a goal,
+not as a method, so the Agent that works on it reads its skills from its own
+configuration file.  NEXUS SEED does not send them, does not read them, and
+does not know what they are.  Two agents, two skill sets, two config files.
 
 Precedence is positional: the first root wins, so the conventional order is
 project-local, then user/global, then anything shared.  The separator is the

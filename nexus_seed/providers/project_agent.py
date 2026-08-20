@@ -2,10 +2,13 @@
 
 :mod:`nexus_seed.providers.a2a` delegates *one Skill execution* to a remote
 agent.  This module delegates *one whole Project*: NEXUS SEED hands over the
-goal, its context, its constraints, a workspace and the Skill contracts it may
-choose between, and the remote agent breaks the goal down, picks its own
-skills, runs its own tools and answers with the small set of messages the
-orchestrator understands.
+goal, its context, its constraints and a workspace, and the remote agent breaks
+the goal down, chooses from its own skills, runs its own tools and answers with
+the small set of messages the orchestrator understands.
+
+What Skills that agent has is the agent's own configuration.  NEXUS SEED does
+not read them, does not send them, and does not know what they are — its own
+Skill roots are for what *it* can do (see :mod:`nexus_seed.skills_config`).
 
 It reuses the existing :class:`~nexus_seed.providers.a2a.A2AClient`, endpoint
 settings and poll loop rather than adding a second protocol client, and it is
@@ -27,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping, Sequence
+
 from typing import Any
 
 from ..orchestrator.agent_runtime import AgentUnavailable, Dispatch, RemoteWorkLost
@@ -40,7 +43,6 @@ from .a2a import (
     A2AProtocolError,
     task_state,
 )
-from .skills import SkillCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +58,15 @@ PROJECT_AGENT_INSTRUCTION = """\
 You are the Project Agent for one project of the NEXUS SEED orchestrator.
 
 The whole project is yours. Work out the tasks the goal needs, in what order,
-which of the available skills (if any) apply, and which tools to run. Check
-your own results and keep going until the goal is actually met. NEXUS SEED
-will not break the goal down for you and will not tell you which skill to use.
+which of your own skills (if any) apply, and which tools to run. Check your own
+results and keep going until the goal is actually met. NEXUS SEED will not
+break the goal down for you, and does not know what skills you have.
 
 The project assignment is in the context as `assignment`:
   goal              what has to be true when you are done
   context           what is already known about the project
   constraints       limits you must respect
   workspace         the directory to read and write in
-  available_skills  reusable procedures you may follow, with their contracts
   task              (only on a follow-up) an extra task for the same goal
 
 Answer with one JSON object: {"messages": [{"type": ..., "payload": {...}}]}.
@@ -129,33 +130,6 @@ REPLY_SCHEMA: dict[str, Any] = {
 }
 
 
-def skill_contracts(
-    catalog: SkillCatalog, names: Sequence[str] = ()
-) -> dict[str, dict[str, Any]]:
-    """Return the contract of each named Skill, for an Agent to choose between.
-
-    The contract is what a Skill *is* — what it takes, what it produces and how
-    to think about it.  NEXUS SEED never orders these or decides which one
-    applies; it only says which ones exist.
-    """
-    wanted = set(names)
-    contracts: dict[str, dict[str, Any]] = {}
-    for skill in catalog.list():
-        if wanted and skill.name not in wanted:
-            continue
-        descriptor = skill.descriptor
-        contracts[skill.name] = {
-            "name": descriptor.name,
-            "description": descriptor.description,
-            "capabilities": list(skill.capability_names),
-            "input_ports": list(descriptor.input_ports),
-            "output_ports": list(descriptor.output_ports),
-            "output_schema": descriptor.output_schema,
-            "instructions": descriptor.instructions,
-        }
-    return contracts
-
-
 class A2AProjectAgentTransport:
     """Sends a Project Assignment over A2A and reads the Agent's answer back.
 
@@ -169,12 +143,10 @@ class A2AProjectAgentTransport:
         endpoint: A2AEndpoint,
         *,
         client: A2AClient | None = None,
-        skills: Mapping[str, dict[str, Any]] | None = None,
         clock=time.monotonic,
     ) -> None:
         self.endpoint = endpoint
         self.client = client or A2AClient(endpoint)
-        self.skills = dict(skills or {})
         self._clock = clock
 
     async def open(self, config: ProjectAgentConfig) -> str:
@@ -284,9 +256,6 @@ class A2AProjectAgentTransport:
             "context": dict(config.project_context),
             "constraints": dict(config.constraints),
             "workspace": config.workspace,
-            "available_skills": [
-                self.skills.get(name, {"name": name}) for name in config.available_skills
-            ],
             "nexus_seed_endpoint": config.nexus_seed_a2a_endpoint,
         }
         if envelope.get("kind") == "ADD_TASK":
@@ -440,5 +409,4 @@ __all__ = [
     "PROJECT_AGENT_INSTRUCTION",
     "PROJECT_ASSIGNMENT",
     "REPLY_SCHEMA",
-    "skill_contracts",
 ]

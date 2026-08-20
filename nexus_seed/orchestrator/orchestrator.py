@@ -81,7 +81,6 @@ class ProjectOrchestrator:
         world_state_provider: Any | None = None,
         user_context_provider: Any | None = None,
         workspace_root: str | None = None,
-        available_skills: tuple[str, ...] = (),
         a2a_endpoint: str | None = None,
         default_constraints: dict[str, Any] | None = None,
         max_dispatch_attempts: int = MAX_DISPATCH_ATTEMPTS,
@@ -113,7 +112,6 @@ class ProjectOrchestrator:
             self.agent_runtime,
             default_constraints=default_constraints,
             workspace_root=workspace_root,
-            available_skills=available_skills,
             a2a_endpoint=a2a_endpoint,
         )
         self.gateway = A2AGateway(self.message_store, self.agent_runtime)

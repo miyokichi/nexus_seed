@@ -260,14 +260,15 @@ alike. They are not the same thing:
 | | What it is | Where it is configured |
 | --- | --- | --- |
 | **NEXUS SEED's own reasoning** | The model NEXUS SEED *thinks* with: routing a message to a Project, answering a question about one, interpreting an Event, choosing a plan | `NEXUS_SEED_LLM_*` in this `.env` |
-| **The model that does the work** | The Project Agent's own model | **Not here.** A Project is delegated whole; the Agent brings its own model, keys and config. `NEXUS_SEED_PROJECT_AGENT_*` says *where* the Agent is, never what it thinks with |
+| **The model that does the work** | The Project Agent's own model | **Not here.** A Project is delegated whole; the Agent brings its own model, keys, skills and config file. `NEXUS_SEED_PROJECT_AGENT_*` says *where* the Agent is, never what it thinks with or what it can do |
 
 `in_process`, the default Agent Runtime, calls no model at all — it is
 deterministic and network-free. Set `NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a` to
 delegate for real.
 
-Skills are their own group, because a Skill is a procedure NEXUS SEED knows
-about and offers to whoever executes — a Project Agent, an A2A provider:
+Skills split the same way, and for the same reason. `NEXUS_SEED_SKILL_ROOTS` is
+what **NEXUS SEED itself** can do — those Skills are imported as Processes and
+become its capabilities:
 
 ```dotenv
 # Highest precedence first; ";" on Windows, ":" elsewhere.
@@ -276,6 +277,12 @@ NEXUS_SEED_SKILL_ROOTS=./skills:/team/shared-skills
 NEXUS_SEED_SKILLS_STRICT=false
 NEXUS_SEED_SKILLS_ON_DUPLICATE=override
 ```
+
+A **Project Agent's** skills are not these and are not configurable here. A
+Project is delegated as a *goal*, not as a method: the assignment carries the
+goal, its context, its constraints and a workspace, and nothing about how to
+meet it. The Agent reads its own skills from its own configuration file, and
+NEXUS SEED neither sends them nor knows what they are.
 
 Rather than reading `.env` to work out which is which, ask:
 

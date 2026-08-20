@@ -27,12 +27,8 @@ from nexus_seed.providers.project_agent import (
     PROJECT_ASSIGNMENT,
     REPLY_SCHEMA,
     A2AProjectAgentTransport,
-    skill_contracts,
 )
-from nexus_seed.providers.skills import SkillLoader
 from tests.a2a_helpers import FakeA2AServer, data_artifact, free_url, task, text_artifact
-
-SKILL_ROOT = Path(__file__).resolve().parent.parent / "skills"
 
 
 def answer(*messages) -> dict:
@@ -56,14 +52,14 @@ def endpoint(url: str) -> A2AEndpoint:
     return A2AEndpoint(url=url, poll_interval_seconds=0.01, timeout_seconds=5.0)
 
 
-def transport(url: str, *, skills=None) -> A2AProjectAgentTransport:
-    return A2AProjectAgentTransport(endpoint(url), skills=skills or {})
+def transport(url: str) -> A2AProjectAgentTransport:
+    return A2AProjectAgentTransport(endpoint(url))
 
 
-def orchestrator(db_path, url, *, skills=None, **kwargs):
+def orchestrator(db_path, url, **kwargs):
     return ProjectOrchestrator(
         db_path,
-        agent_runtime=A2AAgentRuntime(transport(url, skills=skills)),
+        agent_runtime=A2AAgentRuntime(transport(url)),
         backend=FakeLLMBackend(
             default=proposal_response(
                 {
@@ -86,16 +82,13 @@ def config(**overrides) -> ProjectAgentConfig:
         "project_context": {"csv": "samples/sample_sales.csv"},
         "constraints": {"baseline_month": "2026-06"},
         "workspace": "projects/project-1",
-        "available_skills": ("load_and_clean_csv",),
     }
     values.update(overrides)
     return ProjectAgentConfig(**values)
 
 
-async def test_assignment_carries_the_goal_and_the_skill_contracts():
-    catalog = SkillLoader([SKILL_ROOT]).load()
-    assert catalog.get("load_and_clean_csv") is not None
-    sent = transport("http://127.0.0.1:1", skills=skill_contracts(catalog)).assignment(
+async def test_assignment_carries_the_goal_and_nothing_about_method():
+    sent = transport("http://127.0.0.1:1").assignment(
         config(), {"kind": "ASSIGN_GOAL"}
     )
 
@@ -106,13 +99,10 @@ async def test_assignment_carries_the_goal_and_the_skill_contracts():
     assert sent["workspace"] == "projects/project-1"
     assert "task" not in sent
 
-    # The Agent is given what each Skill *is*, and picks for itself: no order,
-    # no per-work provider choice, nothing about which one to run first.
-    [skill] = sent["available_skills"]
-    assert skill["name"] == "load_and_clean_csv"
-    assert skill["input_ports"] == ["csv_file"]
-    assert skill["output_ports"] == ["cleaned_dataframe"]
-    assert "Procedure" in skill["instructions"]
+    # A Project is delegated as a goal, not as a method: what the Agent can do
+    # is its own configuration, and NEXUS SEED does not send it.
+    assert "available_skills" not in sent
+    assert "skills" not in sent
 
 
 async def test_added_task_reaches_the_agent_that_already_owns_the_goal():

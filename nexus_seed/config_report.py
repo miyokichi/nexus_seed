@@ -9,7 +9,11 @@ settings for them look alike:
 * **The Project Agent's model** — the one that does the delegated work.  It is
   *not configured here at all*: NEXUS SEED says where the Agent Runtime is
   (``NEXUS_SEED_PROJECT_AGENT_*``) and hands it the Project; the Agent brings
-  its own model, its own keys, and its own configuration file.
+  its own model, its own keys, its own Skills, and its own configuration file.
+
+The same split applies to Skills.  ``NEXUS_SEED_SKILL_ROOTS`` is what NEXUS
+SEED itself can do; the Agent's skills are the Agent's own and are never read
+or sent from here.
 
 That distinction is easy to miss in a flat ``.env``, so this module reports the
 resolved settings grouped by what they are for.  It reads only; it starts
@@ -99,7 +103,7 @@ def _reasoning_group(env_file) -> ConfigGroup:
 
 
 def _skills_group(env_file) -> ConfigGroup:
-    """Where the Skills offered to whoever executes come from."""
+    """Where NEXUS SEED's own Skills come from."""
 
     settings = SkillSettings.from_env(env_file)
     catalog = settings.load()
@@ -109,17 +113,19 @@ def _skills_group(env_file) -> ConfigGroup:
         for root, exists in settings.described_roots()
     ]
     notes = [
-        "Offered to whoever executes — a Project Agent, an A2A provider. "
-        "Highest precedence first; a name found twice is resolved by "
-        "NEXUS_SEED_SKILLS_ON_DUPLICATE.",
+        "NEXUS SEED's own Skills: imported as Processes, and routed to an A2A "
+        "provider when one is configured for them. Highest precedence first; "
+        "a name found twice is resolved by NEXUS_SEED_SKILLS_ON_DUPLICATE.",
+        "A Project Agent's skills are NOT these. They are the Agent's own "
+        "configuration and are never read or sent from here.",
         f"{len(found)} Skill(s) loaded: "
         + (", ".join(skill.name for skill in found) or "(none)"),
     ]
     if catalog.failures:
         notes.append(f"{len(catalog.failures)} package(s) could not be read.")
     return ConfigGroup(
-        name="Skills",
-        purpose="where NEXUS SEED looks for Skills (NEXUS_SEED_SKILL_ROOTS)",
+        name="NEXUS SEED's own Skills",
+        purpose="what NEXUS SEED itself can do (NEXUS_SEED_SKILL_ROOTS)",
         settings=[
             ("NEXUS_SEED_SKILL_ROOTS", os.pathsep.join(settings.roots)),
             *roots,
@@ -135,9 +141,9 @@ def _delegation_group(env_file) -> ConfigGroup:
 
     settings = ProjectAgentSettings.from_env(env_file)
     notes = [
-        "This says WHERE a Project is delegated, not which model does the "
-        "work. The Agent Runtime brings its own model and its own keys; "
-        "nothing here configures them.",
+        "This says WHERE a Project is delegated, not how the work is done. "
+        "The Agent Runtime brings its own model, keys and Skills, from its own "
+        "configuration file; nothing here configures or reads them.",
     ]
     rows: list[tuple[str, Any]] = [
         ("NEXUS_SEED_PROJECT_AGENT_RUNTIME", settings.runtime),

@@ -8,9 +8,14 @@ either in this process or in a real external Agent Runtime::
     NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a
     NEXUS_SEED_PROJECT_AGENT_URL=http://127.0.0.1:8801
 
-Skill roots and the token-by-environment-variable rule are the existing
-external-agent settings, reused rather than duplicated: a Skill still never
-names an endpoint, and no token is ever written to the database.
+The token-by-environment-variable rule is the existing external-agent setting,
+reused rather than duplicated: no token is ever written to the database.
+
+What Skills the Project Agent has is *not* configured here.  A Project is
+delegated as a goal, not as a method: the Agent reads its own skills from its
+own configuration file, and NEXUS SEED neither sends them nor knows them.
+``NEXUS_SEED_SKILL_ROOTS`` is for what NEXUS SEED itself can do — see
+:mod:`nexus_seed.skills_config`.
 """
 
 from __future__ import annotations
@@ -23,7 +28,6 @@ from pathlib import Path
 from .backends.base import ExecutionBackend
 from .backends.llm import LLMBackend
 from .llm_config import LLMSettings, load_env_file
-from .skills_config import SkillSettings
 from .orchestrator import (
     A2AAgentRuntime,
     AgentRuntime,
@@ -31,8 +35,7 @@ from .orchestrator import (
     ProjectOrchestrator,
 )
 from .providers.a2a import A2AEndpoint
-from .providers.project_agent import A2AProjectAgentTransport, skill_contracts
-from .providers.skills import SkillCatalog
+from .providers.project_agent import A2AProjectAgentTransport
 from .storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -63,9 +66,6 @@ class ProjectAgentSettings:
     #: Workspace handed to a Project Agent, one directory per project.  Keep it
     #: relative unless the Agent Runtime can really write the absolute path.
     workspace_root: str | None = None
-    #: Where the Skills offered to a Project Agent come from.  Not an Agent
-    #: setting: the same catalog is offered to every executor.
-    skills: SkillSettings = field(default_factory=SkillSettings)
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> ProjectAgentSettings:
@@ -87,9 +87,6 @@ class ProjectAgentSettings:
             )
         token_env = os.environ.get("NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV", "").strip() or None
         workspace = os.environ.get("NEXUS_SEED_PROJECT_WORKSPACE", "").strip() or None
-        # A Project Agent is offered the same Skills any other executor would
-        # be, from the one place they are configured.
-        skills = SkillSettings.from_env(env_file)
         return cls(
             runtime=runtime,
             url=url,
@@ -104,7 +101,6 @@ class ProjectAgentSettings:
                 "NEXUS_SEED_PROJECT_AGENT_REQUEST_TIMEOUT_SECONDS", 30.0
             ),
             workspace_root=workspace,
-            skills=skills,
         )
 
     def endpoint(self) -> A2AEndpoint:
@@ -121,22 +117,7 @@ class ProjectAgentSettings:
             raise ProjectAgentConfigurationError(f"project agent: {exc}") from exc
 
 
-def load_skills(settings: ProjectAgentSettings) -> SkillCatalog:
-    """Load the Skills a Project Agent may choose between.
-
-    One broken package is reported and skipped: a Project Agent decides for
-    itself which procedures apply, so a missing one narrows its choice rather
-    than stopping the orchestrator from running.
-    """
-    catalog = settings.skills.load()
-    for failure in catalog.failures:
-        logger.error("skill package rejected: %s", failure)
-    return catalog
-
-
-def build_agent_runtime(
-    settings: ProjectAgentSettings, *, catalog: SkillCatalog | None = None
-) -> AgentRuntime:
+def build_agent_runtime(settings: ProjectAgentSettings) -> AgentRuntime:
     """Build the AgentRuntime the settings ask for.
 
     The orchestrator is identical either way — swapping the runtime is the
@@ -144,11 +125,7 @@ def build_agent_runtime(
     """
     if settings.runtime != "a2a":
         return InProcessAgentRuntime()
-    catalog = catalog if catalog is not None else load_skills(settings)
-    transport = A2AProjectAgentTransport(
-        settings.endpoint(), skills=skill_contracts(catalog)
-    )
-    return A2AAgentRuntime(transport)
+    return A2AAgentRuntime(A2AProjectAgentTransport(settings.endpoint()))
 
 
 def build_routing_backend(env_file: str | Path = ".env") -> ExecutionBackend | None:
@@ -179,19 +156,13 @@ def build_orchestrator(
 ) -> ProjectOrchestrator:
     """Build a configured :class:`ProjectOrchestrator` over ``db_path``."""
     settings = settings or ProjectAgentSettings.from_env(env_file)
-    catalog = load_skills(settings)
-    runtime = build_agent_runtime(settings, catalog=catalog)
-    logger.info(
-        "project orchestrator: %s agent runtime, %d skill(s) offered",
-        runtime.name,
-        len(catalog.list()),
-    )
+    runtime = build_agent_runtime(settings)
+    logger.info("project orchestrator: %s agent runtime", runtime.name)
     return ProjectOrchestrator(
         db_path if isinstance(db_path, Database) else str(db_path),
         agent_runtime=runtime,
         backend=backend if backend is not None else build_routing_backend(env_file),
         workspace_root=settings.workspace_root,
-        available_skills=tuple(skill.name for skill in catalog.list()),
     )
 
 
@@ -216,5 +187,4 @@ __all__ = [
     "build_agent_runtime",
     "build_orchestrator",
     "build_routing_backend",
-    "load_skills",
 ]

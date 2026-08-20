@@ -36,14 +36,12 @@ class AgentManager:
         *,
         default_constraints: dict[str, Any] | None = None,
         workspace_root: str | None = None,
-        available_skills: tuple[str, ...] = (),
         a2a_endpoint: str | None = None,
     ) -> None:
         self.store = store
         self.runtime = runtime
         self.default_constraints = dict(default_constraints or {})
         self.workspace_root = workspace_root
-        self.available_skills = tuple(available_skills)
         self.a2a_endpoint = a2a_endpoint
 
     async def assign_or_spawn(self, project: Project) -> Agent:
@@ -106,7 +104,6 @@ class AgentManager:
             project_context=dict(project.context),
             constraints=dict(self.default_constraints),
             workspace=workspace,
-            available_skills=self.available_skills,
             nexus_seed_a2a_endpoint=self.a2a_endpoint,
         )
 
