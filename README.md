@@ -222,19 +222,58 @@ A few things worth knowing before you reach for this:
   queries, K2 projection/diff, K3 consolidation, K4 principles, K5 the Goal
   bridge, K6 experience/advisories).
 
+### Command line (`nexus-seed-knowledge`)
+
+Everything above is also reachable without writing Python, via one CLI with
+a subcommand per operation:
+
+```bash
+nexus-seed-knowledge record --db k.db --content "B案の方がmarginはありそう" \
+    --source-type meeting --about project-A
+nexus-seed-knowledge fact --db k.db K-xxxx --entity project-A --attribute risk --value schedule
+nexus-seed-knowledge view --db k.db
+nexus-seed-knowledge diff --db k.db --before 2026-08-15T00:00:00 --emit-events
+nexus-seed-knowledge consolidate --db k.db --about project-A
+nexus-seed-knowledge extract-principle --db k.db --about project-A
+nexus-seed-knowledge support --db k.db --principle-id K-xxxx --evidence-id ev-1
+nexus-seed-knowledge predict --db k.db --principle-id K-xxxx --subject project-A
+nexus-seed-knowledge evaluate --db k.db --prediction-id K-xxxx --actual '{"project-A": {"risk": "high"}}'
+nexus-seed-knowledge signals --db k.db          # detect only
+nexus-seed-knowledge submit --db k.db           # detect + hand to the real ProjectOrchestrator
+nexus-seed-knowledge advise --db k.db --subject project-A
+nexus-seed-knowledge --help                     # every subcommand, with its own --help
+```
+
+Run it as `python -m nexus_seed.knowledge_cli ...` if you haven't installed
+the package's console scripts. One `--db` file is shared by the Knowledge
+Ledger *and* the Project Orchestrator (one schema creates every table), so
+`submit` can hand a detected Signal straight to a real Project on the same
+database — no separate orchestrator setup needed unless you pass
+`--orchestrator-db` to point it elsewhere.
+
+Every LLM-backed subcommand (`consolidate`, `extract-principle`,
+`counterexample`, `predict`, `signals`, `submit`) reads the same
+`NEXUS_SEED_LLM_*` settings the rest of NEXUS SEED uses (see
+`.env.example`) — set `NEXUS_SEED_LLM_ENABLED=true` there, or pass `--llm`
+for one call; `--no-llm` always forces the conservative fallback described
+above. `--json` on the read/write commands prints the full Knowledge
+revision instead of a one-line summary, for scripting.
+
 ### Ingesting local files (.pptx) into Knowledge
 
-`nexus_seed/knowledge/ingest_pptx.py` is a small, standalone first step for
-pulling local documents in — it is *not* the eventual Resource/ingress
-pipeline integration (see `nexus_seed/resources/extractors.py`, whose
-extractor registry is built for exactly this but does not have an Office/PDF
-entry yet); it is a script you can run today.
+`nexus_seed/knowledge/ingest_pptx.py` (also `nexus-seed-knowledge pptx`) is a
+small, standalone first step for pulling local documents in — it is *not*
+the eventual Resource/ingress pipeline integration (see
+`nexus_seed/resources/extractors.py`, whose extractor registry is built for
+exactly this but does not have an Office/PDF entry yet); it is a script you
+can run today.
 
 ```bash
 pip install -e '.[ingest]'   # adds python-pptx; not a core dependency
 
-python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db slide.pptx
-python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db --dir ./docs --about project-A
+nexus-seed-knowledge pptx --db nexus_knowledge.db slide.pptx
+nexus-seed-knowledge pptx --db nexus_knowledge.db --dir ./docs --about project-A
+# equivalently: python -m nexus_seed.knowledge.ingest_pptx --db ... --dir ./docs
 ```
 
 Each non-empty slide becomes one `kind=raw` Knowledge object

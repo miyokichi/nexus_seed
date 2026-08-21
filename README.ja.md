@@ -208,19 +208,55 @@ asyncio.run(main())
   consolidation、K4: principle、K5: Goal bridge、K6: experience・advisory）の
   実行可能な例になっています。
 
+### コマンドライン（`nexus-seed-knowledge`）
+
+ここまでの操作はすべて、Pythonを書かなくても1つのCLI（操作ごとにsubcommand）
+から実行できます。
+
+```bash
+nexus-seed-knowledge record --db k.db --content "B案の方がmarginはありそう" \
+    --source-type meeting --about project-A
+nexus-seed-knowledge fact --db k.db K-xxxx --entity project-A --attribute risk --value schedule
+nexus-seed-knowledge view --db k.db
+nexus-seed-knowledge diff --db k.db --before 2026-08-15T00:00:00 --emit-events
+nexus-seed-knowledge consolidate --db k.db --about project-A
+nexus-seed-knowledge extract-principle --db k.db --about project-A
+nexus-seed-knowledge support --db k.db --principle-id K-xxxx --evidence-id ev-1
+nexus-seed-knowledge predict --db k.db --principle-id K-xxxx --subject project-A
+nexus-seed-knowledge evaluate --db k.db --prediction-id K-xxxx --actual '{"project-A": {"risk": "high"}}'
+nexus-seed-knowledge signals --db k.db          # 検出のみ
+nexus-seed-knowledge submit --db k.db           # 検出 + 実際のProjectOrchestratorへ渡す
+nexus-seed-knowledge advise --db k.db --subject project-A
+nexus-seed-knowledge --help                     # 全subcommand（各subcommandにも--help）
+```
+
+packageのconsole scriptを入れていない場合は`python -m nexus_seed.knowledge_cli ...`
+で実行できます。`--db`は1つのfileをKnowledge LedgerとProject Orchestratorの両方で
+共有します（1つのschemaが全tableを作るため）ので、`submit`は検出したSignalを
+同じdatabase上の実際のProjectへそのまま渡せます — 別のorchestrator用DBを使いたい
+場合だけ`--orchestrator-db`を指定してください。
+
+LLMを使う各subcommand（`consolidate`・`extract-principle`・`counterexample`・
+`predict`・`signals`・`submit`）は、NEXUS SEEDの他機能と同じ`NEXUS_SEED_LLM_*`
+設定を読みます（`.env.example`参照）— `NEXUS_SEED_LLM_ENABLED=true`を設定するか、
+その回だけ`--llm`を渡してください。`--no-llm`は常に上記の安全なfallbackを強制
+します。読み書き系commandの`--json`は、1行要約ではなくKnowledge revision全体を
+出力します（scripting向け）。
+
 ### ローカルfile（.pptx）をKnowledgeへ取り込む
 
-`nexus_seed/knowledge/ingest_pptx.py`は、ローカル文書を取り込むための小さく
-独立した最初の一歩です。*正式な*Resource/ingress pipeline統合（
-`nexus_seed/resources/extractors.py`のextractor registryはまさにこのために
-用意されていますが、まだOffice/PDF用の実装はありません）ではなく、今日から
-そのまま動くスクリプトです。
+`nexus_seed/knowledge/ingest_pptx.py`（`nexus-seed-knowledge pptx`としても使え
+ます）は、ローカル文書を取り込むための小さく独立した最初の一歩です。*正式な*
+Resource/ingress pipeline統合（`nexus_seed/resources/extractors.py`の
+extractor registryはまさにこのために用意されていますが、まだOffice/PDF用の
+実装はありません）ではなく、今日からそのまま動くスクリプトです。
 
 ```bash
 pip install -e '.[ingest]'   # python-pptxを追加（core dependencyには含めていません）
 
-python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db slide.pptx
-python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db --dir ./docs --about project-A
+nexus-seed-knowledge pptx --db nexus_knowledge.db slide.pptx
+nexus-seed-knowledge pptx --db nexus_knowledge.db --dir ./docs --about project-A
+# 同等: python -m nexus_seed.knowledge.ingest_pptx --db ... --dir ./docs
 ```
 
 空でない各slideが1つの`kind=raw`のKnowledge object

@@ -23,6 +23,7 @@ nexus-seed = "nexus_seed.app:main"
 nexus-seed-demo = "nexus_seed.demo:main"
 nexus-seed-ingress = "nexus_seed.ingress_cli:main"
 nexus-seed-knowledge-ingest-pptx = "nexus_seed.knowledge.ingest_pptx:main"
+nexus-seed-knowledge = "nexus_seed.knowledge_cli:main"
 
 [build-system]
 requires = ["hatchling"]
