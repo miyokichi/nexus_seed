@@ -222,6 +222,35 @@ A few things worth knowing before you reach for this:
   queries, K2 projection/diff, K3 consolidation, K4 principles, K5 the Goal
   bridge, K6 experience/advisories).
 
+### Ingesting local files (.pptx) into Knowledge
+
+`nexus_seed/knowledge/ingest_pptx.py` is a small, standalone first step for
+pulling local documents in — it is *not* the eventual Resource/ingress
+pipeline integration (see `nexus_seed/resources/extractors.py`, whose
+extractor registry is built for exactly this but does not have an Office/PDF
+entry yet); it is a script you can run today.
+
+```bash
+pip install -e '.[ingest]'   # adds python-pptx; not a core dependency
+
+python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db slide.pptx
+python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db --dir ./docs --about project-A
+```
+
+Each non-empty slide becomes one `kind=raw` Knowledge object
+(`ledger.record(slide_text, source_type="pptx", source_ref="<file>#slide<N>")`),
+related (`about`) to the deck — its filename by default, or the `--about`
+value if given, so several decks about the same subject group together. That
+relation is exactly what K3's `select_candidates(ledger, about=...)` filters
+on, so the slides are immediately eligible for `Consolidator` /
+`PrincipleExtractor` with no further wiring. Programmatic use:
+
+```python
+from nexus_seed.knowledge.ingest_pptx import ingest_pptx_file
+
+created = ingest_pptx_file(ledger, Path("review_20260820.pptx"), about="project-A")
+```
+
 ## How orchestration works
 
 ```text

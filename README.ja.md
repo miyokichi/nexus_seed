@@ -208,6 +208,38 @@ asyncio.run(main())
   consolidation、K4: principle、K5: Goal bridge、K6: experience・advisory）の
   実行可能な例になっています。
 
+### ローカルfile（.pptx）をKnowledgeへ取り込む
+
+`nexus_seed/knowledge/ingest_pptx.py`は、ローカル文書を取り込むための小さく
+独立した最初の一歩です。*正式な*Resource/ingress pipeline統合（
+`nexus_seed/resources/extractors.py`のextractor registryはまさにこのために
+用意されていますが、まだOffice/PDF用の実装はありません）ではなく、今日から
+そのまま動くスクリプトです。
+
+```bash
+pip install -e '.[ingest]'   # python-pptxを追加（core dependencyには含めていません）
+
+python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db slide.pptx
+python -m nexus_seed.knowledge.ingest_pptx --db nexus_knowledge.db --dir ./docs --about project-A
+```
+
+空でない各slideが1つの`kind=raw`のKnowledge object
+（`ledger.record(slide_text, source_type="pptx", source_ref="<file>#slide<N>")`）
+として記録され、そのdeckへの`about` relation（既定はfile名、`--about`を
+指定すればそれを使うので、同じ主題の複数deckをまとめられます）が付きます。
+このrelationはK3の`select_candidates(ledger, about=...)`が絞り込みに使う
+ものと同じなので、追加の配線なしにそのまま`Consolidator`・
+`PrincipleExtractor`の対象になります。programmaticにも呼べます：
+
+```python
+from nexus_seed.knowledge.ingest_pptx import ingest_pptx_file
+
+created = ingest_pptx_file(ledger, Path("review_20260820.pptx"), about="project-A")
+```
+
+正式なExtractor統合（`nexus_seed/resources/`経由でのversion管理・重複排除つき
+取り込み）は指示があってから着手します。
+
 ## 処理の流れ
 
 ```text

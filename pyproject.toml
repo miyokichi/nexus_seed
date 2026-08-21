@@ -14,11 +14,15 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+ingest = [
+    "python-pptx>=0.6.21",
+]
 
 [project.scripts]
 nexus-seed = "nexus_seed.app:main"
 nexus-seed-demo = "nexus_seed.demo:main"
 nexus-seed-ingress = "nexus_seed.ingress_cli:main"
+nexus-seed-knowledge-ingest-pptx = "nexus_seed.knowledge.ingest_pptx:main"
 
 [build-system]
 requires = ["hatchling"]
