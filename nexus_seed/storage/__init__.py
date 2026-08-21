@@ -6,6 +6,7 @@ from .continuation_store import ContinuationStore
 from .database import Database
 from .event_store import EventStore
 from .join_store import JoinRecord, JoinStore
+from .knowledge_store import KnowledgeStore
 from .llm_invocation_store import LLMInvocationStore
 from .observation_store import ObservationStore
 from .process_store import ProcessStore
@@ -25,6 +26,7 @@ __all__ = [
     "EventStore",
     "JoinRecord",
     "JoinStore",
+    "KnowledgeStore",
     "LLMInvocationStore",
     "ObservationStore",
     "ProcessStore",

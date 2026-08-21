@@ -1320,3 +1320,111 @@ the Cockpit bearer-token boundary and disappear with Cockpit.
 
 Guidance — turning such a request into an authorized Control Plane change — is
 deliberately left to a later phase. Phase 7 is not implemented.
+
+## Knowledge Runtime (Phases K1–K6)
+
+A fourth layer sits above the Project Orchestrator, answering "how does
+NEXUS SEED perceive the world" rather than "what should be done" (the
+Orchestrator) or "how does it get done" (Agent Runtime):
+
+```text
+Knowledge Runtime            "how does NEXUS SEED perceive the world?"
+  Knowledge Ledger, World Projection, Memory Consolidation, Principle Learning
+Project Orchestrator         "what should be done about it?"
+Agent Runtime                "how does it get done?"
+```
+
+Like `Observation`/`StateDelta` in Phase 2B, none of `nexus_seed/knowledge/`
+is a Core primitive — it is domain data over one new append-only store,
+`knowledge_revisions` (`nexus_seed/storage/knowledge_store.py`). A
+`KnowledgeRevision` carries only the fields every raw scrap of reality has —
+`content`, `source`, `recorded_at`, its own revision chain (`parents`) — plus
+optional `valid_from`/`valid_to`, `relations` and `annotations`.
+`subject`/`predicate`/`confidence`/`scope`/… are never required: an Agent
+that needs that shape derives it later as a Typed View, attached as an
+`Annotation` without rewriting the original content ("Structure on Read", not
+Structure on Write). A correction is always a new revision — nothing is ever
+UPDATEd or DELETEd — so `KnowledgeLedger.history(id)` stays a full log and
+`as_known_at(id, t)` / `valid_at(id, t)` answer transaction-time ("what did
+we believe then") and valid-time ("what was true then, best currently known")
+queries separately, including late-arriving evidence recorded now about a
+change that happened earlier.
+
+```mermaid
+flowchart LR
+    KL["Knowledge Ledger (append-only)"]
+    WP["WorldStateProjection (world_fact Annotations)"]
+    MC["Consolidator (K3)"]
+    PE["PrincipleExtractor / CounterexampleSearcher / PredictionEngine (K4)"]
+    GB["GapRiskOpportunityDetector -> GoalBridge (K5)"]
+    PO["ProjectOrchestrator.submit() (unmodified)"]
+
+    KL --> WP
+    KL --> MC --> KL
+    KL --> PE --> KL
+    WP --> GB
+    PE --> GB
+    GB --> PO
+    PO -->|Outcome| KL
+```
+
+- **World Projection (K2).** `WorldStateProjection` reads only Knowledge
+  revisions carrying a `world_fact` Annotation (`{entity, attribute, value}`)
+  and projects them into a `WorldView` — the same `{entity: {attribute:
+  value}}` shape as `StateStore.snapshot()`. The existing `world_state_*`
+  tables and API are untouched; this is a second, optional read path (spec:
+  "World Model = HEAD"). Two Knowledge objects claiming the same fact are
+  never silently collapsed — `WorldView.conflicts` keeps both.
+  `diff_world_views(before, after).to_events()` renders changes as ordinary
+  `state_changed` Events (identical payload shape to the Phase 2B
+  `apply_state_delta` emission), so `runtime.submit_event(...)` hands them to
+  the existing `impact_analysis` pipeline unchanged.
+- **Memory Consolidation (K3).** `select_candidates` picks a bounded set by
+  relation/kind/time window — no embedding requirement, no whole-Ledger LLM
+  scan. `Consolidator.consolidate(...)` writes one `kind=consolidated_memory`
+  revision with `derived_from` pointing at every source (never deleted); a
+  contradiction is described, not resolved, and a missing/unusable backend
+  falls back to a plain, unsynthesized listing rather than inventing a
+  conclusion. Re-running with unchanged sources returns the same revision
+  (`metadata["last_consolidated_at"]`); `metadata["generation"]` plus that
+  idempotency check bound recursive consolidation of consolidated memories.
+- **Principle Extraction (K4).** `PrincipleExtractor` generalises >=2 related
+  cases into one `kind=principle` revision, `status=candidate`.
+  `CounterexampleSearcher` (never fabricates without a backend) looks for a
+  case the principle does not hold for; `refine_principle(...)` narrows scope
+  and demotes maturity back to `refined` rather than leaving a disproven
+  claim at its old status. `record_support(...)` promotes
+  `candidate/refined -> supported -> validated` on repeated independent
+  confirmation. `PredictionEngine.predict(principle, view, subject=...)`
+  applies a principle to a `WorldView` for a predicted diff;
+  `evaluate_prediction(...)` scores a structured `predicted_state` against an
+  actual outcome snapshot mechanically (no LLM needed once state is
+  structured), and `apply_prediction_feedback(...)` feeds the match/mismatch
+  back onto the principle via the same support/refine paths.
+- **Goal integration (K5).** `GapRiskOpportunityDetector.detect(view,
+  principles)` finds where a `supported`/`validated` principle's condition
+  matches the current `WorldView` and proposes a `Signal` (gap/risk/
+  opportunity/conflict) with a plain-text `request`. `GoalBridge.submit(...)`
+  hands that request to `ProjectOrchestrator.submit(request, source=
+  "knowledge_runtime")` — the same public entry point a human message uses —
+  and writes the routing outcome back to the Ledger as `kind="signal"`,
+  linked to the principle that raised it. Nothing in `orchestrator/` changes.
+- **Self-learning (K6, light).** `record_agent_experience(...)` writes one
+  `kind=experience` revision per execution episode (already an eligible kind
+  for K3's `select_candidates`, so the same Consolidator/PrincipleExtractor
+  apply unchanged). `advisories_for(principles, subject=...)` surfaces only
+  `supported`/`validated` principles as plain `DecisionAdvisory` objects — not
+  shaped like `decision.models.DecisionPreference` on purpose, since per-work
+  strategy selection is classified Agent Runtime territory in
+  `docs/orchestrator-redesign-inventory.md`; a caller maps the advisory onto
+  whatever selection mechanism it actually uses.
+
+Nothing in `nexus_seed/knowledge/` calls into `orchestrator/` beyond
+`ProjectOrchestrator.submit()`/`.handle_request()`, and nothing in
+`decision/`, `orchestrator/agent_manager.py` or any other execution module was
+changed — nor was any existing table, store or API. `tests/test_knowledge_*`
+cover revision/temporal-query/late-evidence, projection/diff/event-loop
+handoff, consolidation/contradiction/recursion/idempotency, principle
+extraction/counterexample/prediction feedback, and the Goal bridge exercised
+against the real `ProjectOrchestrator`; the full existing suite
+(`pytest`) stays green throughout.

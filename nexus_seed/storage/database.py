@@ -1114,6 +1114,38 @@ CREATE TABLE IF NOT EXISTS orchestrator_instructions (
 );
 CREATE INDEX IF NOT EXISTS idx_orch_instr_project ON orchestrator_instructions(origin_project_id);
 
+-- Knowledge Runtime (append-only; never UPDATEd or DELETEd — see
+-- nexus_seed/storage/knowledge_store.py). One row per revision; a
+-- consolidated memory, a principle and a prediction are all rows here,
+-- distinguished by `kind`, never a separate store.
+CREATE TABLE IF NOT EXISTS knowledge_revisions (
+    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             TEXT UNIQUE NOT NULL,
+    knowledge_id   TEXT NOT NULL,
+    revision       INTEGER NOT NULL,
+    content_format TEXT NOT NULL,
+    content_value  TEXT NOT NULL,
+    source_type    TEXT NOT NULL,
+    source_ref     TEXT,
+    recorded_at    TEXT NOT NULL,
+    valid_from     TEXT,
+    valid_to       TEXT,
+    parents        TEXT NOT NULL DEFAULT '[]',
+    relations      TEXT NOT NULL DEFAULT '[]',
+    annotations    TEXT NOT NULL DEFAULT '[]',
+    kind           TEXT NOT NULL DEFAULT 'raw',
+    status         TEXT,
+    derived_from   TEXT NOT NULL DEFAULT '[]',
+    metadata       TEXT NOT NULL DEFAULT '{}',
+    created_at     TEXT NOT NULL,
+    UNIQUE (knowledge_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_id ON knowledge_revisions(knowledge_id, revision);
+CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge_revisions(kind);
+CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_revisions(status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge_revisions(source_type, source_ref);
+CREATE INDEX IF NOT EXISTS idx_knowledge_recorded_at ON knowledge_revisions(knowledge_id, recorded_at);
+
 """
 
 #: Columns added to pre-existing tables after they shipped.  ``CREATE TABLE IF
