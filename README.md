@@ -70,8 +70,157 @@ Agent Runtime          "how does it get done?"
 
 It is available as a library today, with its own test suite
 (`tests/test_knowledge_*.py`); `app.py`, the demo, and Cockpit do not wire it
-in yet. See [Architecture and phase history](docs/architecture.md) for the
-full design and [AGENTS.md](AGENTS.md) for the invariants it keeps.
+in yet — you use it by importing `nexus_seed.knowledge` directly, as below.
+See [Architecture and phase history](docs/architecture.md) for the full
+design and [AGENTS.md](AGENTS.md) for the invariants it keeps.
+
+### Knowledge Runtime quick start
+
+There is no CLI or server for this yet — every piece is a plain Python object
+you call directly. A full loop, end to end:
+
+```python
+import asyncio
+
+from nexus_seed.backends import FakeLLMBackend, proposal_response
+from nexus_seed.knowledge import (
+    Consolidator,
+    GapRiskOpportunityDetector,
+    GoalBridge,
+    KnowledgeLedger,
+    PrincipleExtractor,
+    record_support,
+    select_candidates,
+)
+from nexus_seed.knowledge.projection import (
+    WorldStateProjection,
+    annotate_world_fact,
+    diff_world_views,
+)
+from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+from nexus_seed.storage import Database, KnowledgeStore
+
+
+async def main() -> None:
+    # 0) One SQLite database, one KnowledgeStore, one KnowledgeLedger on top
+    #    of it. The Ledger is the only object you write Knowledge through.
+    db = Database("nexus_knowledge.db")
+    ledger = KnowledgeLedger(KnowledgeStore(db))
+
+    # 1) Record raw knowledge exactly as it came in — free text, no schema.
+    #    `source` is provenance (where this came from), not a fact about the
+    #    world yet.
+    k1 = ledger.record(
+        "B案の方がmarginはありそうだが、process追加が必要なのでschedule riskが高い。",
+        source_type="meeting",
+        source_ref="review_20260820",
+    )
+
+    # 2) Opt specific knowledge into the structured World View by attaching a
+    #    "world_fact" annotation (entity/attribute/value). This does NOT
+    #    rewrite k1's content — it appends a new revision that carries the
+    #    extra reading alongside the original text.
+    annotate_world_fact(ledger, k1.knowledge_id, entity="project-A", attribute="risk", value="schedule")
+
+    # 3) Project the current World View (same {entity: {attribute: value}}
+    #    shape as the existing StateStore), and remember it as a "before".
+    view_before = WorldStateProjection(ledger).view()
+
+    # ... time passes; something changes the picture ...
+    k2 = ledger.record("A案のDRC riskが顕在化し、process側が追加工程を許容可能とした。", source_type="report")
+    annotate_world_fact(ledger, k2.knowledge_id, entity="project-A", attribute="risk", value="none")
+
+    # 4) Diff two World Views and hand the result to the existing event loop
+    #    (runtime.submit_event(event) for each event in diff.to_events()) —
+    #    same "state_changed" shape apply_state_delta already emits.
+    view_after = WorldStateProjection(ledger).view()
+    diff = diff_world_views(view_before, view_after)
+    for change in diff.changes:
+        print(change.entity, change.attribute, change.old_value, "->", change.new_value)
+
+    # 5) Consolidate related raw knowledge into one memory. A real
+    #    ExecutionBackend (e.g. LLMBackend) goes where FakeLLMBackend is here;
+    #    without any backend at all, consolidate() still runs — it just lists
+    #    the sources instead of synthesizing a summary, rather than guessing.
+    candidates = select_candidates(ledger, kinds=("raw",))
+    consolidate_backend = FakeLLMBackend(script=[proposal_response({
+        "summary": "当初B案はschedule risk懸念だったが、A案のDRC riskが顕在化しB案再検討の合理性が高まっている。",
+        "unresolved": [],
+        "confidence": 0.7,
+    })])
+    memory = await Consolidator(ledger, consolidate_backend).consolidate(candidates)
+
+    # 6) Extract a reusable principle from two or more related cases, then
+    #    record independent confirmations until it matures past "candidate".
+    principle_backend = FakeLLMBackend(script=[proposal_response({
+        "principle": "早期の代替案再検討は、主要riskの顕在化に応じて柔軟に行うべきである。",
+        "confidence": 0.6,
+        "scope": None,
+    })])
+    principle = await PrincipleExtractor(ledger, principle_backend).extract(candidates)
+    principle = record_support(ledger, principle, "evidence-1")
+    principle = record_support(ledger, principle, "evidence-2")  # now "supported"
+
+    # 7) Detect a Gap/Risk/Opportunity where a mature principle's condition
+    #    matches the current World View, then hand it to the *existing*
+    #    ProjectOrchestrator through its own public submit() — the bridge
+    #    never creates a Project itself.
+    detect_backend = FakeLLMBackend(script=[proposal_response({
+        "signals": [{
+            "type": "opportunity",
+            "description": "B案再検討の好機",
+            "request": "project-AでB案の再検討を行う",
+            "confidence": 0.8,
+            "principle_id": principle.knowledge_id,
+        }]
+    })])
+    signals = await GapRiskOpportunityDetector(detect_backend).detect(view_after, [principle])
+
+    routing_backend = FakeLLMBackend(script=[proposal_response({
+        "action": "CREATE_PROJECT",
+        "proposed_goal": "project-AでB案の再検討を行う",
+        "reason": "opportunity",
+        "confidence": 0.9,
+    })])
+    orchestrator = ProjectOrchestrator(
+        "nexus.db", agent_runtime=InProcessAgentRuntime(), backend=routing_backend
+    )
+    for signal, decision, project in await GoalBridge(ledger, orchestrator).submit(signals):
+        print(decision.action.value, project.goal if project else None)
+    orchestrator.close()
+
+
+asyncio.run(main())
+```
+
+A few things worth knowing before you reach for this:
+
+- **Nothing is ever updated or deleted.** `ledger.revise(...)`,
+  `ledger.annotate(...)`, and `ledger.relate(...)` each append a *new*
+  revision; `ledger.history(k1.knowledge_id)` always returns every version
+  ever written. Use `ledger.as_known_at(id, t)` to ask "what did we believe
+  at time `t`" and `ledger.valid_at(id, t)` to ask "what was actually true at
+  time `t`, as best we now know" — they can disagree, and that disagreement
+  is the whole point of keeping both.
+- **Nothing gets forced into a schema at write time.** `ledger.record(...)`
+  only ever needs free-text `content` plus `source_type`/`source_ref`.
+  Structure — a world-fact reading, a principle's scope, anything else —
+  is always an optional `Annotation`/`metadata` a caller adds afterwards.
+- **Every LLM-backed step degrades safely with no backend.**
+  `Consolidator`, `PrincipleExtractor`, `CounterexampleSearcher`,
+  `PredictionEngine`, and `GapRiskOpportunityDetector` all accept
+  `backend=None` (the default) and either return nothing or a plainly
+  unsynthesized answer — they never invent a conclusion, a counterexample, or
+  a business risk to fill the gap. Pass a real `ExecutionBackend` (see
+  `nexus_seed/backends/llm.py`) when you want the LLM-assisted behaviour.
+- **`GoalBridge` only ever calls `orchestrator.submit()`/`.handle_request()`**
+  — the same public entry point a human message uses. It cannot create,
+  modify or route a Project on its own; the Project Orchestrator's own
+  `ProjectRouter` still decides what happens to the request.
+- For a fuller tour, read `tests/test_knowledge_*.py` — each file is a
+  runnable, self-contained example of one phase (K1 revisions/temporal
+  queries, K2 projection/diff, K3 consolidation, K4 principles, K5 the Goal
+  bridge, K6 experience/advisories).
 
 ## How orchestration works
 

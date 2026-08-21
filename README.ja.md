@@ -60,9 +60,153 @@ Agent Runtime          どう実行するか
   変換するGoal bridge（Projectを直接作成することはありません）
 
 現時点ではlibraryとして利用可能で、専用のtest一式（`tests/test_knowledge_*.py`）があります。
-`app.py`・demo・Cockpitへの組み込みはまだ行っていません。詳細は
+`app.py`・demo・Cockpitへの組み込みはまだ行っていません — 下記のように
+`nexus_seed.knowledge`を直接importして使います。詳細は
 [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)と[AGENTS.md](AGENTS.md)（英語）の
 不変条件を参照してください。
+
+### Knowledge Runtimeの使い方
+
+CLIやserverはまだありません。すべてPythonから直接オブジェクトを呼び出して使います。
+一連の流れを通して書くと、次のようになります。
+
+```python
+import asyncio
+
+from nexus_seed.backends import FakeLLMBackend, proposal_response
+from nexus_seed.knowledge import (
+    Consolidator,
+    GapRiskOpportunityDetector,
+    GoalBridge,
+    KnowledgeLedger,
+    PrincipleExtractor,
+    record_support,
+    select_candidates,
+)
+from nexus_seed.knowledge.projection import (
+    WorldStateProjection,
+    annotate_world_fact,
+    diff_world_views,
+)
+from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+from nexus_seed.storage import Database, KnowledgeStore
+
+
+async def main() -> None:
+    # 0) SQLite databaseを1つ、その上にKnowledgeStoreとKnowledgeLedgerを1つずつ
+    #    用意します。Knowledgeへの書き込みは常にLedger経由です。
+    db = Database("nexus_knowledge.db")
+    ledger = KnowledgeLedger(KnowledgeStore(db))
+
+    # 1) 生のKnowledgeを、届いたそのままの形（自由文・無schema）で記録します。
+    #    `source`はprovenance（どこから来たか）であって、まだ世界の事実ではありません。
+    k1 = ledger.record(
+        "B案の方がmarginはありそうだが、process追加が必要なのでschedule riskが高い。",
+        source_type="meeting",
+        source_ref="review_20260820",
+    )
+
+    # 2) 特定のKnowledgeを「world_fact」annotation（entity/attribute/value）で
+    #    構造化World Viewへ組み入れます。これはk1のcontentを書き換えません —
+    #    元の文章はそのまま、追加の読み取りを乗せた新しいrevisionが増えるだけです。
+    annotate_world_fact(ledger, k1.knowledge_id, entity="project-A", attribute="risk", value="schedule")
+
+    # 3) 現在のWorld View（既存StateStoreと同じ{entity: {attribute: value}}形式）を
+    #    投影し、「before」として保持します。
+    view_before = WorldStateProjection(ledger).view()
+
+    # ... 時間が経ち、状況が変わったとします ...
+    k2 = ledger.record("A案のDRC riskが顕在化し、process側が追加工程を許容可能とした。", source_type="report")
+    annotate_world_fact(ledger, k2.knowledge_id, entity="project-A", attribute="risk", value="none")
+
+    # 4) 2つのWorld Viewの差分を取り、既存のevent loopへ流せます
+    #    （diff.to_events()の各eventを runtime.submit_event(event) へ）—
+    #    apply_state_deltaが出す"state_changed"と同じ形式です。
+    view_after = WorldStateProjection(ledger).view()
+    diff = diff_world_views(view_before, view_after)
+    for change in diff.changes:
+        print(change.entity, change.attribute, change.old_value, "->", change.new_value)
+
+    # 5) 関連する生Knowledgeを1つのmemoryへ統合します。ここではFakeLLMBackendですが、
+    #    実際は`LLMBackend`など本物のExecutionBackendを渡します。backendが無くても
+    #    consolidate()自体は動作し、その場合は要約を作らず元Knowledgeを一覧するだけに
+    #    とどめます（推測で結論を作らない）。
+    candidates = select_candidates(ledger, kinds=("raw",))
+    consolidate_backend = FakeLLMBackend(script=[proposal_response({
+        "summary": "当初B案はschedule risk懸念だったが、A案のDRC riskが顕在化しB案再検討の合理性が高まっている。",
+        "unresolved": [],
+        "confidence": 0.7,
+    })])
+    memory = await Consolidator(ledger, consolidate_backend).consolidate(candidates)
+
+    # 6) 2件以上の関連事例からreusableな原則を抽出し、独立した支持が積み重なるまで
+    #    record_support()を呼んで成熟度を上げます。
+    principle_backend = FakeLLMBackend(script=[proposal_response({
+        "principle": "早期の代替案再検討は、主要riskの顕在化に応じて柔軟に行うべきである。",
+        "confidence": 0.6,
+        "scope": None,
+    })])
+    principle = await PrincipleExtractor(ledger, principle_backend).extract(candidates)
+    principle = record_support(ledger, principle, "evidence-1")
+    principle = record_support(ledger, principle, "evidence-2")  # ここで"supported"になる
+
+    # 7) 成熟したprincipleの条件が現在のWorld Viewに一致する箇所からGap/Risk/
+    #    Opportunityを検出し、*既存*のProjectOrchestratorの公開submit()へそのまま
+    #    渡します — bridge自身はProjectを一切作成しません。
+    detect_backend = FakeLLMBackend(script=[proposal_response({
+        "signals": [{
+            "type": "opportunity",
+            "description": "B案再検討の好機",
+            "request": "project-AでB案の再検討を行う",
+            "confidence": 0.8,
+            "principle_id": principle.knowledge_id,
+        }]
+    })])
+    signals = await GapRiskOpportunityDetector(detect_backend).detect(view_after, [principle])
+
+    routing_backend = FakeLLMBackend(script=[proposal_response({
+        "action": "CREATE_PROJECT",
+        "proposed_goal": "project-AでB案の再検討を行う",
+        "reason": "opportunity",
+        "confidence": 0.9,
+    })])
+    orchestrator = ProjectOrchestrator(
+        "nexus.db", agent_runtime=InProcessAgentRuntime(), backend=routing_backend
+    )
+    for signal, decision, project in await GoalBridge(ledger, orchestrator).submit(signals):
+        print(decision.action.value, project.goal if project else None)
+    orchestrator.close()
+
+
+asyncio.run(main())
+```
+
+使う前に知っておくとよい点:
+
+- **何も上書き・削除されません。** `ledger.revise(...)`・`ledger.annotate(...)`・
+  `ledger.relate(...)`はどれも*新しい*revisionを追加するだけで、
+  `ledger.history(k1.knowledge_id)`は常にこれまでの全revisionを返します。
+  「その時点で何を信じていたか」は`ledger.as_known_at(id, t)`
+  （transaction time）、「その時点で実際に何が真だったか（現時点で分かる限り）」は
+  `ledger.valid_at(id, t)`（valid time）で問い合わせます — 両者が食い違うことこそが
+  この2つを分けて持つ意味です。
+- **書き込み時にschemaを強制しません。** `ledger.record(...)`が必要とするのは
+  自由文の`content`と`source_type`/`source_ref`だけです。world-factの読み取りや
+  principleのscopeなどの構造は、常に後から追加する任意の`Annotation`/`metadata`です。
+- **LLMを使う各stepは、backendが無くても安全に縮退します。** `Consolidator`・
+  `PrincipleExtractor`・`CounterexampleSearcher`・`PredictionEngine`・
+  `GapRiskOpportunityDetector`はいずれも`backend=None`（既定値）を受け付け、
+  その場合は何も返さないか、統合・一般化しない素の回答を返します — 結論・反例・
+  business riskを推測で捏造することはありません。LLMを使った挙動が必要な場合は、
+  本物の`ExecutionBackend`（`nexus_seed/backends/llm.py`参照）を渡してください。
+- **`GoalBridge`は`orchestrator.submit()`/`.handle_request()`だけを呼びます** —
+  人間のmessageと同じ公開entry pointです。Projectを自分で作成・変更・routingする
+  ことはできず、requestをどう扱うかは常にProject Orchestrator自身の`ProjectRouter`
+  が決めます。
+- より詳しく知りたい場合は`tests/test_knowledge_*.py`を読んでください。各fileが
+  1つのphase（K1: revision・temporal query、K2: projection・diff、K3:
+  consolidation、K4: principle、K5: Goal bridge、K6: experience・advisory）の
+  実行可能な例になっています。
 
 ## 処理の流れ
 
