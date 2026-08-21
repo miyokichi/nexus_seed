@@ -1181,3 +1181,80 @@ Cockpitと同じbearer token境界を再利用し、Cockpit無効化とともに
 
 Guidance（Chatの依頼を認可済みControl Plane変更へ変換すること）は後続Phaseに
 残しています。Phase 7は実装していません。
+
+## Knowledge Runtime（Phase K1〜K6）
+
+Project Orchestratorの上位に、「NEXUS SEEDが世界をどう認識しているか」を担当する
+4番目のlayerを追加しました（「何をすべきか」はOrchestrator、「どう実行するか」は
+Agent Runtimeの担当のままです）：
+
+```text
+Knowledge Runtime            世界をどう認識しているか
+  Knowledge Ledger / World Projection / Memory Consolidation / Principle Learning
+Project Orchestrator         それに対して何をすべきか
+Agent Runtime                どう実行するか
+```
+
+Phase 2Bの`Observation`/`StateDelta`と同様、`nexus_seed/knowledge/`配下は
+Core primitiveではなくdomain dataです。一次storeは新設の`knowledge_revisions`
+（append-only）1つのみで、`KnowledgeRevision`が必須とするのは`content`・`source`・
+`recorded_at`・自身のrevision連鎖（`parents`）だけです。`valid_from`/`valid_to`・
+`relations`・`annotations`は任意で、`subject`/`predicate`/`confidence`/`scope`などは
+Core fieldにしません — 必要なAgentが後から Typed View として`Annotation`に追加し、
+元のcontentは書き換えません（Structure on Write ではなく Structure on Read）。
+修正は必ず新しいrevisionであり、UPDATE・DELETEは行いません。したがって
+`KnowledgeLedger.history(id)`は完全なlogのまま残り、`as_known_at(id, t)`
+（transaction time：その時点でNEXUS SEEDが何を信じていたか）と`valid_at(id, t)`
+（valid time：現時点の理解でその時点に何が真だったか）を区別して問い合わせでき、
+後から届いた過去についての証拠（late-arriving evidence）も正しく扱えます。
+
+- **World Projection（K2）**：`WorldStateProjection`は`world_fact` Annotationを
+  持つrevisionだけを読み、`StateStore.snapshot()`と同じ`{entity: {attribute:
+  value}}`形式へ投影します。既存の`world_state_*` tableとAPIには一切手を
+  入れていません。矛盾する主張は`WorldView.conflicts`に両方保持し、片方へ
+  勝手に収束させません。`diff_world_views(...).to_events()`は差分を既存の
+  `apply_state_delta`と同じpayload形式の`state_changed` Eventとして出力でき、
+  `runtime.submit_event(...)`経由で既存のevent駆動loop（`impact_analysis`）
+  へそのまま流せます。
+- **Memory Consolidation（K3）**：`select_candidates`（embedding不要、
+  Ledger全体へのLLM走査もしない、有界な候補選択）と`Consolidator.consolidate(...)`
+  が`kind=consolidated_memory`のKnowledgeを`derived_from`付きで生成します
+  （元Knowledgeは削除しません）。矛盾は解決せず記述するだけにとどめ、backendが
+  無い／使えない場合は結論を捏造せず未統合の一覧を返すfallbackになります。
+  対象が変化していなければ冪等（`metadata["last_consolidated_at"]`で判定）で、
+  `metadata["generation"]`が再帰的な統合の統合を有界に保ちます。
+- **Principle Extraction（K4）**：`PrincipleExtractor`は2件以上の事例を
+  candidate principle（`status=candidate`）へ一般化します。
+  `CounterexampleSearcher`（backendが無ければ反例を捏造せず何も返しません）と
+  `refine_principle(...)`が反例に応じてscopeを狭め、成熟度を`refined`へ
+  引き戻します。`record_support(...)`が独立した支持の蓄積に応じて
+  `candidate/refined -> supported -> validated`へ昇格させます。
+  `PredictionEngine.predict(principle, view, subject=...)`がPrincipleを
+  現在のWorldViewへ適用して予測diffを生成し、`evaluate_prediction(...)`
+  （`predicted_state`が構造化されていればLLM不要で機械的に判定可能）と
+  `apply_prediction_feedback(...)`が的中・不的中をsupport/refineの経路へ
+  還元します。
+- **Goal integration（K5）**：`GapRiskOpportunityDetector.detect(view,
+  principles)`が、`supported`/`validated`なPrincipleの条件が現在のWorldView
+  に一致する箇所を見つけ、gap/risk/opportunity/conflictの`Signal`
+  （実行可能なrequest文つき）を提案します。`GoalBridge.submit(...)`は、
+  人間のmessageと同じ公開entry pointである`ProjectOrchestrator.submit(request,
+  source="knowledge_runtime")`へそのまま渡すだけで、`orchestrator/`配下は
+  一切変更していません。結果は`kind="signal"`としてLedgerへ書き戻され、
+  それを引き起こしたPrincipleとrelationで結び付けられます。
+- **Self-learning（K6・軽量版）**：`record_agent_experience(...)`が実行episode
+  ごとに`kind=experience`のKnowledgeを記録します（K3の`select_candidates`が
+  対象とするkindに最初から含まれるため、Consolidator・PrincipleExtractorを
+  そのまま再利用できます）。`advisories_for(principles, subject=...)`は
+  成熟したPrincipleだけを`DecisionAdvisory`として提示します。意図的に
+  `decision.models.DecisionPreference`と同じ形にはしていません — 案件ごとの
+  strategy選択は`docs/orchestrator-redesign-inventory.md`でAgent Runtime側の
+  責務と分類されているためで、どの選択機構へ適用するかは呼び出し側に委ねます。
+
+`nexus_seed/knowledge/`から`orchestrator/`へは`ProjectOrchestrator.submit()`/
+`.handle_request()`以外呼び出しておらず、`decision/`・`orchestrator/agent_manager.py`
+など既存の実行系moduleにも、既存のtable・store・APIにも一切変更を加えていません。
+`tests/test_knowledge_*`がrevision／temporal query／後から届いた証拠、
+projection／diff／既存event loopへの受け渡し、consolidationの再帰・冪等性・矛盾保持、
+principleの抽出・反例・予測feedback、実際の`ProjectOrchestrator`を使ったGoal bridgeを
+検証しており、既存の全test suite（`pytest`）も通したままです。

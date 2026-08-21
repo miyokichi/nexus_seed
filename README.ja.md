@@ -36,6 +36,34 @@ NEXUS SEEDが管理します。Task分解、Capability選択、Tool利用、実�
 [再設計の棚卸し](docs/orchestrator-redesign-inventory.md)を参照してください。この再設計では
 既存moduleを削除していません。
 
+## Knowledge Runtime
+
+Project Orchestratorの上位には、NEXUS SEEDが得た情報をversion管理・provenance付きで
+記録し、そこからOrchestratorのworld viewを導出するKnowledge Runtime（`nexus_seed/knowledge/`）が
+あります。
+
+```text
+Knowledge Runtime      世界をどう認識しているか
+Project Orchestrator   それに対して何をすべきか
+Agent Runtime          どう実行するか
+```
+
+- append-onlyなKnowledge Ledger — 上書き・削除は一切なく、修正・annotation・relationは
+  常に新しいrevisionとして追加され、transaction time・valid time（後から届いた過去の証拠を
+  含む）の両方で問い合わせ可能
+- Ledgerから構築されるWorld Projection。既存のWorld State APIとは独立しつつ読み取り互換
+- 関連するKnowledgeを`consolidated_memory`へ圧縮するMemory Consolidation。元Knowledgeは
+  削除せず、解決できない矛盾を無理に解決しない
+- 複数事例からcandidate principleを一般化し、反例で検証し、実際の結果に対する予測器として
+  評価するPrinciple Extraction
+- 検出したGap/Risk/Opportunityを、既存の`ProjectOrchestrator.submit()`経由の通常requestへ
+  変換するGoal bridge（Projectを直接作成することはありません）
+
+現時点ではlibraryとして利用可能で、専用のtest一式（`tests/test_knowledge_*.py`）があります。
+`app.py`・demo・Cockpitへの組み込みはまだ行っていません。詳細は
+[アーキテクチャ詳細（日本語）](docs/architecture.ja.md)と[AGENTS.md](AGENTS.md)（英語）の
+不変条件を参照してください。
+
 ## 処理の流れ
 
 ```text
@@ -272,7 +300,7 @@ nexus-seed control '/status'
 ## 設計境界
 
 固定primitiveは`Event`、`Process`、`State`、`Context`、`Continuation`、`Runtime`の
-6つのままです。Project、Agent、Skill、Work、Capabilityはdomain recordまたは
+6つのままです。Project、Agent、Skill、Work、Capability、Knowledgeはdomain recordまたは
 Processの役割であり、新しいprimitiveではありません。
 
 再設計では次の責務を分離します。
@@ -292,6 +320,7 @@ Project管理に必要なstatusとescalationだけを返します。
 ## ディレクトリ構成
 
 ```text
+nexus_seed/knowledge/     Knowledge Ledger、World Projection、Consolidation、Principle
 nexus_seed/orchestrator/  Project routing、lifecycle、Agent割り当て、A2A
 nexus_seed/storage/       orchestrator recordを含むSQLite store
 nexus_seed/core/          固定された6つのdata model

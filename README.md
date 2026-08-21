@@ -41,6 +41,38 @@ the compatibility application. See
 `KEEP`, `MOVE_TO_AGENT_RUNTIME`, and `DEPRECATE` classification. No earlier
 module was deleted by the redesign.
 
+## Knowledge Runtime
+
+Above the Project Orchestrator sits a Knowledge Runtime (`nexus_seed/knowledge/`)
+that keeps a versioned, provenance-bearing record of everything NEXUS SEED has
+been told, and derives the Orchestrator's world view from it:
+
+```text
+Knowledge Runtime      "how does NEXUS SEED perceive the world?"
+Project Orchestrator   "what should be done about it?"
+Agent Runtime          "how does it get done?"
+```
+
+- an append-only Knowledge Ledger — nothing is ever overwritten or deleted; a
+  correction, an annotation, or a relation is always a new revision, queryable
+  by transaction time or valid time (including late-arriving evidence);
+- a World Projection built from the Ledger, kept separate from — and
+  read-compatible with — the existing World State API;
+- Memory Consolidation that compresses related Knowledge into a
+  `consolidated_memory` object without deleting its sources or resolving a
+  contradiction it cannot actually resolve;
+- Principle Extraction that generalises several cases into a candidate
+  principle, tests it against counterexamples, and evaluates it as a
+  predictor against actual outcomes;
+- a Goal bridge that turns a detected Gap/Risk/Opportunity into an ordinary
+  request through the existing `ProjectOrchestrator.submit()` — it never
+  creates a Project directly.
+
+It is available as a library today, with its own test suite
+(`tests/test_knowledge_*.py`); `app.py`, the demo, and Cockpit do not wire it
+in yet. See [Architecture and phase history](docs/architecture.md) for the
+full design and [AGENTS.md](AGENTS.md) for the invariants it keeps.
+
 ## How orchestration works
 
 ```text
@@ -447,8 +479,8 @@ the Project stopped stays readable afterwards.
 ## Design boundaries
 
 The six fixed primitives remain `Event`, `Process`, `State`, `Context`,
-`Continuation`, and `Runtime`. Project, Agent, Skill, Work, and Capability are
-domain records or Process roles, not new primitives.
+`Continuation`, and `Runtime`. Project, Agent, Skill, Work, Capability, and
+Knowledge are domain records or Process roles, not new primitives.
 
 The redesign keeps these responsibilities separate:
 
@@ -467,6 +499,7 @@ Agent returns only management-level status and escalation messages over A2A.
 ## Repository layout
 
 ```text
+nexus_seed/knowledge/     Knowledge Ledger, World Projection, Consolidation, Principles
 nexus_seed/orchestrator/  Project routing, lifecycle, Agent assignment, A2A
 nexus_seed/storage/       SQLite stores, including orchestrator records
 nexus_seed/core/          the six fixed data models
