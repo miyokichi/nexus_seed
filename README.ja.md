@@ -59,16 +59,19 @@ Agent Runtime          どう実行するか
 - 検出したGap/Risk/Opportunityを、既存の`ProjectOrchestrator.submit()`経由の通常requestへ
   変換するGoal bridge（Projectを直接作成することはありません）
 
-現時点ではlibraryとして利用可能で、専用のtest一式（`tests/test_knowledge_*.py`）があります。
-`app.py`・demo・Cockpitへの組み込みはまだ行っていません — 下記のように
-`nexus_seed.knowledge`を直接importして使います。詳細は
+現時点で2通りの使い方があります。library（`nexus_seed.knowledge`、専用test一式
+`tests/test_knowledge_*.py`あり）と、コマンドライン（`nexus-seed-knowledge`、
+後述）です。`app.py`・demo・Cockpitへの組み込みはまだ行っていません —
+通常のrequest経路から自動的にKnowledgeになることはありません。詳細は
 [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)と[AGENTS.md](AGENTS.md)（英語）の
 不変条件を参照してください。
 
-### Knowledge Runtimeの使い方
+### Knowledge Runtimeの使い方（Python）
 
-CLIやserverはまだありません。すべてPythonから直接オブジェクトを呼び出して使います。
-一連の流れを通して書くと、次のようになります。
+すべてPythonから直接オブジェクトを呼び出して使えます — 自分のcodeへ
+Knowledge Runtimeを組み込みたい場合に向いています。（とにかく動かして
+みたいだけなら、後述の「コマンドライン」節が同じことをPythonなしで
+できます。）一連の流れを通して書くと、次のようになります。
 
 ```python
 import asyncio

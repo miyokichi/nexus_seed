@@ -68,16 +68,20 @@ Agent Runtime          "how does it get done?"
   request through the existing `ProjectOrchestrator.submit()` — it never
   creates a Project directly.
 
-It is available as a library today, with its own test suite
-(`tests/test_knowledge_*.py`); `app.py`, the demo, and Cockpit do not wire it
-in yet — you use it by importing `nexus_seed.knowledge` directly, as below.
-See [Architecture and phase history](docs/architecture.md) for the full
-design and [AGENTS.md](AGENTS.md) for the invariants it keeps.
+It is usable today two ways: as a library (`nexus_seed.knowledge`, with its
+own test suite in `tests/test_knowledge_*.py`) and from the command line
+(`nexus-seed-knowledge`, below). Neither `app.py`, the demo, nor Cockpit
+wires it in yet — nothing submitted through the normal request path becomes
+Knowledge automatically. See [Architecture and phase history](docs/architecture.md)
+for the full design and [AGENTS.md](AGENTS.md) for the invariants it keeps.
 
 ### Knowledge Runtime quick start
 
-There is no CLI or server for this yet — every piece is a plain Python object
-you call directly. A full loop, end to end:
+Every piece is a plain Python object you can call directly — useful when
+you're wiring the Knowledge Runtime into your own code rather than driving
+it by hand. (If you just want to *run* something, skip ahead to the
+**Command line** section below; it covers the same ground without writing
+Python.) A full loop, end to end:
 
 ```python
 import asyncio
