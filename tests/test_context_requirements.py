@@ -8,7 +8,6 @@ from nexus_seed.context.requirements import (
     EntityAttributes,
     EventsReq,
     ProcessTreeReq,
-    WorkReq,
     WorldStateReq,
 )
 from nexus_seed.core.process import ProcessContext, ProcessDefinition, ProcessResult
@@ -25,10 +24,8 @@ def test_to_from_dict_roundtrip():
         world_state=WorldStateReq(
             entities=["D1_CD"],
             entity_attributes=[EntityAttributes("D1_CD", ["target", "variation"])],
-            include_work_entities=True,
         ),
         events=EventsReq(recent=5, related_entities=["D1_CD"]),
-        work=WorkReq(current=True, related=True),
         process_tree=ProcessTreeReq(parent=True, children=True),
         continuation=ContinuationReq(include=True),
     )
@@ -37,9 +34,7 @@ def test_to_from_dict_roundtrip():
     assert back.include_trigger_event is True
     assert back.world_state.entities == ["D1_CD"]
     assert back.world_state.entity_attributes[0].attributes == ["target", "variation"]
-    assert back.world_state.include_work_entities is True
     assert back.events.recent == 5 and back.events.related_entities == ["D1_CD"]
-    assert back.work.current and back.work.related
     assert back.process_tree.parent and back.process_tree.children
     assert back.continuation.include
 

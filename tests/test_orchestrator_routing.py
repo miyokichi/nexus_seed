@@ -72,17 +72,29 @@ async def test_case2_followup_joins_existing_project(tmp_path):
             proposed_task="地域別でも分析する",
         ),
     ]
-    result = await orch.handle_request("地域別でも見て")
+    result, _ = await orch.submit(
+        "地域別でも見て",
+        project_context={
+            "knowledge_proposal_id": "proposal-1",
+            "evidence_ids": ["evidence-1"],
+        },
+    )
 
     assert result.action is RoutingAction.ADD_TASK_TO_PROJECT
     # No second project, and the same Agent keeps the work.
     assert len(orch.projects.all()) == 1
     updated = orch.projects.get(project.id)
     assert [task["description"] for task in updated.tasks] == ["地域別でも分析する"]
+    assert updated.tasks[0]["context"] == {
+        "knowledge_proposal_id": "proposal-1",
+        "evidence_ids": ["evidence-1"],
+    }
     assert updated.assigned_agent_id == agent_id
 
-    kinds = [envelope["kind"] for _, envelope in runtime.delivered]
+    envelopes = [envelope for _, envelope in runtime.delivered]
+    kinds = [envelope["kind"] for envelope in envelopes]
     assert kinds == ["ASSIGN_GOAL", "ADD_TASK"]
+    assert envelopes[-1]["task"]["context"]["evidence_ids"] == ["evidence-1"]
     orch.close()
 
 

@@ -44,6 +44,7 @@ class ProjectStatus(str, Enum):
     ACTIVE = "ACTIVE"
     BLOCKED = "BLOCKED"
     WAITING_HUMAN = "WAITING_HUMAN"
+    WAITING_REVIEW = "WAITING_REVIEW"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -56,6 +57,7 @@ LIVE_STATUSES = frozenset(
         ProjectStatus.ACTIVE,
         ProjectStatus.BLOCKED,
         ProjectStatus.WAITING_HUMAN,
+        ProjectStatus.WAITING_REVIEW,
     }
 )
 

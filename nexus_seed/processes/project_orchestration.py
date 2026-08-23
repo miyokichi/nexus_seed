@@ -13,8 +13,7 @@ boundary (one ``source_event_key`` is one Event is one activation), so the
 router never has to wonder whether it has seen a request before, and this
 Process holds no idempotency logic of its own.
 
-Registration is behind a flag, exactly as Phase 6 is: with it off, nothing here
-is registered and a ``human_message`` is handled precisely as it was before.
+This is the application's single request entry path.
 """
 
 from __future__ import annotations
@@ -23,8 +22,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..core.process import ProcessContext, ProcessDefinition, ProcessResult
-from ..orchestrator.pursuits import ProjectPursuits
-
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..orchestrator import ProjectOrchestrator
 
@@ -47,7 +44,7 @@ async def route_request_to_project(ctx: ProcessContext) -> ProcessResult:
     request across the boundary and records what the orchestrator decided.
     """
     orchestrator = ctx.project_orchestrator
-    if orchestrator is None:  # pragma: no cover - guarded by the bootstrap flag
+    if orchestrator is None:  # pragma: no cover - invalid application wiring
         return ctx.fail("no Project Orchestrator is configured")
 
     payload = (ctx.event.payload if ctx.event else None) or {}
@@ -78,26 +75,12 @@ async def route_request_to_project(ctx: ProcessContext) -> ProcessResult:
 
 
 def bootstrap_project_orchestration(
-    runtime, orchestrator: "ProjectOrchestrator | None", *, enabled: bool
-) -> bool:
-    """Route incoming messages to ``orchestrator`` when the flag is on.
-
-    Returns whether it was enabled.  Calling this with ``enabled=False`` (or
-    without an orchestrator) is a strict no-op: no definition is registered and
-    a ``human_message`` keeps being handled exactly as it was.
-    """
-    if not enabled or orchestrator is None:
-        return False
+    runtime, orchestrator: "ProjectOrchestrator"
+) -> None:
+    """Install the application's Project request entry path."""
     runtime.set_project_orchestrator(orchestrator)
     runtime.register_process(ROUTE_REQUEST, route_request_to_project)
-    # Projects are what NEXUS SEED is pursuing, so Phase 6 holds its Intentions
-    # about them.  Registered here rather than in the orchestrator itself: the
-    # orchestrator knows nothing about Phase 6, and should not.
-    runtime.register_pursuit_source(
-        "orchestrator.projects", ProjectPursuits(orchestrator.projects)
-    )
     logger.info("human messages are routed to the Project Orchestrator")
-    return True
 
 
 __all__ = [

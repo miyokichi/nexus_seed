@@ -64,13 +64,13 @@ async def project_runtime(tmp_path, backend, name="message.db"):
         agent_runtime=InProcessAgentRuntime(behaviour=quiet),
         backend=backend,
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     return runtime, orch, orch.projects.all()[0]
 
 
 def cockpit(runtime) -> CockpitService:
-    return CockpitService(runtime, phase6_enabled=False, master_id="operator")
+    return CockpitService(runtime, master_id="operator")
 
 
 async def test_a_question_is_answered_and_nothing_is_delegated(tmp_path):
@@ -199,7 +199,7 @@ async def test_without_a_model_a_question_is_explained_not_delegated(tmp_path):
     orch = ProjectOrchestrator(
         runtime.db, agent_runtime=InProcessAgentRuntime(behaviour=quiet), backend=None
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     project = orch.projects.all()[0]
     try:
@@ -217,7 +217,7 @@ async def test_without_a_model_a_plain_instruction_still_reaches_the_agent(tmp_p
     orch = ProjectOrchestrator(
         runtime.db, agent_runtime=InProcessAgentRuntime(behaviour=quiet), backend=None
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     project = orch.projects.all()[0]
     try:
@@ -271,7 +271,7 @@ async def test_overruling_works_with_no_model_at_all(tmp_path):
     orch = ProjectOrchestrator(
         runtime.db, agent_runtime=InProcessAgentRuntime(behaviour=quiet), backend=None
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     project = orch.projects.all()[0]
     try:

@@ -32,6 +32,7 @@ _STATUS = {
     ProjectStatus.ACTIVE: ProjectOverallStatus.ACTIVE,
     ProjectStatus.BLOCKED: ProjectOverallStatus.BLOCKED,
     ProjectStatus.WAITING_HUMAN: ProjectOverallStatus.NEEDS_ATTENTION,
+    ProjectStatus.WAITING_REVIEW: ProjectOverallStatus.NEEDS_ATTENTION,
     ProjectStatus.COMPLETED: ProjectOverallStatus.COMPLETED,
     ProjectStatus.FAILED: ProjectOverallStatus.NEEDS_ATTENTION,
     ProjectStatus.CANCELLED: ProjectOverallStatus.CANCELLED,

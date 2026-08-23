@@ -100,12 +100,10 @@ class WorldViewDiff:
     ) -> list[Event]:
         """Render each change as a ``state_changed`` :class:`Event`.
 
-        Same event type and payload shape the existing Phase 2B
-        ``apply_state_delta`` process emits (``entity``, ``attribute``,
-        ``old_value``, ``new_value``), so it can be handed to the existing
-        event-driven loop (``runtime.submit_event(event)``) and picked up by
-        ``impact_analysis`` unchanged — no new event type to teach the
-        Project Orchestrator about.
+        The payload contains ``entity``, ``attribute``, ``old_value`` and
+        ``new_value``. Callers may hand these events to the durable event loop
+        with ``runtime.submit_event(event)``; Project creation still goes
+        through the Orchestrator's public request boundary.
         """
         return [
             Event(

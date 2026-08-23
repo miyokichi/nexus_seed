@@ -166,7 +166,7 @@ def test_an_event_knows_whether_it_came_from_outside(tmp_path):
     store = EventStore(db)
     receipt_id = uuid.uuid4()
     external = Event("human_message", "manual", {"text": "hi"}, ingress_receipt_id=receipt_id)
-    internal = Event("state_changed", "apply_state_delta", {})
+    internal = Event("state_changed", "knowledge_runtime", {})
     store.append(external)
     store.append(internal)
 

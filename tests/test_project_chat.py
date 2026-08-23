@@ -300,8 +300,8 @@ async def test_chat_history_is_not_treated_as_confirmed_world_state(tmp_path):
     try:
         await ProjectChatService(runtime).ask("project-a", "今どうなってる？")
 
-        assert runtime.observation_store.all() == []
-        assert runtime.state_delta_store.all() == []
+        assert not hasattr(runtime, "observation_store")
+        assert not hasattr(runtime, "state_delta_store")
         assert not any(
             "順調です。" in json.dumps(entry.value, ensure_ascii=False, default=str)
             for entry in runtime.state_store.all_current()
@@ -350,7 +350,7 @@ async def test_chat_http_api_reuses_cockpit_authentication(tmp_path):
     runtime = _project_runtime(
         tmp_path, backend=_backend(_answer("レポート作成が停止しています。"))
     )
-    cockpit = CockpitService(runtime, phase6_enabled=False, master_id="operator")
+    cockpit = CockpitService(runtime, master_id="operator")
     server = await WebhookServer(
         WebhookIngress(runtime.ingress, token=TOKEN), cockpit=cockpit
     ).start()

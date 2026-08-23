@@ -87,11 +87,10 @@ class ProcessStore:
             """
             INSERT INTO process_instances
                 (id, definition_name, definition_version, status, input, local_state,
-                 parent_process_id, priority, pending_event_id, work_key,
-                 work_requirement_id, trigger_event_id, plan_id, plan_node_id,
+                 parent_process_id, priority, pending_event_id, trigger_event_id,
                  retry_count, max_retries,
                  next_retry_at, last_error, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 input = excluded.input,
@@ -99,8 +98,7 @@ class ProcessStore:
                 parent_process_id = excluded.parent_process_id,
                 priority = excluded.priority,
                 pending_event_id = excluded.pending_event_id,
-                work_key = excluded.work_key,
-                work_requirement_id = excluded.work_requirement_id,
+                trigger_event_id = excluded.trigger_event_id,
                 retry_count = excluded.retry_count,
                 max_retries = excluded.max_retries,
                 next_retry_at = excluded.next_retry_at,
@@ -117,11 +115,7 @@ class ProcessStore:
                 str(instance.parent_process_id) if instance.parent_process_id else None,
                 instance.priority,
                 str(instance.pending_event_id) if instance.pending_event_id else None,
-                instance.work_key,
-                str(instance.work_requirement_id) if instance.work_requirement_id else None,
                 str(instance.trigger_event_id) if instance.trigger_event_id else None,
-                str(instance.plan_id) if instance.plan_id else None,
-                str(instance.plan_node_id) if instance.plan_node_id else None,
                 instance.retry_count,
                 instance.max_retries,
                 instance.next_retry_at.isoformat() if instance.next_retry_at else None,
@@ -163,49 +157,6 @@ class ProcessStore:
             (ProcessStatus.RUNNABLE.value,),
         )
         return self._row_to_instance(row) if row else None
-
-    def find_by_work_key(self, work_key: str) -> list[ProcessInstance]:
-        """Return all instances fulfilling ``work_key`` (any status)."""
-        rows = self.db.query(
-            "SELECT * FROM process_instances WHERE work_key = ? ORDER BY created_at ASC",
-            (work_key,),
-        )
-        return [self._row_to_instance(r) for r in rows]
-
-    def find_by_work_requirement_id(
-        self, work_requirement_id: uuid.UUID
-    ) -> list[ProcessInstance]:
-        """Return all instances fulfilling ``work_requirement_id``."""
-        rows = self.db.query(
-            "SELECT * FROM process_instances WHERE work_requirement_id = ? "
-            "ORDER BY created_at ASC",
-            (str(work_requirement_id),),
-        )
-        return [self._row_to_instance(r) for r in rows]
-
-    def pause_for_work(self, work_requirement_id: uuid.UUID) -> None:
-        """Park future activations for one Work without touching external effects."""
-        self.db.execute(
-            """UPDATE process_instances SET status=?, updated_at=?
-               WHERE work_requirement_id=? AND status IN (?, ?)""",
-            (ProcessStatus.PAUSED.value, datetime.now().astimezone().isoformat(),
-             str(work_requirement_id), ProcessStatus.RUNNABLE.value,
-             ProcessStatus.RETRY_WAIT.value),
-        )
-
-    def resume_for_work(self, work_requirement_id: uuid.UUID) -> None:
-        """Make parked activations runnable; executor recompiles fresh Context."""
-        self.db.execute(
-            "UPDATE process_instances SET status=?, updated_at=? WHERE work_requirement_id=? AND status=?",
-            (ProcessStatus.RUNNABLE.value, datetime.now().astimezone().isoformat(),
-             str(work_requirement_id), ProcessStatus.PAUSED.value),
-        )
-
-    def update_priority_for_work(self, work_requirement_id: uuid.UUID, priority: int) -> None:
-        self.db.execute(
-            "UPDATE process_instances SET priority=?, updated_at=? WHERE work_requirement_id=?",
-            (priority, datetime.now().astimezone().isoformat(), str(work_requirement_id)),
-        )
 
     def find_by_trigger(
         self, event_id: uuid.UUID, name: str, version: str
@@ -271,11 +222,7 @@ class ProcessStore:
             parent_process_id=_uuid(row["parent_process_id"]),
             priority=row["priority"],
             pending_event_id=_uuid(row["pending_event_id"]),
-            work_key=row["work_key"],
-            work_requirement_id=_uuid(row["work_requirement_id"]),
             trigger_event_id=_uuid(row["trigger_event_id"]),
-            plan_id=_uuid(row["plan_id"]),
-            plan_node_id=_uuid(row["plan_node_id"]),
             retry_count=row["retry_count"],
             max_retries=row["max_retries"],
             next_retry_at=_dt(row["next_retry_at"]),

@@ -10,13 +10,10 @@ Experience is already one of the eligible ``kinds`` in
 :func:`~nexus_seed.knowledge.consolidation.select_candidates`), applied here
 to execution history instead of project narrative.
 
-Per ``docs/orchestrator-redesign-inventory.md``, per-work strategy selection
-(``decision/selector.py``, ``DecisionPreference``) is an Agent Runtime
-concern the new Core does not call into, and Knowledge Runtime is a layer
-*above* both Project Orchestrator and Agent Runtime — so this module never
-imports or writes to ``decision/*``, ``orchestrator/agent_manager.py`` or any
-other execution module.  It only produces :class:`DecisionAdvisory` objects a
-caller may fold into whatever selection mechanism it actually uses.
+Per-work strategy selection is an Agent Runtime concern, while Knowledge
+Runtime sits above both Project Orchestrator and Agent Runtime. This module
+therefore never writes to execution components; it only produces
+:class:`DecisionAdvisory` values a caller may use in its own selection logic.
 """
 
 from __future__ import annotations
@@ -80,10 +77,9 @@ def record_agent_experience(
 class DecisionAdvisory:
     """A plain, mechanism-agnostic hint derived from one mature Principle.
 
-    Deliberately not shaped like any specific Agent Runtime's preference
-    model (e.g. ``nexus_seed.decision.models.DecisionPreference``) — Knowledge
-    Runtime stays decoupled from execution-selection mechanics; a caller maps
-    this onto whatever preference structure it actually uses.
+    Deliberately not shaped like any specific Agent Runtime preference model.
+    Knowledge Runtime stays decoupled from execution-selection mechanics; a
+    caller maps this onto whatever preference structure it actually uses.
     """
 
     principle_id: str

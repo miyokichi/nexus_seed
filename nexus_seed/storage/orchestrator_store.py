@@ -282,7 +282,12 @@ class A2AMessageStore:
 
     def append(self, message: A2AMessage, *, direction: str) -> A2AMessage:
         """Record one message; ``direction`` is ``"inbound"`` or ``"outbound"``."""
-        self.db.execute(
+        self.append_new(message, direction=direction)
+        return message
+
+    def append_new(self, message: A2AMessage, *, direction: str) -> bool:
+        """Record one message and report whether this id was new."""
+        cursor = self.db.execute(
             """
             INSERT OR IGNORE INTO orchestrator_a2a_messages
                 (id, source_agent_id, project_id, direction, type, payload, timestamp)
@@ -298,7 +303,7 @@ class A2AMessageStore:
                 message.timestamp.isoformat(),
             ),
         )
-        return message
+        return cursor.rowcount > 0
 
     def for_project(self, project_id: str) -> list[tuple[str, A2AMessage]]:
         """Return ``(direction, message)`` pairs for ``project_id``, oldest first."""

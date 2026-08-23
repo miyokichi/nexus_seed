@@ -87,6 +87,7 @@ class ProjectOrchestrator:
         retry_base_seconds: float = RETRY_BASE_SECONDS,
         retry_max_seconds: float = RETRY_MAX_SECONDS,
         assignment_timeout_seconds: float = ASSIGNMENT_TIMEOUT_SECONDS,
+        completion_review_enabled: bool = False,
     ) -> None:
         self.db = db_path if isinstance(db_path, Database) else Database(db_path)
         self.agent_runtime = agent_runtime or InProcessAgentRuntime()
@@ -94,6 +95,7 @@ class ProjectOrchestrator:
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
         self.assignment_timeout_seconds = assignment_timeout_seconds
+        self.completion_review_enabled = completion_review_enabled
 
         self.project_store = ProjectStore(self.db)
         self.agent_store = AgentStore(self.db)
@@ -152,6 +154,7 @@ class ProjectOrchestrator:
         origin_project_id: str | None = None,
         priority: int = 0,
         request_id: str | None = None,
+        project_context: dict[str, Any] | None = None,
     ) -> tuple[RoutingDecision, Project | None]:
         """Handle one request and return the decision *and* the Project it touched.
 
@@ -180,7 +183,10 @@ class ProjectOrchestrator:
             "routing %r -> %s (%s)", request[:60], decision.action.value, decision.reason
         )
         touched = await self.apply(
-            decision, priority=priority, origin_project_id=origin_project_id
+            decision,
+            priority=priority,
+            origin_project_id=origin_project_id,
+            project_context=project_context,
         )
         await self.drain()
         settled = self.projects.get(touched.id) if touched else None
@@ -229,17 +235,20 @@ class ProjectOrchestrator:
         *,
         priority: int = 0,
         origin_project_id: str | None = None,
+        project_context: dict[str, Any] | None = None,
     ) -> Project | None:
         """Carry out a routing decision.  Returns the project it touched."""
         if decision.action is RoutingAction.IGNORE:
             return None
 
         if decision.action is RoutingAction.CREATE_PROJECT:
+            context = dict(project_context or {})
+            context["routing_reason"] = decision.reason
             return await self.start_project(
                 decision.proposed_goal or "",
                 priority=priority,
                 parent_project_id=origin_project_id,
-                context={"routing_reason": decision.reason},
+                context=context,
             )
 
         project = self.projects.get(decision.target_project_id or "")
@@ -248,7 +257,11 @@ class ProjectOrchestrator:
             return None
 
         if decision.action is RoutingAction.ADD_TASK_TO_PROJECT:
-            return await self.add_task(project, decision.proposed_task or "")
+            return await self.add_task(
+                project,
+                decision.proposed_task or "",
+                context=project_context,
+            )
 
         # UPDATE_PROJECT: management-level framing only.
         if decision.reason:
@@ -257,14 +270,20 @@ class ProjectOrchestrator:
             self.projects.set_priority(project, priority)
         return project
 
-    async def add_task(self, project: Project, description: str) -> Project:
+    async def add_task(
+        self,
+        project: Project,
+        description: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> Project:
         """Give a Project one more Task, and send it to the Agent that owns it.
 
         This is also how a person unblocks a Project: a follow-up instruction is
         another Task for the same Goal, so whatever was in the way is recorded
         as resolved and the *same* Agent is asked to carry on.
         """
-        task = self.projects.add_task(project, description)
+        task = self.projects.add_task(project, description, context=context)
         agent = await self.assign_agent(project)
         if agent is None:
             return project
@@ -575,11 +594,80 @@ class ProjectOrchestrator:
         logger.warning("unhandled A2A message type %s", message.type)  # pragma: no cover
 
     async def _handle_completion(self, project: Project, message: A2AMessage) -> None:
-        """Complete a project and release its agent."""
-        self.projects.complete(project, summary=str(message.payload.get("summary", "")))
+        """Complete immediately, or wait for a Knowledge-backed human review."""
+        summary = str(message.payload.get("summary", ""))
+        if self.completion_review_enabled:
+            self.projects.wait_for_completion_review(
+                project,
+                message_id=message.id,
+                summary=summary,
+                detail={
+                    "artifact_count": len(message.payload.get("artifacts") or []),
+                    "agent_id": message.source_agent_id,
+                },
+            )
+        else:
+            self.projects.complete(project, summary=summary)
         agent = self.agents.for_project(project.id)
         if agent is not None:
             await self.agents.idle(agent)
+
+    async def approve_completion(
+        self,
+        project_id: str,
+        *,
+        message_id: str,
+        actor: str,
+        note: str = "",
+    ) -> Project | None:
+        """Approve one pending completion review, idempotently."""
+        project = self.projects.get(project_id)
+        if project is None:
+            return None
+        changed = self.projects.decide_completion_review(
+            project,
+            message_id=message_id,
+            decision="APPROVED",
+            actor=actor,
+            note=note,
+        )
+        if changed:
+            self.projects.complete(project, summary=project.summary)
+            agent = self.agents.for_project(project.id)
+            if agent is not None:
+                await self.agents.idle(agent)
+        return self.projects.get(project_id)
+
+    async def reject_completion(
+        self,
+        project_id: str,
+        *,
+        message_id: str,
+        actor: str,
+        feedback: str,
+    ) -> Project | None:
+        """Reject deliverables and return a correction Task to the same Agent."""
+        project = self.projects.get(project_id)
+        if project is None:
+            return None
+        changed = self.projects.decide_completion_review(
+            project,
+            message_id=message_id,
+            decision="REJECTED",
+            actor=actor,
+            note=feedback,
+        )
+        if changed:
+            await self.add_task(
+                project,
+                f"成果物を修正してください: {feedback}",
+                context={
+                    "completion_message_id": message_id,
+                    "reviewed_by": actor,
+                    "review_decision": "REJECTED",
+                },
+            )
+        return self.projects.get(project_id)
 
     async def _handle_discovery(self, message: A2AMessage) -> None:
         """An Agent found an independent problem: route it like any request.

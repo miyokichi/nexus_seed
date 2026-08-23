@@ -86,9 +86,7 @@ def add_task(project_id, task):
 def orchestrator(db_path, backend):
     return build_orchestrator(
         db_path,
-        settings=ProjectAgentSettings(
-            runtime="a2a", url=AGENT_URL, skill_roots=("./skills",)
-        ),
+        settings=ProjectAgentSettings(runtime="a2a", url=AGENT_URL),
         backend=backend,
     )
 

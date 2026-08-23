@@ -2,9 +2,7 @@
 
 /control, the slash-command parser, ConsoleService and the Control Plane
 instruction box are gone.  People now instruct the Project Orchestrator, decide
-reviews and answer self questions directly.  These tests pin the removal — that
-nothing still imports the command vocabulary, and that everything the command
-surface used to gate still works without it.
+Project and Knowledge APIs directly. These tests pin the removal.
 """
 
 from __future__ import annotations
@@ -57,7 +55,7 @@ async def test_a_runtime_has_no_console(tmp_path):
         assert not hasattr(runtime, "console")
         assert not hasattr(runtime, "control_store")
         assert runtime.state_store is not None
-        assert runtime.work_requirement_store is not None
+        assert not hasattr(runtime, "work_requirement_store")
     finally:
         runtime.close()
 
@@ -69,7 +67,7 @@ async def test_the_orchestrator_is_the_way_in(tmp_path):
         agent_runtime=InProcessAgentRuntime(behaviour=lambda c, e: []),
         backend=Scripted([decision("CREATE_PROJECT", proposed_goal="調査する")]),
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     try:
         await orch.handle_request("調べて")
         [project] = orch.projects.all()
@@ -88,7 +86,7 @@ async def test_human_messages_still_become_projects(tmp_path):
         agent_runtime=InProcessAgentRuntime(behaviour=lambda c, e: []),
         backend=Scripted([decision("CREATE_PROJECT", proposed_goal="調査する")]),
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     try:
         await runtime.submit_event(Event("human_message", "user", {"text": "調べて"}))
         assert len(orch.projects.all()) == 1
@@ -100,7 +98,7 @@ async def test_the_cockpit_no_longer_advertises_a_control_plane(tmp_path):
     runtime = Runtime(tmp_path / "cockpit.db")
     try:
         snapshot = CockpitService(
-            runtime, phase6_enabled=True, master_id="op"
+            runtime, master_id="op"
         ).snapshot()
         assert "control" not in snapshot
         # Reading projects still works; acting on one goes to the Orchestrator.
@@ -115,7 +113,7 @@ async def test_the_control_endpoint_is_gone(tmp_path):
         WebhookIngress(runtime.ingress, token=TOKEN),
         host="127.0.0.1",
         port=0,
-        cockpit=CockpitService(runtime, phase6_enabled=True, master_id="op"),
+        cockpit=CockpitService(runtime, master_id="op"),
     )
     await server.start()
     try:
@@ -145,7 +143,8 @@ async def test_the_cockpit_page_has_no_command_channel_left():
     assert "sendCommand" not in APP_JS
     assert '"/control"' not in APP_JS
     assert "New Goal" not in APP_JS
+    assert "/cockpit/api/reviews/" not in APP_JS
+    assert "/cockpit/api/questions/" not in APP_JS
     # What replaced it.
-    assert "/cockpit/api/reviews/" in APP_JS
-    assert "/cockpit/api/questions/" in APP_JS
+    assert "/cockpit/api/knowledge" in APP_JS
     assert "project-message-form" in APP_JS

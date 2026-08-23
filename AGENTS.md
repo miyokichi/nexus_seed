@@ -42,7 +42,7 @@ This file is guidance for any agent (human or AI) working on this repository.
 
 ```bash
 pytest
-python -m nexus_seed.demo
+python -m nexus_seed.app --once
 ```
 
 Tests must be independent and use a temp SQLite database (`tmp_path`).
@@ -212,7 +212,7 @@ Python application.
 - Atomic: receipt + Event + checkpoint commit in one transaction. Delivery into
   the Runtime happens *after* that commit, so a handler blowing up leaves a
   durable, already-deduplicated event rather than a lost occurrence.
-- Three adapters: `ManualAdapter` (+ `python -m nexus_seed.ingress_cli`),
+- Three adapters: `ManualAdapter` (the retired standalone CLI is no longer shipped),
   `WebhookAdapter`/`WebhookIngress`/`WebhookServer` (stdlib asyncio HTTP, shared
   -secret auth, duplicate → 200 + `duplicate: true`), `LocalFileAdapter`
   (sha256 fingerprints, per-path checkpoints, `allowed_root` sandbox that

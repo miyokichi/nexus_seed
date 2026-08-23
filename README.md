@@ -14,6 +14,36 @@ selection, tools, and execution.
 
 *[日本語版](README.ja.md)*
 
+## Quick start
+
+The complete operator guide is in [README.ja.md](README.ja.md#クイックスタート).
+The shortest local setup is:
+
+```bash
+uv sync --extra dev
+cp .env.example .env
+# Set NEXUS_SEED_DATA_DIR to a directory outside this repository.
+uv run nexus-seed config
+uv run nexus-seed
+```
+
+Open `http://127.0.0.1:8787/cockpit`. Use **World** to register an explicit
+System Snapshot source, record observations, inspect provenance, and settle
+Proposal, Artifact, Completion, Question, and Entity reviews. Use **Projects**
+to inspect assignments, blockers, the A2A audit trail, and to send follow-up
+instructions to the same Project Agent.
+
+```bash
+uv run nexus-seed task "Analyse resources/sales.csv and explain the decline"
+uv run nexus-seed status
+```
+
+NEXUS SEED never creates a PC observation source implicitly. A source can read
+only the selected fixed fields: platform, hostname, logical CPU count, physical
+memory, and disk usage for `NEXUS_SEED_DATA_DIR`. Files are watched only under
+`NEXUS_SEED_DATA_DIR/resources`. Configuration, checkpoints, Knowledge,
+Projects, and review decisions survive restart in SQLite.
+
 ## Current status
 
 The Project Orchestrator is available as a Python API and includes:
@@ -28,18 +58,18 @@ The Project Orchestrator is available as a Python API and includes:
 - a deterministic `InProcessAgentRuntime` for tests and local integration;
 - `A2AAgentRuntime`, which delegates a whole Project to a real external Agent
   over A2A;
-- ordinary requests — `nexus-seed task`, a webhook, any connector — routed into
-  Projects behind `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`; and
+- ordinary requests — `nexus-seed task`, a webhook, any connector — always
+  routed into Projects; and
 - a Cockpit **Projects** view over the orchestrator's own records.
 
 What is deliberately not built yet: several Agents on one Project, and Agents
 talking to each other.
 
-The earlier durable runtime remains in the repository, is tested, and provides
-the compatibility application. See
-[the redesign inventory](docs/orchestrator-redesign-inventory.md) for the exact
-`KEEP`, `MOVE_TO_AGENT_RUNTIME`, and `DEPRECATE` classification. No earlier
-module was deleted by the redesign.
+The former Action, Work, Capability, Planning, and self-extension pipelines
+were removed after those responsibilities moved to the Project Agent. Durable
+Event delivery, Process resume, Ingress, Resources, and Context remain because
+the Orchestrator and Knowledge loop use them. Retired tables in an existing
+SQLite database are preserved as history, but are not created in a new one.
 
 ## Knowledge Runtime
 
@@ -68,12 +98,13 @@ Agent Runtime          "how does it get done?"
   request through the existing `ProjectOrchestrator.submit()` — it never
   creates a Project directly.
 
-It is usable today two ways: as a library (`nexus_seed.knowledge`, with its
-own test suite in `tests/test_knowledge_*.py`) and from the command line
-(`nexus-seed-knowledge`, below). Neither `app.py`, the demo, nor Cockpit
-wires it in yet — nothing submitted through the normal request path becomes
-Knowledge automatically. See [Architecture and phase history](docs/architecture.md)
-for the full design and [AGENTS.md](AGENTS.md) for the invariants it keeps.
+It is usable as a library (`nexus_seed.knowledge`), from the command line
+(`nexus-seed-knowledge`, below), and as the application's autonomous Knowledge
+loop. Authorized resources, explicit System Snapshot sources, and manual
+Cockpit observations become Knowledge; approved work is routed through the
+Project Orchestrator, and Agent results return to Knowledge. See
+[Architecture and phase history](docs/architecture.md) for the full design and
+[AGENTS.md](AGENTS.md) for the invariants it keeps.
 
 ### Knowledge Runtime quick start
 
@@ -134,9 +165,8 @@ async def main() -> None:
     k2 = ledger.record("A案のDRC riskが顕在化し、process側が追加工程を許容可能とした。", source_type="report")
     annotate_world_fact(ledger, k2.knowledge_id, entity="project-A", attribute="risk", value="none")
 
-    # 4) Diff two World Views and hand the result to the existing event loop
-    #    (runtime.submit_event(event) for each event in diff.to_events()) —
-    #    same "state_changed" shape apply_state_delta already emits.
+    # 4) Diff two World Views and hand each diff.to_events() result to the
+    #    event loop with runtime.submit_event(event).
     view_after = WorldStateProjection(ledger).view()
     diff = diff_world_views(view_before, view_after)
     for change in diff.changes:
@@ -414,9 +444,9 @@ Goal:    Analyze sales data to identify reasons for low sales in July 2026 ...
 Summary: ~92% of the revenue drop is concentrated in one store/category ...
 ```
 
-NEXUS SEED sends the goal, its context, its constraints, a workspace and the
-contracts of the Skills in `skills/` — then stays out of the way. The Agent
-decides the tasks, the order, and which Skills apply. When it cannot continue
+NEXUS SEED sends the goal, context, constraints, and workspace — then stays
+out of the way. The Agent decides the tasks, order, Skills, and tools; NEXUS
+SEED does not inventory them. When it cannot continue
 it escalates instead of retrying, and the Project is blocked with the reason:
 
 ```text
@@ -442,12 +472,7 @@ the same Agent for the same answer.
 
 ## Normal operation
 
-With the orchestrator switched on, ordinary requests become Projects. Run
-NEXUS SEED, and talk to it the way you already did:
-
-```dotenv
-NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED=true
-```
+Ordinary requests always become Projects. Run NEXUS SEED and submit work:
 
 ```powershell
 nexus-seed                                        # resident
@@ -515,27 +540,10 @@ alike. They are not the same thing:
 | **NEXUS SEED's own reasoning** | The model NEXUS SEED *thinks* with: routing a message to a Project, answering a question about one, interpreting an Event, choosing a plan | `NEXUS_SEED_LLM_*` in this `.env` |
 | **The model that does the work** | The Project Agent's own model | **Not here.** A Project is delegated whole; the Agent brings its own model, keys, skills and config file. `NEXUS_SEED_PROJECT_AGENT_*` says *where* the Agent is, never what it thinks with or what it can do |
 
-`in_process`, the default Agent Runtime, calls no model at all — it is
-deterministic and network-free. Set `NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a` to
-delegate for real.
-
-Skills split the same way, and for the same reason. `NEXUS_SEED_SKILL_ROOTS` is
-what **NEXUS SEED itself** can do — those Skills are imported as Processes and
-become its capabilities:
-
-```dotenv
-# Highest precedence first; ";" on Windows, ":" elsewhere.
-# Unset means ./skills then ~/.nexus_seed/skills.
-NEXUS_SEED_SKILL_ROOTS=./skills:/team/shared-skills
-NEXUS_SEED_SKILLS_STRICT=false
-NEXUS_SEED_SKILLS_ON_DUPLICATE=override
-```
-
-A **Project Agent's** skills are not these and are not configurable here. A
-Project is delegated as a *goal*, not as a method: the assignment carries the
-goal, its context, its constraints and a workspace, and nothing about how to
-meet it. The Agent reads its own skills from its own configuration file, and
-NEXUS SEED neither sends them nor knows what they are.
+`in_process`, the default Agent Runtime, is local and network-free. It reuses
+the configured NEXUS SEED reasoning backend and has no direct tool authority.
+Set `NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a` to delegate a whole Project to an
+external Agent Runtime with its own model, keys, skills, and configuration.
 
 Rather than reading `.env` to work out which is which, ask:
 
@@ -544,19 +552,16 @@ nexus-seed config
 nexus-seed config --json
 ```
 
-It prints the resolved settings in those same groups, says what each one is
-used for, and lists the Skills it actually found and the roots it looked in. It
-reads only — nothing is started and nothing is connected to. An API key is
+It prints the resolved reasoning and delegation settings and says what each is
+used for. It reads only — nothing is started and nothing is connected to. An API key is
 named by the variable that holds it, so the report says which variable is
 consulted and whether it has a value, never the value.
 
-`.env.example` is laid out in the same five groups.
+`.env.example` is laid out in the same groups.
 
-## Compatibility application
+## Application
 
-The existing event-processing application is still available while the new
-orchestrator is integrated. Configure a data directory outside the source tree
-and a webhook token:
+Configure a data directory outside the source tree and a webhook token:
 
 ```dotenv
 NEXUS_SEED_DATA_DIR=C:/Users/user/AppData/Local/nexus-seed
@@ -573,18 +578,15 @@ nexus-seed --once
 nexus-seed
 ```
 
-The compatibility Cockpit is served at `http://127.0.0.1:8787/cockpit`.
+The Cockpit is served at `http://127.0.0.1:8787/cockpit`.
 Useful commands include:
 
 ```powershell
 nexus-seed status
 nexus-seed task "Analyze this request"
-nexus-seed reviews
-nexus-seed review <review-id> approve
+nexus-seed project "Run this request directly"
+nexus-seed config
 ```
-
-These commands exercise the durable Work/Capability runtime alongside the
-`ProjectOrchestrator` API.
 
 Each project has one thread and one box:
 
@@ -614,24 +616,12 @@ change-request guard decides instead, and everything it does not recognise is
 explained rather than delegated. An answer can be ignored; delegated work
 cannot be un-delegated.
 
-### The command surface is gone
+### Human decisions
 
-`/control`, the slash-command parser, `ConsoleService` and the Control Plane
-instruction box no longer exist. What they gated is reachable directly:
-
-| What a person does | Where it goes now |
-| --- | --- |
-| Start or extend work | `POST /cockpit/api/orchestrator/projects/<id>/instruct`, or a `human_message` — both reach the `ProjectRouter` |
-| Approve or reject a review | `POST /cockpit/api/reviews/<id>/<approve\|reject>` (`nexus_seed/reviews.py`) |
-| Answer a self question | `POST /cockpit/api/questions/<id>/answer` (`nexus_seed/questions.py`) |
-| Unblock a Project | `POST /cockpit/api/orchestrator/projects/<id>/unblock` |
-
-A review is a Continuation waiting for an event whose type ends in
-`_reviewed`, so deciding one is emitting that event; a self question is
-answered the same way. Both are idempotent by construction — the second call
-finds nothing waiting and changes nothing — and neither authorizes anything,
-because the gate is the channel's own (the webhook bearer token). The shipped
-app only ever granted one identity `command.*`, so nothing was being denied.
+`/control`, the slash-command parser, and the generic Continuation review API
+are not application surfaces. Project instructions go to the Project
+Orchestrator; proposal, Artifact, completion, question, and Entity decisions
+go through the Knowledge API shown by the Cockpit's World view.
 
 ### Goal is gone; a Project is the goal
 
@@ -647,21 +637,6 @@ projection, `ProcessResult.goals` / `goal_updates`, `ctx.record_goal` /
 `command_results` and `human_identities` tables. `review_human_work` survives
 as `processes/work_review.py`: approving constrained Work was never a Goal
 concern.
-
-What Phase 6 reads instead is a **pursuit** (`nexus_seed/pursuit.py`) — an id,
-an objective, whether it is live, and what should make it reconsider.
-`Runtime.register_pursuit_source(name, source)` registers an answer,
-`runtime.active_pursuits()` lists them, `runtime.get_pursuit(id)` resolves one
-whether or not it is still live (an Intention has to keep describing something
-that just finished). `bootstrap_project_orchestration` registers
-`ProjectPursuits`, so Phase 6 holds its Intentions about Projects. A runtime
-with no source pursues nothing: `project_self` reports no active ids and the
-startup wake stays silent.
-
-`IntentionRecord.pursuit_id` is text (a Project id is `project-<uuid>`), and
-both it and event payloads still carry `goal_id` so a journal written before
-the rename stays loadable.
-
 
 ### Instructing an orchestrator Project
 
@@ -724,11 +699,10 @@ nexus_seed/knowledge/     Knowledge Ledger, World Projection, Consolidation, Pri
 nexus_seed/orchestrator/  Project routing, lifecycle, Agent assignment, A2A
 nexus_seed/storage/       SQLite stores, including orchestrator records
 nexus_seed/core/          the six fixed data models
-nexus_seed/runtime/       earlier durable event runtime
-nexus_seed/processes/     Process handlers, including the human review gate
-nexus_seed/providers/     provider federation, A2A client, Project Agent transport
-nexus_seed/cockpit/       compatibility read model and dependency-free Web UI
-skills/                   directory Skills (skill.json + SKILL.md)
+nexus_seed/runtime/       durable event and continuation runtime
+nexus_seed/processes/     Project routing and Resource observation handlers
+nexus_seed/providers/     A2A client and Project Agent transport
+nexus_seed/cockpit/       Project/Knowledge-centered dependency-free Web UI
 tests/                    unit, acceptance, and restart-convergence tests
 ```
 
@@ -736,7 +710,7 @@ tests/                    unit, acceptance, and restart-convergence tests
 
 ```powershell
 pytest
-python -m nexus_seed.demo
+python -m nexus_seed.app --once
 ```
 
 `pytest` never needs an external Agent: the orchestrator tests use
@@ -752,9 +726,6 @@ pytest tests/integration
 
 ## Documentation
 
-- [Project Orchestrator redesign inventory](docs/orchestrator-redesign-inventory.md)
-- [Architecture and phase history](docs/architecture.md)
-- [Architecture inventory](docs/architecture-inventory.md)
+- [Architecture](docs/architecture.md)
 - [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)
-- [機能棚卸し（日本語）](docs/architecture-inventory.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)

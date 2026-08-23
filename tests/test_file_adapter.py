@@ -212,8 +212,8 @@ async def test_the_adapter_does_not_interpret_content(tmp_path):
 
     # A real change to world state is described in the file, and ignored.
     assert runtime.state_store.get("D1_CD", "target") is None
-    assert runtime.observation_store.all() == []
-    assert runtime.state_delta_store.all() == []
+    assert not hasattr(runtime, "observation_store")
+    assert not hasattr(runtime, "state_delta_store")
     payload = runtime.event_store.all()[0].payload
     assert set(payload) == {"path", "change_type", "size", "mtime", "content_hash"}
     runtime.close()

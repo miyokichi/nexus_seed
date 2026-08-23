@@ -1,14 +1,15 @@
 """A2A transport for a Project Agent — the wire side of one whole delegation.
 
-:mod:`nexus_seed.providers.a2a` delegates *one Skill execution* to a remote
-agent.  This module delegates *one whole Project*: NEXUS SEED hands over the
+:mod:`nexus_seed.providers.a2a` supplies the shared JSON-RPC client. This module
+delegates one whole Project: NEXUS SEED hands over the
 goal, its context, its constraints and a workspace, and the remote agent breaks
 the goal down, chooses from its own skills, runs its own tools and answers with
 the small set of messages the orchestrator understands.
 
 What Skills that agent has is the agent's own configuration.  NEXUS SEED does
 not read them, does not send them, and does not know what they are — its own
-Skill roots are for what *it* can do (see :mod:`nexus_seed.skills_config`).
+Skill roots describe what an Agent can do; Project Agent configuration itself
+is owned by :mod:`nexus_seed.orchestrator_config`.
 
 It reuses the existing :class:`~nexus_seed.providers.a2a.A2AClient`, endpoint
 settings and poll loop rather than adding a second protocol client, and it is

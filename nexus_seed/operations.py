@@ -8,7 +8,6 @@ server owns the normal read/write connection.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 import json
 from pathlib import Path
 import sqlite3
@@ -19,35 +18,6 @@ import uuid
 
 class OperationalCommandError(RuntimeError):
     """Raised when an operational CLI command cannot be completed."""
-
-
-@dataclass(frozen=True, slots=True)
-class PendingReview:
-    """A reviewable condition recovered from a durable Continuation."""
-
-    continuation_id: str
-    process_instance_id: str
-    process_definition: str
-    resume_point: str
-    event_type: str
-    match_fields: dict[str, Any]
-    review_id: str
-    created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-serializable operator view."""
-
-        return {
-            "review_id": self.review_id,
-            "review_type": self.event_type.removesuffix("_reviewed"),
-            "event_type": self.event_type,
-            "match_fields": self.match_fields,
-            "process_definition": self.process_definition,
-            "process_instance_id": self.process_instance_id,
-            "continuation_id": self.continuation_id,
-            "resume_point": self.resume_point,
-            "created_at": self.created_at,
-        }
 
 
 def submit_webhook_event(
@@ -105,8 +75,10 @@ def submit_webhook_event(
         "source_event_key": key,
         **result,
     }
+
+
 def read_status(database_path: Path, *, limit: int = 10) -> dict[str, Any]:
-    """Read a compact operational status snapshot from SQLite."""
+    """Read a compact Project/Knowledge operational snapshot from SQLite."""
 
     path = database_path.resolve()
     if not path.is_file():
@@ -117,27 +89,29 @@ def read_status(database_path: Path, *, limit: int = 10) -> dict[str, Any]:
             "hint": "Run 'nexus-seed --once' to initialize the database.",
         }
     with _read_only_connection(path) as connection:
-        work_by_status = _group_counts(connection, "work_requirements", "status")
-        process_by_status = _group_counts(connection, "process_instances", "status")
+        project_by_status = _group_counts(connection, "orchestrator_projects", "status")
+        agent_by_status = _group_counts(connection, "orchestrator_agents", "status")
         delivery_by_status = _group_counts(connection, "event_deliveries", "status")
-        provider_by_status = _group_counts(connection, "provider_invocations", "status")
-        reviews = _pending_reviews(connection)
-        recent_work = _rows(
+        knowledge_by_kind = _group_counts(connection, "knowledge_revisions", "kind")
+        pending_reviews = connection.execute(
+            "SELECT COUNT(*) AS count FROM knowledge_revisions WHERE status = ?",
+            ("PENDING_REVIEW",),
+        ).fetchone()
+        recent_projects = _rows(
             connection,
             """
-            SELECT id, work_type, status, priority, reason, updated_at
-            FROM work_requirements
+            SELECT id, goal, status, priority, assigned_agent_id, summary, updated_at
+            FROM orchestrator_projects
             ORDER BY updated_at DESC
             LIMIT ?
             """,
             (limit,),
         )
-        recent_processes = _rows(
+        recent_agents = _rows(
             connection,
             """
-            SELECT id, definition_name, definition_version, status,
-                   retry_count, last_error, updated_at
-            FROM process_instances
+            SELECT agent_id, project_id, runtime, status, endpoint, updated_at
+            FROM orchestrator_agents
             ORDER BY updated_at DESC
             LIMIT ?
             """,
@@ -149,74 +123,18 @@ def read_status(database_path: Path, *, limit: int = 10) -> dict[str, Any]:
             "database": str(path),
             "counts": {
                 "events": _table_count(connection, "events"),
-                "continuations": _table_count(connection, "continuations"),
-                "pending_reviews": len(reviews),
+                "projects": _table_count(connection, "orchestrator_projects"),
+                "agents": _table_count(connection, "orchestrator_agents"),
+                "knowledge_revisions": _table_count(connection, "knowledge_revisions"),
+                "pending_reviews": int(pending_reviews["count"]),
             },
-            "work_by_status": work_by_status,
-            "processes_by_status": process_by_status,
+            "projects_by_status": project_by_status,
+            "agents_by_status": agent_by_status,
             "deliveries_by_status": delivery_by_status,
-            "provider_invocations_by_status": provider_by_status,
-            "recent_work": recent_work,
-            "recent_processes": recent_processes,
+            "knowledge_by_kind": knowledge_by_kind,
+            "recent_projects": recent_projects,
+            "recent_agents": recent_agents,
         }
-
-
-def read_pending_reviews(database_path: Path) -> list[PendingReview]:
-    """Return all durable human-review Continuations from SQLite."""
-
-    path = database_path.resolve()
-    if not path.is_file():
-        raise OperationalCommandError(
-            f"database does not exist: {path}; run 'nexus-seed --once' first"
-        )
-    with _read_only_connection(path) as connection:
-        return _pending_reviews(connection)
-
-
-def resolve_pending_review(database_path: Path, review_id: str) -> PendingReview:
-    """Resolve an operator-facing id to exactly one pending review."""
-
-    needle = review_id.strip()
-    matches = [
-        review
-        for review in read_pending_reviews(database_path)
-        if needle
-        in {
-            review.review_id,
-            review.continuation_id,
-            *(str(value) for value in review.match_fields.values()),
-        }
-    ]
-    if not matches:
-        raise OperationalCommandError(
-            f"no pending review matches {review_id!r}; run 'nexus-seed reviews'"
-        )
-    if len(matches) > 1:
-        ids = ", ".join(review.continuation_id for review in matches)
-        raise OperationalCommandError(
-            f"review id {review_id!r} is ambiguous ({ids}); use a continuation id"
-        )
-    return matches[0]
-
-
-def build_review_payload(
-    review: PendingReview,
-    decision: str,
-    extra_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a review Event payload without allowing its match key to drift."""
-
-    payload = dict(review.match_fields)
-    for key, value in (extra_payload or {}).items():
-        if key in payload and payload[key] != value:
-            raise OperationalCommandError(
-                f"--payload cannot replace review match field {key!r}"
-            )
-        payload[key] = value
-    payload["decision"] = decision.strip().lower()
-    if not payload["decision"]:
-        raise OperationalCommandError("review decision must not be empty")
-    return payload
 
 
 def _webhook_url(host: str, port: int) -> str:
@@ -262,72 +180,3 @@ def _rows(
     connection: sqlite3.Connection, query: str, parameters: tuple[Any, ...] = ()
 ) -> list[dict[str, Any]]:
     return [dict(row) for row in connection.execute(query, parameters).fetchall()]
-
-
-def _pending_reviews(connection: sqlite3.Connection) -> list[PendingReview]:
-    rows = connection.execute(
-        """
-        SELECT c.id AS continuation_id, c.process_instance_id, c.resume_point,
-               c.waiting_for, c.created_at, p.definition_name
-        FROM continuations AS c
-        JOIN process_instances AS p ON p.id = c.process_instance_id
-        ORDER BY c.created_at ASC, c.id ASC
-        """
-    ).fetchall()
-    reviews: list[PendingReview] = []
-    for row in rows:
-        try:
-            waiting_for = json.loads(row["waiting_for"])
-        except (TypeError, ValueError):
-            continue
-        for condition in _flat_conditions(waiting_for):
-            event_type = str(condition.get("event_type") or "")
-            if not event_type.endswith("_reviewed"):
-                continue
-            match_fields = {
-                str(key): value
-                for key, value in condition.items()
-                if key != "event_type"
-            }
-            review_id = _review_id(match_fields, str(row["continuation_id"]))
-            reviews.append(
-                PendingReview(
-                    continuation_id=str(row["continuation_id"]),
-                    process_instance_id=str(row["process_instance_id"]),
-                    process_definition=str(row["definition_name"]),
-                    resume_point=str(row["resume_point"]),
-                    event_type=event_type,
-                    match_fields=match_fields,
-                    review_id=review_id,
-                    created_at=str(row["created_at"]),
-                )
-            )
-    return reviews
-
-
-def _flat_conditions(waiting_for: object) -> list[dict[str, Any]]:
-    if not isinstance(waiting_for, dict):
-        return []
-    alternatives = waiting_for.get("any")
-    if isinstance(alternatives, list):
-        flattened: list[dict[str, Any]] = []
-        for alternative in alternatives:
-            flattened.extend(_flat_conditions(alternative))
-        return flattened
-    return [waiting_for]
-
-
-def _review_id(match_fields: dict[str, Any], fallback: str) -> str:
-    preferred = (
-        "proposal_id",
-        "installation_plan_id",
-        "acquisition_session_id",
-        "plan_id",
-    )
-    for key in preferred:
-        if key in match_fields:
-            return str(match_fields[key])
-    for key, value in match_fields.items():
-        if key.endswith("_id"):
-            return str(value)
-    return fallback

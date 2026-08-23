@@ -61,7 +61,7 @@ TERMINAL_ESCALATIONS = {
 
 def settings() -> ProjectAgentSettings:
     """Real Project Agent settings, whatever the developer's .env happens to say."""
-    return ProjectAgentSettings(runtime="a2a", url=AGENT_URL, skill_roots=("./skills",))
+    return ProjectAgentSettings(runtime="a2a", url=AGENT_URL)
 
 
 def orchestrator(db_path) -> ProjectOrchestrator:

@@ -1,7 +1,7 @@
 """Configuration for the Project Orchestrator and the Project Agent it uses.
 
 Application wiring, like :mod:`nexus_seed.llm_config` and
-:mod:`nexus_seed.federation_config` — it reads the environment and builds a
+:mod:`nexus_seed.providers` — it reads the environment and builds a
 :class:`~nexus_seed.orchestrator.ProjectOrchestrator` whose Project Agents run
 either in this process or in a real external Agent Runtime::
 
@@ -11,11 +11,9 @@ either in this process or in a real external Agent Runtime::
 The token-by-environment-variable rule is the existing external-agent setting,
 reused rather than duplicated: no token is ever written to the database.
 
-What Skills the Project Agent has is *not* configured here.  A Project is
-delegated as a goal, not as a method: the Agent reads its own skills from its
-own configuration file, and NEXUS SEED neither sends them nor knows them.
-``NEXUS_SEED_SKILL_ROOTS`` is for what NEXUS SEED itself can do — see
-:mod:`nexus_seed.skills_config`.
+What Skills an external Project Agent has is *not* configured here. A Project
+is delegated as a goal, not as a method: the Agent reads its own configuration,
+and NEXUS SEED neither sends nor inventories its Skills.
 """
 
 from __future__ import annotations

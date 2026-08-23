@@ -12,6 +12,267 @@ NEXUS SEEDが管理します。Task分解、Capability選択、Tool利用、実�
 
 *[English](README.md)*
 
+## クイックスタート
+
+### 1. インストール
+
+Python 3.12以上が必要です。`uv`を使う場合は次のとおりです。
+
+```bash
+uv sync --extra dev
+cp .env.example .env
+```
+
+Windows PowerShellでは、設定ファイルのコピーは次のように行います。
+
+```powershell
+uv sync --extra dev
+Copy-Item .env.example .env
+```
+
+`uv`を使わない場合は、virtual environmentを作成してeditable installできます。
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+```
+
+以降、`uv`を使う場合は各commandを`uv run nexus-seed ...`として実行してください。
+editable install済みのenvironmentでは`nexus-seed ...`だけで実行できます。
+
+### 2. 最小設定
+
+`.env`で少なくとも次を確認してください。data directoryはsource repositoryの外を
+指定します。空欄の場合は`~/.nexus_seed`が使われます。
+
+```dotenv
+NEXUS_SEED_DATA_DIR=/path/to/nexus-seed-data
+NEXUS_SEED_WEBHOOK_HOST=127.0.0.1
+NEXUS_SEED_WEBHOOK_PORT=8787
+NEXUS_SEED_WEBHOOK_TOKEN=change-this-token
+NEXUS_SEED_COCKPIT_ENABLED=true
+NEXUS_SEED_KNOWLEDGE_LOOP_ENABLED=true
+NEXUS_SEED_PROJECT_AGENT_RUNTIME=in_process
+```
+
+Windowsでは、例えば`NEXUS_SEED_DATA_DIR=C:/Users/USER/AppData/Local/nexus-seed`
+のように指定できます。
+
+NEXUS SEED自身に状況評価やsemantic routingをさせる場合はLLMも設定します。
+OpenAI互換のlocal serverを使う例です。
+
+```dotenv
+NEXUS_SEED_LLM_ENABLED=true
+NEXUS_SEED_LLM_PROVIDER=openai_compatible
+NEXUS_SEED_LLM_BASE_URL=http://127.0.0.1:1234/v1
+NEXUS_SEED_LLM_MODEL=local-model
+NEXUS_SEED_LLM_API_KEY_ENV=OPENAI_API_KEY
+OPENAI_API_KEY=
+```
+
+設定内容はsecretを表示せず確認できます。
+
+```bash
+nexus-seed config
+nexus-seed --check-llm  # LLMを有効にした場合だけ
+```
+
+LLMを無効にしても、永続Runtime、Ingress、Knowledge記録、Cockpit、Project管理は
+動作します。ただしSituation EvaluatorはProject Proposalを生成せず、現在の
+`in_process` Agentは成果を推測せずに人へ確認を求めます。
+
+### 3. 起動と終了
+
+通常運転ではserverを1つ起動したままにします。
+
+```bash
+nexus-seed
+# 同等: nexus-seed serve
+```
+
+起動後にブラウザで次を開きます。
+
+```text
+http://127.0.0.1:8787/cockpit
+```
+
+token入力を求められたら、`.env`の`NEXUS_SEED_WEBHOOK_TOKEN`を入力します。終了は
+terminalで`Ctrl+C`です。Project、Knowledge、観測checkpoint、review判断はSQLiteへ
+保存されているため、同じ`.env`で再起動すれば途中から再開します。
+
+serverを起動せず、回収可能な処理を一度だけ進めて終了するには次を使います。
+
+```bash
+nexus-seed --once
+```
+
+### 4. Cockpitの使い方
+
+Cockpitには次の画面があります。
+
+| 画面 | 用途 |
+| --- | --- |
+| **Overview** | runtime、Project、review待ち、エラーの概要 |
+| **World** | 観測元、World facts、Proposal、質問、Entity、成果物の確認 |
+| **Activity** | 最近のEvent・Process・Project活動 |
+| **Projects** | Projectの状態、担当Agent、blocker、A2A履歴、追加指示 |
+| **System** | durable event deliveryとProcess failureの診断情報 |
+
+#### PC環境を明示的に観測する
+
+PC情報は自動では読み取りません。**World → Observation Sources**で次の操作をします。
+
+1. 観測元の名前と観測間隔を入力する。
+2. 読み取りを許可する項目だけを選ぶ。
+3. **登録して観測**を押す。
+
+選択できる項目は、OS、ホスト名、CPU論理数、物理メモリ量、
+`NEXUS_SEED_DATA_DIR`のdisk使用量だけです。process一覧、任意のfile内容、user directoryを
+暗黙に走査することはありません。
+
+登録後は、次の操作ができます。
+
+- **今すぐ観測** — polling間隔を待たずに読み取る
+- **停止** — 設定と履歴を残したまま自動観測を止める
+- **再開** — 同じ観測元を再び有効にする
+
+初回と値が変化したときだけ`system_snapshot_observed` EventがIngressを通ります。
+値が同じ場合はKnowledgeを重複生成しません。観測元、差分判定checkpoint、最終Event、
+エラーは再起動後も保持されます。1つの観測元が失敗しても、他の観測元は継続します。
+
+#### fileをKnowledgeへ取り込む
+
+起動時に次のdirectoryが作成され、継続監視されます。
+
+```text
+NEXUS_SEED_DATA_DIR/resources
+```
+
+この中へplain text、JSON、CSVを置くと、fileの作成・変更がIngressを通り、Resource、
+immutableなResourceVersion、抽出Representationとして記録された後、Knowledge loopへ
+入ります。同じ内容は重複versionになりません。directory外のfileは監視しません。
+PowerPointは後述の`nexus-seed-knowledge pptx`を使用してください。
+
+#### 手動で状況を伝える
+
+**World → Record Observation**へ自由文を入力します。入力は直接World factになるのではなく、
+まず出典付きKnowledgeとして保存されます。LLMが有効ならSituation Evaluatorが現在の
+World Viewと進行中Projectを比較し、必要に応じてProject Proposalを作ります。
+
+#### 人による確認
+
+| Cockpit上の項目 | 操作後の挙動 |
+| --- | --- |
+| Project Proposal | 承認するとProjectへrouting、拒否すると実行しない |
+| Artifact | 承認すると`APPROVED`、差し戻すと理由を同じProject・同じAgentへ返す |
+| Completion Review | 承認するとProject完了、差し戻すと同じAgentが作業を再開 |
+| Question | 回答をKnowledgeへ記録し、待っているProjectへ返す |
+| Unknown Entity | canonical Entity IDを確認するか、別Entityとして確定する |
+
+ArtifactとCompletion Reviewは初め`PENDING_REVIEW`です。判断はKnowledge revisionとして
+永続化されるため、二重clickや再起動で同じ指示が重複することはありません。Unknown Entityを
+canonical IDとして確認すると、関連Observationもそのcanonical EntityのWorld factとして
+再投影されます。
+
+### 5. 依頼を出す
+
+常駐serverへ依頼する通常の入口は`task`です。受付後すぐに戻り、処理状況はCockpitで
+確認します。
+
+```bash
+nexus-seed task "resources/sales.csvを分析し、売上低下の要因をまとめて"
+```
+
+同じ外部requestの再送を重複させたくない場合は安定したsource keyを渡します。
+
+```bash
+nexus-seed task "売上低下の要因をまとめて" --source-key request-2026-08-24-001
+```
+
+serverを起動していない状態でProjectを直接作成し、結果を待つには`project`を使います。
+
+```bash
+nexus-seed project "売上低下の要因をまとめて"
+nexus-seed project "時間のかかる調査" --no-wait
+nexus-seed project "結果をJSONで取得" --json
+```
+
+`project`はSQLiteを直接開くため、同じdata directoryで常駐serverが動いている間は使わず、
+`task`を使用してください。現在状態の読み取りには次を使えます。
+
+```bash
+nexus-seed status
+nexus-seed status --json
+```
+
+### 6. 自律loopで何が起こるか
+
+```text
+System Snapshot / resources / manual input
+                 |
+                 v
+        Ingress（外部identityで重複排除）
+                 |
+                 v
+      Knowledge Ledger + World Projection
+                 |
+                 v
+       Situation Evaluator（LLM、任意）
+                 |
+                 v
+       Project Proposal + deterministic policy
+                 |
+          +------+------+
+          |             |
+     low-risk auto   human review
+          |             |
+          +------+------+
+                 v
+       Project Orchestrator -> 1 Project / 1 Agent
+                 |
+                 v
+      result / artifact / question / escalation
+                 |
+                 +---------> Knowledgeへ戻り、次の評価へ
+```
+
+自動承認されるのは、証拠があり、confidenceが十分高い、low-riskかつread-onlyのProposalだけ
+です。それ以外はWorld画面で人の判断を待ちます。Runtimeやbackendにはこの判断を置かず、
+Knowledge loopのdeterministic policyが決定します。
+
+### 7. 外部A2A Agentへ実作業を委譲する
+
+`in_process` AgentはProject contextの推論だけを行い、fileやtoolを直接操作しません。
+実作業をさせる場合はA2A対応Agent Runtimeを別processで起動し、`.env`を切り替えます。
+
+```dotenv
+NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a
+NEXUS_SEED_PROJECT_AGENT_URL=http://127.0.0.1:8801
+NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV=
+NEXUS_SEED_PROJECT_AGENT_TIMEOUT_SECONDS=900
+NEXUS_SEED_PROJECT_WORKSPACE=projects
+```
+
+変更後にNEXUS SEEDを再起動します。NEXUS SEEDはProjectのgoal、context、constraints、
+workspaceを渡し、AgentがTask分解、Skill、toolを選びます。AgentのSkill inventoryは
+NEXUS SEED側へ複製しません。詳しい起動例は[実Agentでの実行](#実agentでの実行)を参照してください。
+
+### 8. よくある問題
+
+| 状況 | 確認すること |
+| --- | --- |
+| Cockpitが`401`になる | `.env`と画面に入力した`NEXUS_SEED_WEBHOOK_TOKEN`が同じか |
+| Cockpitを開けない | serverが起動中か、host/portが一致するか、`NEXUS_SEED_COCKPIT_ENABLED=true`か |
+| Knowledgeは増えるがProposalが出ない | `NEXUS_SEED_LLM_ENABLED`とLLM接続。提案不要という評価も正常 |
+| `in_process` Agentが人へ確認を求める | tool/file操作をしないbounded Agentの仕様。実作業にはA2A Agentを設定 |
+| fileが取り込まれない | `NEXUS_SEED_DATA_DIR/resources`内か、Knowledge loopが有効か、形式が対応済みか |
+| System Snapshotを押してもEventが増えない | 前回と値が同じ場合は正常に重複抑止される |
+| follow-upが別Projectになる | routing LLMの接続・timeoutと、元ProjectがCockpitに残っているか |
+
+より細かな設定値は[`.env.example`](.env.example)、内部境界は
+[アーキテクチャ詳細](docs/architecture.ja.md)を参照してください。
+
 ## 現在の実装状況
 
 新しいProject OrchestratorはPython APIとして利用でき、次を実装済みです。
@@ -23,18 +284,14 @@ NEXUS SEEDが管理します。Task分解、Capability選択、Tool利用、実�
 - 再起動時にreconcileされる、Project・Agent・委譲状態の永続化
 - テストやローカル統合向けの決定的な`InProcessAgentRuntime`
 - Project全体を実際の外部AgentへA2Aで委譲する`A2AAgentRuntime`
-- `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`により、`nexus-seed task`・webhook・
-  各種connectorからの通常requestをProjectへrouting
+- `nexus-seed task`・webhook・各種connectorからの通常requestを常にProjectへrouting
 - Cockpitの**Projects**画面（orchestrator自身のrecordを表示）
 
-今回も意図的に作っていないもの: 1 Projectへの複数Agent、Agent同士の直接通信、
-そして`orchestrator_projects`と従来のGoal由来projectionの統合です。2種類のProjectは
-統合せず、別々に表示します。
-
-従来のdurable runtimeは互換applicationとしてリポジトリに残り、テストも維持されています。
-各moduleの`KEEP`、`MOVE_TO_AGENT_RUNTIME`、`DEPRECATE`の分類は
-[再設計の棚卸し](docs/orchestrator-redesign-inventory.md)を参照してください。この再設計では
-既存moduleを削除していません。
+今回も意図的に作っていないものは、1 Projectへの複数AgentとAgent同士の直接通信です。
+旧Action／Work／Capability／Planning／自己拡張pipelineはProject Agent側の責務となったため
+削除済みです。Event配信、Process再開、Ingress、Resource、Contextなど、Orchestratorと
+Knowledge loopが利用するdurable runtime機構だけを残しています。既存SQLite DBに残る旧tableは
+履歴として保持されますが、新規DBには作成されません。
 
 ## Knowledge Runtime
 
@@ -59,12 +316,40 @@ Agent Runtime          どう実行するか
 - 検出したGap/Risk/Opportunityを、既存の`ProjectOrchestrator.submit()`経由の通常requestへ
   変換するGoal bridge（Projectを直接作成することはありません）
 
-現時点で2通りの使い方があります。library（`nexus_seed.knowledge`、専用test一式
-`tests/test_knowledge_*.py`あり）と、コマンドライン（`nexus-seed-knowledge`、
-後述）です。`app.py`・demo・Cockpitへの組み込みはまだ行っていません —
-通常のrequest経路から自動的にKnowledgeになることはありません。詳細は
+library（`nexus_seed.knowledge`）、専用CLI（`nexus-seed-knowledge`）に加え、
+applicationではautonomous Knowledge loopとしても
+利用できます。許可された`NEXUS_SEED_DATA_DIR/resources`とCockpitの手動観測が
+Knowledgeになり、Situation EvaluatorがProject Proposalを作り、低risk・高confidence・
+read-onlyだけを自動実行します。それ以外はCockpitのWorld画面で人間を待ちます。
+Agentの成果物・観測・質問は再びKnowledgeへ戻ります。Agentが完了を報告してもProjectは
+すぐには完了せず、`WAITING_REVIEW`で停止します。成果物は`PENDING_REVIEW`として保存され、
+Cockpitで承認すると`APPROVED`になってProjectが完了します。差し戻すと`REJECTED`になり、
+理由を含む修正Taskが同じProject・同じAgentへ返されます。承認・差し戻しはKnowledgeの
+新しいrevisionとして残るため、再起動や二重操作でも判断と作業は重複しません。詳細は
 [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)と[AGENTS.md](AGENTS.md)（英語）の
 不変条件を参照してください。
+
+### Autonomous Knowledge loop
+
+```bash
+NEXUS_SEED_KNOWLEDGE_LOOP_ENABLED=true
+NEXUS_SEED_PROJECT_AGENT_RUNTIME=in_process
+NEXUS_SEED_LLM_ENABLED=true
+```
+
+起動後、`NEXUS_SEED_DATA_DIR/resources`だけがlocal inboxとして監視されます。別のuser
+directoryを暗黙に読むことはありません。PC環境も自動では読みません。Cockpitの
+**World**画面でSystem Snapshot観測元を登録し、OS・ホスト名・CPU・メモリ・
+`NEXUS_SEED_DATA_DIR`の使用量から許可した項目だけを継続観測できます。変化がない
+snapshotは再投入せず、設定とcheckpointは再起動後も保持されます。同画面では、手動観測、現在の
+World facts、Project Proposal、Agentの質問、未解決Entity、成果物、raw Knowledgeを同じ
+provenanceから確認できます。Completion ReviewsとArtifactsでは、完了報告全体または
+個別成果物を承認・差し戻しできます。
+
+現在の`in_process` Agentは、設定されたNEXUS SEED LLMを使い、Projectに渡されたEvidence
+だけを分析するbounded Agentです。直接file/tool操作は行いません。LLMが無効なら、成果を
+装わず`NEED_HUMAN_INPUT`になります。将来`NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a`へ変更しても、
+Knowledge loopとProject Orchestratorのinterfaceは変わりません。
 
 ### Knowledge Runtimeの使い方（Python）
 
@@ -122,9 +407,8 @@ async def main() -> None:
     k2 = ledger.record("A案のDRC riskが顕在化し、process側が追加工程を許容可能とした。", source_type="report")
     annotate_world_fact(ledger, k2.knowledge_id, entity="project-A", attribute="risk", value="none")
 
-    # 4) 2つのWorld Viewの差分を取り、既存のevent loopへ流せます
-    #    （diff.to_events()の各eventを runtime.submit_event(event) へ）—
-    #    apply_state_deltaが出す"state_changed"と同じ形式です。
+    # 4) 2つのWorld Viewの差分を取り、event loopへ流せます
+    #    （diff.to_events()の各eventを runtime.submit_event(event) へ）。
     view_after = WorldStateProjection(ledger).view()
     diff = diff_world_views(view_before, view_after)
     for change in diff.changes:
@@ -396,8 +680,8 @@ Goal:    Analyze sales data to identify reasons for low sales in July 2026 ...
 Summary: ~92% of the revenue drop is concentrated in one store/category ...
 ```
 
-NEXUS SEEDが渡すのはgoal、context、constraints、workspace、そして`skills/`にある
-Skillのcontractまでです。Task分解、順序、どのSkillを使うかはProject Agentが決めます。
+NEXUS SEEDが渡すのはgoal、context、constraints、workspaceです。Task分解、順序、
+利用するSkillやtoolはProject Agent自身が決め、NEXUS SEEDはそれらをinventoryしません。
 自力で続行できない場合はretryを繰り返さずescalationを返し、Projectはその理由とともに
 blockされます。
 
@@ -423,12 +707,7 @@ runtimeで動きます。orchestration自体はどちらでも同一です。
 
 ## 通常運転
 
-Project Orchestratorを有効にすると、通常のrequestがProjectになります。NEXUS SEEDを
-常駐させ、これまでどおりの入口から依頼します。
-
-```dotenv
-NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED=true
-```
+通常のrequestは常にProjectになります。NEXUS SEEDを常駐させ、次の入口から依頼します。
 
 ```powershell
 nexus-seed                                        # 常駐起動
@@ -449,12 +728,8 @@ SQLiteへ記録するため、実行途中でNEXUS SEEDを停止しても失わ�
 Agentをre-adoptし、停止中に起きたことを回収します。Agent Runtimeへ到達できない場合は
 上限付きでretryし、それ以上は追わずに放置します。Projectのblockerにはしません。
 
-状況はCockpitの**Projects**画面（`/cockpit`）で確認できます。従来のGoal由来projectionは
-**Goal Projects**として残しています。同じ「Project」という語でも別物なので、統合せず
-分けて表示します。
-
-なお`nexus-seed task`は従来どおりWorld Stateの解釈経路も通ります。このflagはProjectへの
-経路を追加するものであり、知覚を止めるものではありません。
+状況はCockpitの**Projects**画面（`/cockpit`）で確認できます。外部の状況、Project提案、
+成果物、完了確認、Agentからの質問は**World**画面に集約されます。
 
 ### BLOCKED Projectの再開
 
@@ -479,9 +754,8 @@ ProjectRouterにはactiveなProjectだけでなくBLOCKED・WAITING_HUMANのProj
 記録します。follow-upが新規Projectになり続ける場合は、この timeout を延ばすか
 （大きなlocal modelでは数分かかることがあります）、routingに速いmodelを使ってください。
 
-## 互換application
+## Application設定
 
-新しいorchestratorの統合中も、従来のevent-processing applicationは利用できます。
 source tree外のdata directoryとwebhook tokenを設定してください。
 
 ```dotenv
@@ -499,18 +773,14 @@ nexus-seed --once
 nexus-seed
 ```
 
-互換Cockpitは`http://127.0.0.1:8787/cockpit`で開きます。主なコマンドは次のとおりです。
+Cockpitは`http://127.0.0.1:8787/cockpit`で開きます。主なコマンドは次のとおりです。
 
 ```powershell
 nexus-seed status
 nexus-seed task "この依頼を分析して"
-nexus-seed reviews
-nexus-seed review <review-id> approve
-nexus-seed control '/status'
+nexus-seed project "この依頼を直接Projectとして実行して"
+nexus-seed config
 ```
-
-これらのコマンドが操作するのは、従来のdurable Goal / Work / Capability runtimeです。
-新しい`ProjectOrchestrator` APIではありません。
 
 ## 設計境界
 
@@ -539,12 +809,10 @@ nexus_seed/knowledge/     Knowledge Ledger、World Projection、Consolidation、
 nexus_seed/orchestrator/  Project routing、lifecycle、Agent割り当て、A2A
 nexus_seed/storage/       orchestrator recordを含むSQLite store
 nexus_seed/core/          固定された6つのdata model
-nexus_seed/runtime/       従来のdurable event runtime
-nexus_seed/processes/     従来のProcess handler
-nexus_seed/providers/     Provider federation、A2A client、Project Agent transport
-nexus_seed/control/       互換Command、Human identity、Goal
-nexus_seed/cockpit/       互換read modelと依存なしのWeb UI
-skills/                   directory Skill（skill.json + SKILL.md）
+nexus_seed/runtime/       durable event / continuation runtime
+nexus_seed/processes/     Project routing、Resource観測のProcess handler
+nexus_seed/providers/     A2A client、Project Agent transport
+nexus_seed/cockpit/       Project / Knowledge中心のWeb UI
 tests/                    unit、acceptance、restart convergence test
 ```
 
@@ -552,7 +820,7 @@ tests/                    unit、acceptance、restart convergence test
 
 ```powershell
 pytest
-python -m nexus_seed.demo
+python -m nexus_seed.app --once
 ```
 
 `pytest`は外部Agentを必要としません。orchestratorのtestは`InProcessAgentRuntime`を、
@@ -567,9 +835,6 @@ pytest tests/integration
 
 ## 詳細資料
 
-- [Project Orchestrator再設計の棚卸し](docs/orchestrator-redesign-inventory.md)
-- [ArchitectureとPhase履歴（英語）](docs/architecture.md)
-- [機能棚卸し（英語）](docs/architecture-inventory.md)
-- [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)
-- [機能棚卸し（日本語）](docs/architecture-inventory.ja.md)
+- [アーキテクチャ詳細](docs/architecture.ja.md)
+- [Architecture（英語）](docs/architecture.md)
 - [開発時の不変条件と作業規約](AGENTS.md)

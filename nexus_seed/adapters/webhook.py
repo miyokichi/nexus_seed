@@ -30,7 +30,6 @@ from urllib.parse import unquote
 
 from ..core.event import utcnow
 from ..ingress.models import IngressEnvelope, IngressStatus
-from ..reviews import DECISIONS
 
 logger = logging.getLogger("nexus_seed.adapters.webhook")
 
@@ -292,10 +291,8 @@ class WebhookServer:
             "/cockpit/api/orchestrator/projects/"
         ):
             return await self._orchestrator_action_response(clean_path, headers, raw_body)
-        if method.upper() == "POST" and clean_path.startswith("/cockpit/api/reviews/"):
-            return await self._review_decision_response(clean_path, headers, raw_body)
-        if method.upper() == "POST" and clean_path.startswith("/cockpit/api/questions/"):
-            return await self._question_answer_response(clean_path, headers, raw_body)
+        if method.upper() == "POST" and clean_path.startswith("/cockpit/api/knowledge"):
+            return await self._knowledge_action_response(clean_path, headers, raw_body)
         if method.upper() == "POST" and clean_path.startswith("/projects/"):
             return await self._project_chat_response(clean_path, headers, raw_body)
         if method.upper() != "POST":
@@ -469,15 +466,10 @@ class WebhookServer:
             )
         return WebhookResponse(200, result, headers=security_headers)
 
-    async def _review_decision_response(
+    async def _knowledge_action_response(
         self, path: str, headers: dict[str, str], raw_body: bytes
     ) -> WebhookResponse:
-        """Settle one waiting review.
-
-        Approval is not a command: the waiting Continuation named an event, and
-        this emits it.  Any channel that can reach here can decide, which is
-        the point — the review path must outlive the command surface.
-        """
+        """Record evidence or settle a Knowledge-loop human decision."""
 
         security_headers = {
             "Cache-Control": "no-store",
@@ -491,13 +483,6 @@ class WebhookServer:
             return WebhookResponse(
                 401, {"error": "unauthorized"}, headers=security_headers
             )
-        parts = path.strip("/").split("/")
-        # cockpit/api/reviews/<id>/<decision>
-        if len(parts) != 5 or parts[4] not in DECISIONS:
-            return WebhookResponse(
-                404, {"error": "unknown review path"}, headers=security_headers
-            )
-        review_id, decision = unquote(parts[3]), parts[4]
         try:
             body = json.loads(raw_body or b"{}")
         except ValueError:
@@ -508,70 +493,99 @@ class WebhookServer:
             return WebhookResponse(
                 400, {"error": "body must be a JSON object"}, headers=security_headers
             )
-        note = body.get("note")
-        try:
-            result = await self.cockpit.review_decision(
-                review_id, decision, note=note if isinstance(note, str) else None
-            )
-        except ValueError as exc:
-            return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
-        if result is None:
-            return WebhookResponse(
-                404,
-                {"error": "no review is waiting on that identifier"},
-                headers=security_headers,
-            )
-        return WebhookResponse(200, result, headers=security_headers)
 
-    async def _question_answer_response(
-        self, path: str, headers: dict[str, str], raw_body: bytes
-    ) -> WebhookResponse:
-        """Answer one question NEXUS SEED asked about itself."""
-
-        security_headers = {
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
-        }
-        if self.cockpit is None:
-            return WebhookResponse(
-                404, {"error": "cockpit is disabled"}, headers=security_headers
-            )
-        if not self.ingress.authorize(_token_from(headers)):
-            return WebhookResponse(
-                401, {"error": "unauthorized"}, headers=security_headers
-            )
         parts = path.strip("/").split("/")
-        # cockpit/api/questions/<id>/answer
-        if len(parts) != 5 or parts[4] != "answer":
-            return WebhookResponse(
-                404, {"error": "unknown question path"}, headers=security_headers
-            )
-        question_id = unquote(parts[3])
         try:
-            body = json.loads(raw_body or b"{}")
-        except ValueError:
-            return WebhookResponse(
-                400, {"error": "body is not valid JSON"}, headers=security_headers
-            )
-        if not isinstance(body, dict):
-            return WebhookResponse(
-                400, {"error": "body must be a JSON object"}, headers=security_headers
-            )
-        answer = body.get("answer")
-        if not isinstance(answer, str) or not answer.strip():
-            return WebhookResponse(
-                400,
-                {"error": "answer must be a non-empty string"},
-                headers=security_headers,
-            )
-        try:
-            result = await self.cockpit.answer_self_question(question_id, answer)
+            if parts == ["cockpit", "api", "knowledge", "sources"]:
+                name = body.get("name")
+                fields = body.get("fields")
+                interval = body.get("poll_interval_seconds", 60)
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("name must be a non-empty string")
+                if not isinstance(fields, list) or not all(
+                    isinstance(item, str) for item in fields
+                ):
+                    raise ValueError("fields must be an array of strings")
+                try:
+                    poll_interval = float(interval)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("poll_interval_seconds must be a number") from exc
+                result = await self.cockpit.create_observation_source(
+                    name=name,
+                    fields=fields,
+                    poll_interval_seconds=poll_interval,
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "sources"
+            ]:
+                source_id, action = unquote(parts[4]), parts[5]
+                if action == "poll":
+                    result = await self.cockpit.poll_observation_source(source_id)
+                elif action in {"enable", "disable"}:
+                    result = self.cockpit.set_observation_source_enabled(
+                        source_id, action == "enable"
+                    )
+                else:
+                    raise ValueError("source action must be poll, enable, or disable")
+            elif parts == ["cockpit", "api", "knowledge"]:
+                text = body.get("text")
+                source_key = body.get("source_event_key")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("text must be a non-empty string")
+                if not isinstance(source_key, str) or not source_key.strip():
+                    raise ValueError("source_event_key must be a non-empty string")
+                result = await self.cockpit.record_knowledge(
+                    text, source_event_key=source_key
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "proposals"
+            ]:
+                result = await self.cockpit.decide_knowledge_proposal(
+                    unquote(parts[4]), parts[5], note=str(body.get("note") or "")
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "questions"
+            ] and parts[5] == "answer":
+                answer = body.get("answer")
+                if not isinstance(answer, str) or not answer.strip():
+                    raise ValueError("answer must be a non-empty string")
+                result = await self.cockpit.answer_knowledge_question(
+                    unquote(parts[4]), answer
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "artifacts"
+            ]:
+                result = await self.cockpit.decide_knowledge_artifact(
+                    unquote(parts[4]),
+                    parts[5],
+                    note=str(body.get("note") or ""),
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "completion-reviews"
+            ]:
+                result = await self.cockpit.decide_knowledge_completion(
+                    unquote(parts[4]),
+                    parts[5],
+                    note=str(body.get("note") or ""),
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "entities"
+            ]:
+                canonical = body.get("canonical_id")
+                result = self.cockpit.decide_knowledge_entity(
+                    unquote(parts[4]),
+                    parts[5],
+                    canonical_id=str(canonical) if canonical else None,
+                )
+            else:
+                return WebhookResponse(
+                    404, {"error": "unknown knowledge path"}, headers=security_headers
+                )
         except ValueError as exc:
             return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
         if result is None:
             return WebhookResponse(
-                404,
-                {"error": "no open question with that identifier"},
+                404, {"error": "knowledge item not found or loop disabled"},
                 headers=security_headers,
             )
         return WebhookResponse(200, result, headers=security_headers)

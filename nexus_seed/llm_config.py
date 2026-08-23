@@ -15,10 +15,6 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from .backends.llm import LLMBackend
-from .construction.generator import LLMConstructionGenerator
-from .decision.selector import LLMPlanSelector
-from .extension.builder import LLMExtensionProposer
-from .processes.llm_interpret import bootstrap_llm_interpreter
 
 if TYPE_CHECKING:
     from .runtime.runtime import Runtime
@@ -148,9 +144,11 @@ def load_env_file(path: str | Path = ".env") -> Path | None:
 
 
 def configure_llm(
-    runtime: Runtime, *, env_file: str | Path = ".env"
+    runtime: Runtime,
+    *,
+    env_file: str | Path = ".env",
 ) -> LLMBackend | None:
-    """Connect every LLM-assisted process to one backend configured by ``.env``.
+    """Configure NEXUS SEED's single reasoning backend.
 
     When disabled, no LLM process or adapter is registered and deterministic
     fallbacks remain active.  Call this again whenever a Runtime is rebuilt;
@@ -169,10 +167,7 @@ def configure_llm(
         base_url=settings.base_url,
         timeout_seconds=settings.timeout_seconds,
     )
-    bootstrap_llm_interpreter(runtime, backend)
-    runtime.set_llm_plan_selector(LLMPlanSelector(backend))
-    runtime.set_llm_extension_proposer(LLMExtensionProposer(backend))
-    runtime.set_llm_construction_generator(LLMConstructionGenerator(backend))
+    runtime.register_backend("llm", backend)
     return backend
 
 

@@ -18,7 +18,7 @@ from nexus_seed.adapters.webhook import (
     _adapter_id_from_path,
     _token_from,
 )
-from nexus_seed.processes.semantic import bootstrap_semantic
+from nexus_seed.core.process import ProcessDefinition
 from nexus_seed.runtime.runtime import Runtime
 
 TOKEN = "test-shared-secret"
@@ -153,7 +153,19 @@ async def test_different_adapter_ids_get_separate_key_spaces(tmp_path):
 async def test_the_response_does_not_wait_for_the_work_it_causes(tmp_path):
     """Spec §29: the HTTP call returns once the Event is durable, not once it is handled."""
     runtime = Runtime(tmp_path / "wh.db")
-    bootstrap_semantic(runtime)
+    async def record(ctx):
+        ctx.state.set("D1_CD", "target", ctx.event.payload["new"], source_event=ctx.event.id)
+        return ctx.complete()
+
+    runtime.register_process(
+        ProcessDefinition(
+            name="record_change",
+            version="1",
+            handler="record_change",
+            trigger_event_types=("process_parameter_changed",),
+        ),
+        record,
+    )
     webhook = hook(runtime)
 
     response = await webhook.handle(

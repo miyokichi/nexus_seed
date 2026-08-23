@@ -99,15 +99,12 @@ def test_disabled_configuration_keeps_deterministic_fallbacks(tmp_path):
     runtime = Runtime(tmp_path / "disabled.db")
     try:
         assert configure_llm(runtime, env_file=env_file) is None
-        assert runtime.llm_plan_selector is None
-        assert runtime.llm_extension_proposer is None
-        assert runtime.llm_construction_generator is None
         assert "llm" not in runtime.backends
     finally:
         runtime.close()
 
 
-def test_enabled_configuration_wires_every_llm_role(tmp_path):
+def test_enabled_configuration_wires_the_reasoning_backend(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
@@ -132,9 +129,6 @@ def test_enabled_configuration_wires_every_llm_role(tmp_path):
         assert backend.model == "test-model"
         assert backend.max_tokens == 7777
         assert runtime.backends["llm"] is backend
-        assert runtime.llm_plan_selector.backend is backend
-        assert runtime.llm_extension_proposer.backend is backend
-        assert runtime.llm_construction_generator.backend is backend
     finally:
         runtime.close()
 

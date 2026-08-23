@@ -1,4 +1,4 @@
-"""The runnable Phase 1–5D application entry point."""
+"""The Project-centered runnable application entry point."""
 
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ _ENV_NAMES = (
     "NEXUS_SEED_CONTROL_IDENTITY",
     "NEXUS_SEED_OPERATOR_ID",
     "NEXUS_SEED_COCKPIT_ENABLED",
+    "NEXUS_SEED_KNOWLEDGE_LOOP_ENABLED",
+    "NEXUS_SEED_KNOWLEDGE_POLL_SECONDS",
     "NEXUS_SEED_LLM_ENABLED",
     "NEXUS_SEED_LLM_PROVIDER",
     "NEXUS_SEED_LLM_BASE_URL",
@@ -59,7 +61,7 @@ def write_env(path, data_dir, *, host="127.0.0.1", token="test-token"):
     )
 
 
-def test_build_runtime_bootstraps_the_complete_stack(tmp_path):
+def test_build_runtime_bootstraps_only_the_project_application_stack(tmp_path):
     env_file = tmp_path / ".env"
     data_dir = tmp_path / "data"
     write_env(env_file, data_dir)
@@ -68,15 +70,34 @@ def test_build_runtime_bootstraps_the_complete_stack(tmp_path):
     runtime = build_runtime(settings, env_file=env_file)
     try:
         names = {definition.name for definition in runtime.process_store.all_definitions()}
-        assert "interpret_event" in names
-        assert "compose_work_plan" in names
+        assert "route_request_to_project" in names
+        assert "resource_indexer" in names
+        assert "extract_resource" in names
         assert "watch_files" in names
-        assert "analyze_capability_gap" in names
-        assert "advance_capability_acquisition" in names
-        assert "activate_installed_extension" in names
-        assert "review_human_work" in names
-        assert "local_file" in runtime.backends
+        assert "interpret_resource" not in names
+        assert "interpret_event" not in names
+        assert "compose_work_plan" not in names
+        assert "analyze_capability_gap" not in names
+        assert "review_human_work" not in names
+        assert "local_file" not in runtime.backends
         assert "llm" not in runtime.backends
+        assert runtime.project_orchestrator is not None
+    finally:
+        runtime.close()
+
+
+def test_project_orchestrator_wires_the_knowledge_loop_and_local_inbox(tmp_path):
+    env_file = tmp_path / ".env"
+    data_dir = tmp_path / "data"
+    write_env(env_file, data_dir)
+    settings = AppSettings.from_env(env_file)
+
+    runtime = build_runtime(settings, env_file=env_file)
+    try:
+        assert runtime.project_orchestrator is not None
+        assert runtime.knowledge_loop is not None
+        assert "knowledge_local_file" in runtime.adapters
+        assert runtime.knowledge_loop.world_view() == {}
     finally:
         runtime.close()
 

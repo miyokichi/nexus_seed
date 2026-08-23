@@ -1,7 +1,7 @@
 """`nexus-seed project` — the Project Orchestrator's command-line entry point.
 
-`nexus-seed task` stays what it was (the durable Goal/Work runtime); this is the
-separate door into the orchestrator, and the two do not share a database row.
+`nexus-seed project` is the direct one-shot door; `task` reaches the same
+Project Orchestrator through the resident ingress server.
 """
 
 from __future__ import annotations
@@ -15,15 +15,11 @@ from nexus_seed.orchestrator import ProjectOrchestrator, ProjectStatus
 
 _ENV_NAMES = (
     "NEXUS_SEED_DATA_DIR",
-    "NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED",
     "NEXUS_SEED_LLM_ENABLED",
     "NEXUS_SEED_LLM_PROVIDER",
     "NEXUS_SEED_LLM_BASE_URL",
     "NEXUS_SEED_LLM_MODEL",
     "NEXUS_SEED_LLM_API_KEY_ENV",
-    "NEXUS_SEED_A2A_ENABLED",
-    "NEXUS_SEED_A2A_CONFIG",
-    "NEXUS_SEED_SKILL_ROOTS",
     "NEXUS_SEED_PROJECT_AGENT_RUNTIME",
     "NEXUS_SEED_PROJECT_AGENT_URL",
     "NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV",
@@ -101,8 +97,8 @@ async def test_project_and_task_are_separate_entry_points():
 
     assert parser.parse_args(["project", "x"]).command == "project"
     assert parser.parse_args(["task", "x"]).command == "task"
-    # `task` still speaks to the durable runtime over the webhook, so it keeps
-    # its own deduplication key and gains none of the orchestrator's options.
+    # `task` speaks to the same application over durable ingress, so it keeps
+    # an external deduplication key; `project` works directly against SQLite.
     assert hasattr(parser.parse_args(["task", "x"]), "source_key")
     assert not hasattr(parser.parse_args(["project", "x"]), "source_key")
 
@@ -117,17 +113,12 @@ async def test_project_cli_refuses_an_a2a_runtime_without_a_url(tmp_path):
         await run(args)
 
 
-async def test_the_orchestrator_takes_over_message_interpretation(tmp_path):
-    """One message, one LLM answer: the flag switches the path, it does not add one.
-
-    Running both against a real local model doubled the wait for every request
-    and the two prompts interfered, so with the orchestrator on a human_message
-    is Project work and nothing else.
-    """
+async def test_the_project_application_does_not_boot_legacy_message_interpretation(
+    tmp_path,
+):
     env_file = write_env(
         tmp_path / ".env",
         tmp_path / "data",
-        NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED="true",
         NEXUS_SEED_LLM_ENABLED="true",
         NEXUS_SEED_LLM_PROVIDER="openai_compatible",
         NEXUS_SEED_LLM_BASE_URL="http://127.0.0.1:1/v1",
@@ -141,30 +132,7 @@ async def test_the_orchestrator_takes_over_message_interpretation(tmp_path):
 
         assert routed is not None
         assert routed.trigger_event_types == ("human_message",)
-        # Still registered, still bound — only stood down, so turning the flag
-        # off restores it exactly.
-        assert interpreter is not None
-        assert interpreter.trigger_event_types == ()
+        assert interpreter is None
         assert runtime.project_orchestrator is not None
-    finally:
-        runtime.close()
-
-
-async def test_message_interpretation_is_untouched_without_the_flag(tmp_path):
-    env_file = write_env(
-        tmp_path / ".env",
-        tmp_path / "data",
-        NEXUS_SEED_LLM_ENABLED="true",
-        NEXUS_SEED_LLM_PROVIDER="openai_compatible",
-        NEXUS_SEED_LLM_BASE_URL="http://127.0.0.1:1/v1",
-        NEXUS_SEED_LLM_MODEL="test-model",
-    )
-    settings = AppSettings.from_env(env_file)
-    runtime = build_runtime(settings, env_file=env_file)
-    try:
-        interpreter = runtime.get_definition("interpret_event_llm", "1")
-        assert interpreter.trigger_event_types == ("human_message",)
-        assert runtime.get_definition("route_request_to_project", "1") is None
-        assert runtime.project_orchestrator is None
     finally:
         runtime.close()

@@ -104,10 +104,24 @@ async def test_a_keyable_rejection_is_still_recorded(tmp_path):
 
 async def test_ingest_can_defer_running_the_system(tmp_path):
     """``deliver=False`` stores the event without activating anything."""
-    from nexus_seed.processes.semantic import bootstrap_semantic
+    from nexus_seed.core.process import ProcessDefinition, ProcessStatus
+
+    handled: list[str] = []
+
+    async def deferred_handler(ctx):
+        handled.append(str(ctx.event.id))
+        return ctx.complete()
 
     runtime = Runtime(tmp_path / "defer.db")
-    bootstrap_semantic(runtime)
+    runtime.register_process(
+        ProcessDefinition(
+            name="deferred_handler",
+            version="1",
+            handler="deferred_handler",
+            trigger_event_types=("process_parameter_changed",),
+        ),
+        deferred_handler,
+    )
 
     envelope = manual_envelope(
         event_type="process_parameter_changed",
@@ -117,11 +131,12 @@ async def test_ingest_can_defer_running_the_system(tmp_path):
 
     assert result.accepted
     assert runtime.process_store.all_instances() == []
-    assert runtime.state_store.get("D1_CD", "target") is None
 
     # Delivering later runs the very same event through the ordinary router.
     await runtime.deliver_event(result.event)
-    assert runtime.state_store.get("D1_CD", "target") == 45
+    [instance] = runtime.process_store.all_instances()
+    assert instance.status is ProcessStatus.COMPLETED
+    assert handled == [str(result.event.id)]
     runtime.close()
 
 

@@ -91,10 +91,12 @@ class A2AGateway:
         return self.record(await self.runtime.poll())
 
     def record(self, messages: list[A2AMessage]) -> list[A2AMessage]:
-        """Record inbound messages on the audited channel."""
+        """Record and return only previously unseen inbound messages."""
+        recorded = []
         for message in messages:
-            self.store.append(message, direction="inbound")
-        return messages
+            if self.store.append_new(message, direction="inbound"):
+                recorded.append(message)
+        return recorded
 
     def record_outbound(self, message: A2AMessage) -> A2AMessage:
         """Record a message NEXUS SEED sent to an Agent."""

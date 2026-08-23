@@ -1,8 +1,6 @@
 """Phase C: the Cockpit shows the Project Orchestrator's own projects.
 
-Read-only, and deliberately apart from the Goal-derived projection: two
-different things called "project" in one list would leave a person unable to
-tell which one is authoritative.
+These are the application's authoritative Projects.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ REQUEST = "SAPの前年同期と比較して"
 
 
 def cockpit(runtime) -> CockpitService:
-    return CockpitService(runtime, phase6_enabled=True, master_id="local-operator")
+    return CockpitService(runtime, master_id="local-operator")
 
 
 def orchestrator(runtime, behaviour=None):
@@ -58,7 +56,7 @@ def blocked(config, envelope):
 async def blocked_runtime(tmp_path):
     runtime = Runtime(tmp_path / "app.db")
     orch = orchestrator(runtime, blocked)
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     return runtime, orch, orch.projects.all()[0]
 
@@ -126,19 +124,4 @@ async def test_projects_are_reported_once(tmp_path):
 
     assert [row["id"] for row in snapshot["orchestrator"]["projects"]] == [project.id]
     assert "projects" not in snapshot
-    # The list endpoint still answers, over the same records.
-    assert [row["project_id"] for row in cockpit(runtime).projects()] == [project.id]
-    runtime.close()
-
-
-async def test_the_section_says_when_the_orchestrator_is_off(tmp_path):
-    runtime = Runtime(tmp_path / "app.db")
-    orch = orchestrator(runtime)
-    bootstrap_project_orchestration(runtime, orch, enabled=False)
-
-    section = cockpit(runtime).snapshot()["orchestrator"]
-
-    # Off is not the same as "nothing is happening", and says so.
-    assert section["enabled"] is False
-    assert section["projects"] == []
     runtime.close()

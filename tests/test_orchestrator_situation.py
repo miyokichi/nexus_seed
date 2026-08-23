@@ -55,7 +55,7 @@ async def setup(tmp_path, behaviour, name="situation.db"):
         agent_runtime=InProcessAgentRuntime(behaviour=behaviour),
         backend=ScriptedBackend([decision("CREATE_PROJECT", proposed_goal=REQUEST)]),
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     return runtime, orch, orch.projects.all()[0]
 

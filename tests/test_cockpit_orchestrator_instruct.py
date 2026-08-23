@@ -48,7 +48,7 @@ class ScriptedBackend:
 
 
 def cockpit(runtime) -> CockpitService:
-    return CockpitService(runtime, phase6_enabled=True, master_id="local-operator")
+    return CockpitService(runtime, master_id="local-operator")
 
 
 async def _setup(tmp_path, behaviour, backend, name="orch.db"):
@@ -58,7 +58,7 @@ async def _setup(tmp_path, behaviour, backend, name="orch.db"):
         agent_runtime=InProcessAgentRuntime(behaviour=behaviour),
         backend=backend,
     )
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     return runtime, orch, orch.projects.all()[0]
 

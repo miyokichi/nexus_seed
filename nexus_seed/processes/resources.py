@@ -1,10 +1,9 @@
-"""Resource processes: index, extract, interpret — and the observer loop.
+"""Resource indexing, extraction, and the durable observer loop.
 
-Four ordinary Processes, no new Runtime feature (Invariant 38):
+Three ordinary Processes, no new Runtime feature (Invariant 38):
 
     file_created/modified   -> resource_indexer    -> Resource + Version
       resource_version_created -> extract_resource -> Representation
-        representation_created -> interpret_resource -> Observation + StateDelta
 
     start_watch_files       -> watch_files         -> poll -> ingress
                                                    -> suspend_on_timer -> repeat
@@ -35,8 +34,6 @@ from ..resources.extractors import (
 from ..resources.models import ResourceRepresentation
 from ..resources.scope import ScopeViolation
 from ..resources.service import ResourceService, file_uri
-from ..world.observation import Observation
-from ..world.state_delta import StateDelta
 
 logger = logging.getLogger("nexus_seed.process.resources")
 
@@ -66,15 +63,6 @@ EXTRACT_RESOURCE = ProcessDefinition(
     trigger_event_types=("resource_version_created",),
     max_retries=1,
     metadata={"role": "extractor"},
-    context_requirements=ContextRequirements(include_trigger_event=True),
-)
-
-INTERPRET_RESOURCE = ProcessDefinition(
-    name="interpret_resource",
-    version="1",
-    handler="interpret_resource",
-    trigger_event_types=("representation_created",),
-    metadata={"role": "interpreter"},
     context_requirements=ContextRequirements(include_trigger_event=True),
 )
 
@@ -273,121 +261,6 @@ async def extract_resource(ctx: ProcessContext) -> ProcessResult:
     )
 
 
-# --- interpretation --------------------------------------------------------
-
-#: The trivially explicit format the demo interpreter understands.
-FACT_SEPARATOR = "="
-
-
-async def interpret_resource(ctx: ProcessContext) -> ProcessResult:
-    """Read ``entity.attribute=value`` lines out of a text Representation.
-
-    A deterministic demonstration that a document can reach World State
-    *through the existing pipeline* (spec §37): it produces an Observation and a
-    StateDelta and emits ``state_delta_created``, exactly like every other
-    interpreter.  Nothing about documents gets a private write path.
-    """
-    assert ctx.event is not None
-    payload = ctx.event.payload
-    if payload.get("representation_type") != "text":
-        return ctx.complete(output={"interpreted": 0, "reason": "not a text representation"})
-
-    representation_id = _uuid(payload.get("representation_id"))
-    representation = (
-        ctx.services.get_representation(representation_id)
-        if ctx.services is not None and hasattr(ctx.services, "get_representation")
-        else None
-    )
-    if representation is None:
-        return ctx.fail(f"representation {representation_id} not found")
-
-    facts = parse_facts(representation.content)
-    if not facts:
-        return ctx.complete(output={"interpreted": 0})
-
-    observation = Observation(
-        subject=payload.get("uri") or "resource",
-        predicate="facts_extracted",
-        extracted={f"{e}.{a}": v for e, a, v in facts},
-        source_event_id=ctx.event.id,
-        created_by_process_id=ctx.instance.id,
-        confidence=1.0,
-    )
-    ctx.add_observation(observation)
-
-    emitted = []
-    for entity, attribute, value in facts:
-        current = (
-            ctx.services.get_current_state(entity, attribute) if ctx.services else None
-        )
-        old_value = current.value if current is not None else None
-        if old_value == value:
-            continue  # the document agrees with what we already believe
-        delta = StateDelta(
-            entity=entity,
-            attribute=attribute,
-            old_value=old_value,
-            new_value=value,
-            source_event_id=ctx.event.id,
-            observation_id=observation.id,
-            created_by_process_id=ctx.instance.id,
-            confidence=1.0,
-            reason=f"read from {payload.get('uri')}",
-        )
-        ctx.add_state_delta(delta)
-        emitted.append(
-            ctx.new_event(
-                "state_delta_created",
-                {
-                    "entity": entity,
-                    "attribute": attribute,
-                    "old_value": old_value,
-                    "new_value": value,
-                    "source_event_id": str(ctx.event.id),
-                    "observation_id": str(observation.id),
-                    "state_delta_id": str(delta.id),
-                    "confidence": 1.0,
-                    "resource_version_id": payload.get("resource_version_id"),
-                },
-            )
-        )
-
-    return ctx.complete(
-        output={"interpreted": len(emitted), "observation_id": str(observation.id)},
-        emitted_events=emitted,
-    )
-
-
-def parse_facts(content) -> list[tuple[str, str, object]]:
-    """Parse ``entity.attribute=value`` lines into typed triples."""
-    if not isinstance(content, str):
-        return []
-    facts: list[tuple[str, str, object]] = []
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or FACT_SEPARATOR not in line:
-            continue
-        key, _, raw = line.partition(FACT_SEPARATOR)
-        entity, _, attribute = key.strip().partition(".")
-        if not entity or not attribute:
-            continue
-        facts.append((entity, attribute, _coerce(raw.strip())))
-    return facts
-
-
-def _coerce(raw: str):
-    """Turn a text value into int/float/bool where unambiguous."""
-    lowered = raw.lower()
-    if lowered in ("true", "false"):
-        return lowered == "true"
-    for caster in (int, float):
-        try:
-            return caster(raw)
-        except ValueError:
-            continue
-    return raw
-
-
 # --- the long-lived observer ----------------------------------------------
 
 DEFAULT_POLL_INTERVAL = 60.0
@@ -509,12 +382,11 @@ def _extractor_registry(ctx: ProcessContext):
 
 
 def bootstrap_resources(runtime, *, scope=None) -> None:
-    """Register the resource pipeline and (optionally) its read scope."""
+    """Register Resource indexing and representation extraction."""
     if scope is not None:
         runtime.set_resource_scope(scope)
     runtime.register_process(RESOURCE_INDEXER, resource_indexer)
     runtime.register_process(EXTRACT_RESOURCE, extract_resource)
-    runtime.register_process(INTERPRET_RESOURCE, interpret_resource)
 
 
 def bootstrap_observer(runtime) -> None:
@@ -524,14 +396,11 @@ def bootstrap_observer(runtime) -> None:
 
 __all__ = [
     "EXTRACT_RESOURCE",
-    "INTERPRET_RESOURCE",
     "RESOURCE_INDEXER",
     "WATCH_FILES",
     "bootstrap_observer",
     "bootstrap_resources",
     "extract_resource",
-    "interpret_resource",
-    "parse_facts",
     "resource_indexer",
     "watch_files",
 ]

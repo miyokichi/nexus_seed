@@ -1,19 +1,15 @@
 """What NEXUS SEED is actually configured to do, in one place.
 
-Two different language models are involved in a running system, and the
-settings for them look alike:
+Two execution locations are involved in a running system, and their settings
+can look alike:
 
 * **NEXUS SEED's own reasoning** (``NEXUS_SEED_LLM_*``) — routing a message to
-  a Project, answering a question about one, interpreting an Event, choosing a
-  plan.  This is the model NEXUS SEED thinks with.
+  a Project, evaluating Knowledge, and answering a question about one.  This is
+  the model NEXUS SEED thinks with.
 * **The Project Agent's model** — the one that does the delegated work.  It is
   *not configured here at all*: NEXUS SEED says where the Agent Runtime is
   (``NEXUS_SEED_PROJECT_AGENT_*``) and hands it the Project; the Agent brings
   its own model, its own keys, its own Skills, and its own configuration file.
-
-The same split applies to Skills.  ``NEXUS_SEED_SKILL_ROOTS`` is what NEXUS
-SEED itself can do; the Agent's skills are the Agent's own and are never read
-or sent from here.
 
 That distinction is easy to miss in a flat ``.env``, so this module reports the
 resolved settings grouped by what they are for.  It reads only; it starts
@@ -33,7 +29,6 @@ from typing import Any
 
 from .llm_config import LLMSettings, load_env_file
 from .orchestrator_config import ProjectAgentSettings
-from .skills_config import SkillSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +55,6 @@ def build_report(env_file: str | Path = ".env") -> dict[str, Any]:
     resolved = load_env_file(env_file)
     groups = [
         _reasoning_group(env_file),
-        _skills_group(env_file),
         _delegation_group(env_file),
     ]
     return {
@@ -75,7 +69,7 @@ def _reasoning_group(env_file) -> ConfigGroup:
     settings = LLMSettings.from_env(env_file)
     notes = [
         "Used by: routing a message to a Project, answering a question about "
-        "one, interpreting an Event, selecting a plan, proposing an extension.",
+        "one, evaluating Knowledge, and driving an in-process Project Agent.",
     ]
     if not settings.enabled:
         notes.append(
@@ -102,40 +96,6 @@ def _reasoning_group(env_file) -> ConfigGroup:
     )
 
 
-def _skills_group(env_file) -> ConfigGroup:
-    """Where NEXUS SEED's own Skills come from."""
-
-    settings = SkillSettings.from_env(env_file)
-    catalog = settings.load()
-    found = catalog.list()
-    roots = [
-        (f"  {root}", "found" if exists else "missing")
-        for root, exists in settings.described_roots()
-    ]
-    notes = [
-        "NEXUS SEED's own Skills: imported as Processes, and routed to an A2A "
-        "provider when one is configured for them. Highest precedence first; "
-        "a name found twice is resolved by NEXUS_SEED_SKILLS_ON_DUPLICATE.",
-        "A Project Agent's skills are NOT these. They are the Agent's own "
-        "configuration and are never read or sent from here.",
-        f"{len(found)} Skill(s) loaded: "
-        + (", ".join(skill.name for skill in found) or "(none)"),
-    ]
-    if catalog.failures:
-        notes.append(f"{len(catalog.failures)} package(s) could not be read.")
-    return ConfigGroup(
-        name="NEXUS SEED's own Skills",
-        purpose="what NEXUS SEED itself can do (NEXUS_SEED_SKILL_ROOTS)",
-        settings=[
-            ("NEXUS_SEED_SKILL_ROOTS", os.pathsep.join(settings.roots)),
-            *roots,
-            ("NEXUS_SEED_SKILLS_STRICT", settings.strict),
-            ("NEXUS_SEED_SKILLS_ON_DUPLICATE", settings.on_duplicate),
-        ],
-        notes=notes,
-    )
-
-
 def _delegation_group(env_file) -> ConfigGroup:
     """Where the work is delegated to — not what model does it."""
 
@@ -150,8 +110,8 @@ def _delegation_group(env_file) -> ConfigGroup:
     ]
     if settings.runtime == "in_process":
         notes.append(
-            "in_process is the deterministic, network-free runtime: it reasons "
-            "about nothing and calls no model. Set 'a2a' to delegate for real."
+            "in_process is the local, network-free Agent Runtime. It reuses "
+            "NEXUS SEED's reasoning backend and cannot invoke external tools."
         )
     else:
         rows.extend(

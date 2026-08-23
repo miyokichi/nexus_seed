@@ -11,10 +11,8 @@ from .requirements import (
     ContinuationReq,
     EntityAttributes,
     EventsReq,
-    ObservationsReq,
     ProcessTreeReq,
-    StateDeltasReq,
-    WorkReq,
+    ResourcesReq,
     WorldStateReq,
 )
 
@@ -23,9 +21,7 @@ __all__ = [
     "ContinuationReq",
     "EntityAttributes",
     "EventsReq",
-    "ObservationsReq",
     "ProcessTreeReq",
-    "StateDeltasReq",
-    "WorkReq",
+    "ResourcesReq",
     "WorldStateReq",
 ]

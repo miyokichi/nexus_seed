@@ -33,6 +33,17 @@ from .models import (
 from .consolidation import Consolidator, select_candidates
 from .experience import DecisionAdvisory, advisories_for, record_agent_experience
 from .goal_bridge import GapRiskOpportunityDetector, GoalBridge, Signal
+from .autonomous_loop import (
+    ARTIFACT_APPROVED,
+    ARTIFACT_PENDING_REVIEW,
+    ARTIFACT_REJECTED,
+    KIND_COMPLETION_REVIEW,
+    KIND_SOURCE_OBSERVATION,
+    KnowledgeLoop,
+    KnowledgeLoopResult,
+    ProjectProposalPolicy,
+    ReasoningProjectAgent,
+)
 from .ledger import KnowledgeLedger
 from .principles import (
     CounterexampleSearcher,
@@ -45,6 +56,9 @@ from .principles import (
 )
 
 __all__ = [
+    "ARTIFACT_APPROVED",
+    "ARTIFACT_PENDING_REVIEW",
+    "ARTIFACT_REJECTED",
     "Consolidator",
     "select_candidates",
     "DecisionAdvisory",
@@ -53,6 +67,12 @@ __all__ = [
     "GapRiskOpportunityDetector",
     "GoalBridge",
     "Signal",
+    "KnowledgeLoop",
+    "KnowledgeLoopResult",
+    "ProjectProposalPolicy",
+    "ReasoningProjectAgent",
+    "KIND_COMPLETION_REVIEW",
+    "KIND_SOURCE_OBSERVATION",
     "CounterexampleSearcher",
     "PredictionEngine",
     "PrincipleExtractor",

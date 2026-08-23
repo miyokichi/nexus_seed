@@ -46,7 +46,7 @@ async def _setup(tmp_path, name="idem.db"):
     backend = ScriptedBackend([decision("CREATE_PROJECT", proposed_goal=REQUEST)])
     agent_runtime = InProcessAgentRuntime(behaviour=quiet)
     orch = ProjectOrchestrator(runtime.db, agent_runtime=agent_runtime, backend=backend)
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
     await orch.handle_request(REQUEST)
     project = orch.projects.all()[0]
     backend.results = [
@@ -58,7 +58,7 @@ async def _setup(tmp_path, name="idem.db"):
 
 async def test_same_request_id_is_carried_out_once(tmp_path):
     runtime, orch, project, backend, agent_runtime = await _setup(tmp_path)
-    service = CockpitService(runtime, phase6_enabled=True, master_id="op")
+    service = CockpitService(runtime, master_id="op")
     routed_before = len(backend.calls)
     delivered_before = len(agent_runtime.delivered)
 
@@ -78,7 +78,7 @@ async def test_same_request_id_is_carried_out_once(tmp_path):
 
 async def test_a_different_request_id_is_new_work(tmp_path):
     runtime, orch, project, backend, _ = await _setup(tmp_path)
-    service = CockpitService(runtime, phase6_enabled=True, master_id="op")
+    service = CockpitService(runtime, master_id="op")
 
     await service.orchestrator_instruct(project.id, "地域別も", request_id="click-1")
     await service.orchestrator_instruct(project.id, "商品別も", request_id="click-2")
@@ -89,7 +89,7 @@ async def test_a_different_request_id_is_new_work(tmp_path):
 
 async def test_without_a_request_id_behaviour_is_unchanged(tmp_path):
     runtime, orch, project, _backend, _ = await _setup(tmp_path)
-    service = CockpitService(runtime, phase6_enabled=True, master_id="op")
+    service = CockpitService(runtime, master_id="op")
 
     await service.orchestrator_instruct(project.id, "地域別も")
     await service.orchestrator_instruct(project.id, "地域別も")
@@ -102,7 +102,7 @@ async def test_without_a_request_id_behaviour_is_unchanged(tmp_path):
 async def test_replay_survives_a_restart(tmp_path):
     db_path = tmp_path / "restart.db"
     runtime, orch, project, backend, _ = await _setup(tmp_path, name="restart.db")
-    service = CockpitService(runtime, phase6_enabled=True, master_id="op")
+    service = CockpitService(runtime, master_id="op")
     await service.orchestrator_instruct(project.id, "地域別も", request_id="click-1")
     assert len(orch.projects.get(project.id).tasks) == 1
     runtime.close()
@@ -116,8 +116,8 @@ async def test_replay_survives_a_restart(tmp_path):
     orch2 = ProjectOrchestrator(
         runtime2.db, agent_runtime=InProcessAgentRuntime(behaviour=quiet), backend=backend2
     )
-    bootstrap_project_orchestration(runtime2, orch2, enabled=True)
-    service2 = CockpitService(runtime2, phase6_enabled=True, master_id="op")
+    bootstrap_project_orchestration(runtime2, orch2)
+    service2 = CockpitService(runtime2, master_id="op")
 
     await service2.orchestrator_instruct(project.id, "地域別も", request_id="click-1")
 
@@ -161,7 +161,7 @@ async def test_http_retry_with_the_same_request_id_is_safe(tmp_path):
         WebhookIngress(runtime.ingress, token=TOKEN),
         host="127.0.0.1",
         port=0,
-        cockpit=CockpitService(runtime, phase6_enabled=True, master_id="op"),
+        cockpit=CockpitService(runtime, master_id="op"),
     )
     await server.start()
     path = f"/cockpit/api/orchestrator/projects/{project.id}/instruct"

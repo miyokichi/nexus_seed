@@ -49,11 +49,11 @@ def message(text=REQUEST, *, key="msg-1") -> IngressEnvelope:
     )
 
 
-async def test_human_message_routes_to_project_orchestrator_when_enabled(tmp_path):
+async def test_human_message_routes_to_project_orchestrator(tmp_path):
     runtime = Runtime(tmp_path / "app.db")
     done = lambda config, envelope: [completed_message(config.project_id, "分析完了")]
     orch = orchestrator(runtime.db, done)
-    assert bootstrap_project_orchestration(runtime, orch, enabled=True) is True
+    bootstrap_project_orchestration(runtime, orch)
 
     result = await runtime.ingress.ingest(message())
 
@@ -66,24 +66,10 @@ async def test_human_message_routes_to_project_orchestrator_when_enabled(tmp_pat
     runtime.close()
 
 
-async def test_human_message_uses_legacy_runtime_when_disabled(tmp_path):
-    runtime = Runtime(tmp_path / "app.db")
-    orch = orchestrator(runtime.db)
-    assert bootstrap_project_orchestration(runtime, orch, enabled=False) is False
-
-    await runtime.ingress.ingest(message())
-
-    # A strict no-op: no definition registered, no Project, nothing routed.
-    assert runtime.process_store.get_definition(ROUTE_REQUEST.name, "1") is None
-    assert orch.projects.all() == []
-    assert runtime.project_orchestrator is None
-    runtime.close()
-
-
 async def test_duplicate_source_key_does_not_create_duplicate_project(tmp_path):
     runtime = Runtime(tmp_path / "app.db")
     orch = orchestrator(runtime.db)
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
 
     first = await runtime.ingress.ingest(message(key="delivery-7"))
     second = await runtime.ingress.ingest(message(key="delivery-7"))
@@ -99,7 +85,7 @@ async def test_duplicate_source_key_does_not_create_duplicate_project(tmp_path):
 async def test_a_message_with_no_text_is_not_a_failure(tmp_path):
     runtime = Runtime(tmp_path / "app.db")
     orch = orchestrator(runtime.db)
-    bootstrap_project_orchestration(runtime, orch, enabled=True)
+    bootstrap_project_orchestration(runtime, orch)
 
     await runtime.ingress.ingest(
         IngressEnvelope(
