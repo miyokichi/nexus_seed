@@ -14,6 +14,7 @@ from ..knowledge.autonomous_loop import (
     KIND_PROJECT_PROPOSAL,
     KIND_SITUATION_ASSESSMENT,
 )
+from ..knowledge.models import KIND_CONSOLIDATED_MEMORY, KIND_PRINCIPLE
 from ..knowledge.projection import WorldStateProjection
 from ..projects.projections import get_project_situation, get_project_summaries
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
@@ -215,13 +216,19 @@ class CockpitService:
                 "completion_reviews": [],
                 "questions": [],
                 "entities": [],
+                "principles": [],
+                "memories": [],
                 "observation_sources": self._observation_sources(),
             }
         view = WorldStateProjection(loop.ledger).view()
+        # What the loop derived gets its own sections below, so the inbox stays
+        # what came *in* rather than mixing in what was concluded from it.
         internal_kinds = {
             KIND_PROJECT_PROPOSAL,
             KIND_SITUATION_ASSESSMENT,
             KIND_COMPLETION_REVIEW,
+            KIND_PRINCIPLE,
+            KIND_CONSOLIDATED_MEMORY,
         }
         inbox = [
             item for item in loop.ledger.all_heads() if item.kind not in internal_kinds
@@ -271,7 +278,26 @@ class CockpitService:
                 self._knowledge_item(item)
                 for item in loop.entity_candidates(unresolved_only=False)
             ],
+            "principles": [self._principle_item(item) for item in loop.principles()[:50]],
+            "memories": [self._knowledge_item(item) for item in loop.memories()[:50]],
             "observation_sources": self._observation_sources(),
+        }
+
+    def _principle_item(self, item) -> dict[str, Any]:
+        """A principle, with how much evidence stands for and against it.
+
+        Support and counterexample counts are lifted out of metadata because
+        they are the whole reason to trust — or distrust — what is written:
+        a principle is a prediction that earned its status, not a fact.
+        """
+        metadata = item.metadata or {}
+        return {
+            **self._knowledge_item(item),
+            "scope": metadata.get("scope"),
+            "support_count": metadata.get("support_count", 0),
+            "counterexample_count": metadata.get("counterexample_count", 0),
+            "evidence_for": list(metadata.get("evidence_for") or []),
+            "evidence_against": list(metadata.get("evidence_against") or []),
         }
 
     def _observation_sources(self) -> list[dict[str, Any]]:

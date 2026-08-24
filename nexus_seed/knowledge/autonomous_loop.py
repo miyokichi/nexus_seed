@@ -1035,6 +1035,27 @@ class KnowledgeLoop:
         extracted = await PrincipleExtractor(self.ledger, self.backend).extract(cases)
         return 1 if extracted is not None else 0
 
+    def principles(self) -> list[KnowledgeRevision]:
+        """Every principle, newest first, whatever its maturity.
+
+        Candidates are included on purpose: a person judging whether the loop
+        is learning something sensible has to see what it is *proposing* to
+        learn, not only what already survived enough confirmation to be used.
+        """
+        return sorted(
+            self.ledger.by_kind(KIND_PRINCIPLE),
+            key=lambda item: item.recorded_at,
+            reverse=True,
+        )
+
+    def memories(self) -> list[KnowledgeRevision]:
+        """Consolidated memories, newest first."""
+        return sorted(
+            self.ledger.by_kind(KIND_CONSOLIDATED_MEMORY),
+            key=lambda item: item.recorded_at,
+            reverse=True,
+        )
+
     def mature_principles(self) -> list[KnowledgeRevision]:
         """Principles that survived enough confirmation to steer a decision.
 

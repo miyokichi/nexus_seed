@@ -103,11 +103,18 @@ def _build_backend(args: argparse.Namespace) -> ExecutionBackend | None:
     )
 
 
+def _preview(value: Any, width: int = 100) -> str:
+    """One line of content, safe to print under an indent."""
+    text = value if isinstance(value, str) else str(value)
+    return " ".join(text.split())[:width]
+
+
 def _fmt_line(rev: KnowledgeRevision) -> str:
-    preview = rev.content.value if isinstance(rev.content.value, str) else str(rev.content.value)
-    preview = preview.replace("\n", " ")[:70]
     status = rev.status or "-"
-    return f"{rev.knowledge_id}  v{rev.revision}  [{rev.kind}/{status}]  {preview}"
+    return (
+        f"{rev.knowledge_id}  v{rev.revision}  [{rev.kind}/{status}]  "
+        f"{_preview(rev.content.value, 70)}"
+    )
 
 
 def _print_rev(rev: KnowledgeRevision, *, as_json: bool) -> None:
@@ -504,6 +511,198 @@ def cmd_submit(args: argparse.Namespace) -> int:
 # --- subcommands: K6 self-learning --------------------------------------------
 
 
+# --- subcommands: the autonomous loop -----------------------------------------
+
+
+def _open_loop(args: argparse.Namespace):
+    """Open the same loop the application runs, on the same database.
+
+    Returns ``(runtime, loop)``; the caller closes the runtime.  Every decision
+    below goes through :class:`KnowledgeLoop`, the same object the Cockpit
+    calls, so the CLI is another way in rather than a second implementation.
+    """
+    from .knowledge.autonomous_loop import KnowledgeLoop
+    from .orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+    from .runtime.runtime import Runtime
+
+    runtime = Runtime(args.db)
+    orchestrator = ProjectOrchestrator(
+        runtime.db,
+        agent_runtime=InProcessAgentRuntime(),
+        backend=_build_backend(args),
+    )
+    loop = KnowledgeLoop(runtime, orchestrator, backend=_build_backend(args))
+    runtime.knowledge_loop = loop
+    return runtime, loop
+
+
+#: Kinds that can be waiting on a person, and the status that means "waiting".
+_PENDING = {
+    "project_proposal": "PENDING_REVIEW",
+    "artifact": "PENDING_REVIEW",
+    "completion_review": "PENDING_REVIEW",
+    "question": "OPEN",
+    "entity_candidate": "UNRESOLVED",
+}
+
+
+def cmd_pending(args: argparse.Namespace) -> int:
+    """Everything the loop is waiting for a person to decide."""
+    runtime, loop = _open_loop(args)
+    try:
+        waiting = [
+            item
+            for group in (
+                loop.proposals(),
+                loop.artifacts(),
+                loop.completion_reviews(),
+                loop.questions(open_only=True),
+                loop.entity_candidates(unresolved_only=True),
+            )
+            for item in group
+            if item.status == _PENDING.get(item.kind)
+        ]
+        if args.json:
+            print(json.dumps([item.to_dict() for item in waiting], ensure_ascii=False, indent=2))
+        else:
+            for item in waiting:
+                print(_fmt_line(item))
+            print(f"({len(waiting)} waiting for a decision)")
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    """Approve or reject whatever is waiting under this knowledge id.
+
+    The kind decides which decision path runs, so a caller does not have to
+    remember whether an id is a proposal, an artifact or a completion.
+    """
+    runtime, loop = _open_loop(args)
+    try:
+        item = loop.ledger.head(args.knowledge_id)
+        if item is None:
+            print(f"error: unknown knowledge_id: {args.knowledge_id}", file=sys.stderr)
+            return 1
+        decision = args.decision
+        if item.kind == "project_proposal":
+            result = asyncio.run(loop.decide_proposal(args.knowledge_id, decision, note=args.note))
+        elif item.kind == "artifact":
+            result = asyncio.run(loop.decide_artifact(args.knowledge_id, decision, note=args.note))
+        elif item.kind == "completion_review":
+            result = asyncio.run(
+                loop.decide_completion_review(args.knowledge_id, decision, note=args.note)
+            )
+        elif item.kind == "entity_candidate":
+            result = loop.decide_entity(
+                args.knowledge_id,
+                "confirm" if decision == "approve" else "separate",
+                canonical_id=args.canonical_id,
+            )
+        else:
+            print(
+                f"error: {item.kind} does not take an approve/reject decision",
+                file=sys.stderr,
+            )
+            return 1
+        if result is None:
+            print("error: nothing to decide under that id", file=sys.stderr)
+            return 1
+        _print_rev(result, as_json=args.json)
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_answer(args: argparse.Namespace) -> int:
+    runtime, loop = _open_loop(args)
+    try:
+        result = asyncio.run(loop.answer_question(args.knowledge_id, args.answer))
+        if result is None:
+            print(f"error: no open question under {args.knowledge_id}", file=sys.stderr)
+            return 1
+        _print_rev(result, as_json=args.json)
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Run one bounded pass of the loop and report what it changed."""
+    runtime, loop = _open_loop(args)
+    try:
+        result = asyncio.run(loop.reconcile())
+        counts = {
+            field: getattr(result, field)
+            for field in (
+                "manual_observations", "source_observations", "resource_observations",
+                "agent_reports", "consolidations", "principles", "proposals",
+                "projects_routed", "knowledge_events", "completion_decisions_reconciled",
+            )
+        }
+        if args.json:
+            print(json.dumps({**counts, "errors": result.errors}, ensure_ascii=False, indent=2))
+        else:
+            for name, value in counts.items():
+                if value:
+                    print(f"{name}: {value}")
+            if not any(counts.values()):
+                print("(nothing changed)")
+            for error in result.errors:
+                print(f"error: {error}", file=sys.stderr)
+        return 1 if result.errors else 0
+    finally:
+        runtime.close()
+
+
+def cmd_principles(args: argparse.Namespace) -> int:
+    """What the loop has generalised from experience, and how well it holds."""
+    ledger = _open_ledger(args.db)
+    from .knowledge.models import KIND_PRINCIPLE
+
+    items = sorted(
+        ledger.by_kind(KIND_PRINCIPLE), key=lambda i: i.recorded_at, reverse=True
+    )
+    if args.mature_only:
+        items = [i for i in items if i.status in (STATUS_SUPPORTED, STATUS_VALIDATED)]
+    if args.json:
+        print(json.dumps([i.to_dict() for i in items], ensure_ascii=False, indent=2))
+        return 0
+    for item in items:
+        meta = item.metadata or {}
+        print(f"{item.knowledge_id}  [{item.status}]  "
+              f"支持 {meta.get('support_count', 0)} / 反例 {meta.get('counterexample_count', 0)}")
+        print(f"    {_preview(item.content.value)}")
+    print(f"({len(items)} principles)")
+    return 0
+
+
+def cmd_memories(args: argparse.Namespace) -> int:
+    """Consolidated memories, and what each one compressed."""
+    ledger = _open_ledger(args.db)
+    from .knowledge.models import KIND_CONSOLIDATED_MEMORY
+
+    items = sorted(
+        ledger.by_kind(KIND_CONSOLIDATED_MEMORY),
+        key=lambda i: i.recorded_at,
+        reverse=True,
+    )
+    if args.json:
+        print(json.dumps([i.to_dict() for i in items], ensure_ascii=False, indent=2))
+        return 0
+    for item in items:
+        meta = item.metadata or {}
+        about = meta.get("about") or "(no subject)"
+        print(f"{item.knowledge_id}  about={about}  "
+              f"{len(item.derived_from)} sources  gen={meta.get('generation', '?')}")
+        print(f"    {_preview(item.content.value)}")
+        if meta.get("unresolved"):
+            print(f"    unresolved: {', '.join(meta['unresolved'])}")
+    print(f"({len(items)} memories)")
+    return 0
+
+
 def cmd_experience(args: argparse.Namespace) -> int:
     ledger = _open_ledger(args.db)
     attempts = json.loads(args.attempts_json) if args.attempts_json else None
@@ -716,6 +915,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--switches-json", default=None, help='JSON list, e.g. \'[{"from": "a", "to": "b", "reason": "..."}]\'')
     p.add_argument("--source-ref", default=None)
     p.set_defaults(func=cmd_experience)
+
+    p = sub.add_parser("principles", help="what the loop generalised, and how well each holds up")
+    _add_db(p); _add_json(p)
+    p.add_argument("--mature-only", action="store_true", help="only supported/validated")
+    p.set_defaults(func=cmd_principles)
+
+    p = sub.add_parser("memories", help="consolidated memories and what each compressed")
+    _add_db(p); _add_json(p)
+    p.set_defaults(func=cmd_memories)
+
+    p = sub.add_parser("reconcile", help="run one bounded pass of the autonomous loop")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.set_defaults(func=cmd_reconcile)
+
+    p = sub.add_parser("pending", help="everything the loop is waiting for a person to decide")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.set_defaults(func=cmd_pending)
+
+    p = sub.add_parser("decide", help="approve or reject a proposal, artifact, completion or entity")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("knowledge_id")
+    p.add_argument("decision", choices=["approve", "reject"])
+    p.add_argument("--note", default="", help="reason, recorded with the decision")
+    p.add_argument("--canonical-id", default=None, help="entity only: the id it is the same as")
+    p.set_defaults(func=cmd_decide)
+
+    p = sub.add_parser("answer", help="answer an Agent's open question")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("knowledge_id")
+    p.add_argument("answer")
+    p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser("advise", help="list mature (supported/validated) principles as plain advisories")
     _add_db(p)

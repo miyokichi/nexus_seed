@@ -306,6 +306,24 @@ nexus-seed-knowledge advise --db k.db --subject project-A
 nexus-seed-knowledge --help                     # every subcommand, with its own --help
 ```
 
+The autonomous loop is drivable from here too, so a headless deployment is
+not limited to what the Cockpit can reach:
+
+```bash
+nexus-seed-knowledge principles --db k.db       # what it learned, and how well each holds
+nexus-seed-knowledge principles --db k.db --mature-only
+nexus-seed-knowledge memories --db k.db         # what it compressed, and from what
+nexus-seed-knowledge reconcile --db k.db        # run one bounded pass
+nexus-seed-knowledge pending --db k.db          # everything waiting on a person
+nexus-seed-knowledge decide --db k.db K-xxxx approve --note "..."
+nexus-seed-knowledge answer --db k.db K-xxxx "自動更新はしません"
+```
+
+`decide` dispatches on what the id actually is — a proposal, an artifact, a
+completion review or an unresolved entity — so you do not have to remember
+which. Every one of these goes through the same `KnowledgeLoop` the Cockpit
+calls, not a second implementation.
+
 Run it as `python -m nexus_seed.knowledge_cli ...` if you haven't installed
 the package's console scripts. One `--db` file is shared by the Knowledge
 Ledger *and* the Project Orchestrator (one schema creates every table), so

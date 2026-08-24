@@ -542,6 +542,23 @@ nexus-seed-knowledge advise --db k.db --subject project-A
 nexus-seed-knowledge --help                     # 全subcommand（各subcommandにも--help）
 ```
 
+autonomous loopもここから操作できるので、headless運用がCockpitで届く範囲に
+縛られません。
+
+```bash
+nexus-seed-knowledge principles --db k.db       # 何を学んだか、どれだけ支持されているか
+nexus-seed-knowledge principles --db k.db --mature-only
+nexus-seed-knowledge memories --db k.db         # 何を、何から統合したか
+nexus-seed-knowledge reconcile --db k.db        # loopを1 pass実行
+nexus-seed-knowledge pending --db k.db          # 人の判断待ちを一覧
+nexus-seed-knowledge decide --db k.db K-xxxx approve --note "..."
+nexus-seed-knowledge answer --db k.db K-xxxx "自動更新はしません"
+```
+
+`decide` はidの実体（proposal / artifact / completion review / 未解決entity）を
+見て処理を振り分けるので、どれだったかを覚えておく必要はありません。いずれも
+Cockpitが呼ぶのと同じ`KnowledgeLoop`を通ります（実装は二重化していません）。
+
 packageのconsole scriptを入れていない場合は`python -m nexus_seed.knowledge_cli ...`
 で実行できます。`--db`は1つのfileをKnowledge LedgerとProject Orchestratorの両方で
 共有します（1つのschemaが全tableを作るため）ので、`submit`は検出したSignalを
