@@ -32,14 +32,20 @@ from ..backends.base import BackendRequest, ExecutionBackend
 from ..core.event import Event
 from ..orchestrator.models import A2AMessage, A2AMessageType
 from ..observation_sources import SYSTEM_SNAPSHOT_EVENT, flatten_snapshot
+from .consolidation import Consolidator
 from .ledger import KnowledgeLedger
 from .models import (
     Annotation,
+    KIND_CONSOLIDATED_MEMORY,
     KIND_EXPERIENCE,
+    KIND_PRINCIPLE,
     RELATION_ABOUT,
+    STATUS_SUPPORTED,
+    STATUS_VALIDATED,
     KnowledgeRevision,
     Relation,
 )
+from .principles import PrincipleExtractor
 from .projection import WorldStateProjection, annotate_world_fact
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -70,6 +76,9 @@ PROPOSAL_REJECTED = "REJECTED"
 PROPOSAL_FORBIDDEN = "FORBIDDEN"
 PROPOSAL_ROUTED = "ROUTED"
 
+#: Grouping key for Knowledge that names no subject of its own.
+UNASSIGNED_SUBJECT = "__unassigned__"
+
 QUESTION_OPEN = "OPEN"
 QUESTION_ANSWERED = "ANSWERED"
 ENTITY_UNRESOLVED = "UNRESOLVED"
@@ -82,7 +91,11 @@ ASSESSMENT_INSTRUCTION = (
     "concrete, useful project goals justified by evidence. Do not duplicate a "
     "live project. It is correct to propose nothing. A read_only proposal may "
     "inspect or analyse information but must not change an external system. "
-    "Every proposal must cite one or more supplied knowledge ids. Return JSON only."
+    "Every proposal must cite one or more supplied knowledge ids. "
+    "`principles` are patterns already earned from past cases: use them to "
+    "judge what this evidence is likely to lead to. They are predictions, not "
+    "truth, and are never evidence on their own — a proposal still has to cite "
+    "the evidence it came from. Return JSON only."
 )
 
 ASSESSMENT_SCHEMA = {
@@ -171,6 +184,8 @@ class KnowledgeLoopResult:
     resource_observations: int = 0
     source_observations: int = 0
     agent_reports: int = 0
+    consolidations: int = 0
+    principles: int = 0
     proposals: int = 0
     projects_routed: int = 0
     knowledge_events: int = 0
@@ -189,12 +204,23 @@ class KnowledgeLoop:
         backend: ExecutionBackend | None = None,
         policy: ProjectProposalPolicy | None = None,
         assessment_batch_size: int = 20,
+        consolidation_threshold: int = 5,
+        consolidations_per_pass: int = 1,
+        principle_threshold: int = 3,
     ) -> None:
         self.runtime = runtime
         self.orchestrator = orchestrator
         self.backend = backend
         self.policy = policy or ProjectProposalPolicy()
         self.assessment_batch_size = max(1, assessment_batch_size)
+        #: How many un-consolidated observations about one subject are worth a
+        #: consolidation pass, and how many subjects one pass may compress.
+        #: Both bound LLM cost per tick — consolidation is never urgent.
+        self.consolidation_threshold = max(2, consolidation_threshold)
+        self.consolidations_per_pass = max(1, consolidations_per_pass)
+        #: How many consolidated memories / experiences justify looking for a
+        #: reusable principle across them.
+        self.principle_threshold = max(2, principle_threshold)
         self.ledger = KnowledgeLedger(runtime.knowledge_store)
         self.manual = ManualAdapter("knowledge_manual")
         # Completion remains an Agent report until Knowledge and a person have
@@ -267,6 +293,11 @@ class KnowledgeLoop:
                 await self._reconcile_completion_decisions()
             )
             result.knowledge_events = self._ensure_knowledge_events()
+            # Re-read before deciding: compress what has piled up, and look for
+            # a reusable principle across it, so assessment reasons over
+            # digested memory and earned principles rather than raw scraps only.
+            result.consolidations = await self._consolidate_knowledge()
+            result.principles = await self._extract_principles()
             result.proposals = await self._assess_new_knowledge()
             result.projects_routed = await self._route_approved_proposals()
         except Exception as exc:  # noqa: BLE001 - next tick must remain usable
@@ -893,18 +924,155 @@ class KnowledgeLoop:
 
     # --- situation evaluation ------------------------------------------
 
+    #: Kinds a Consolidated Memory may compress, and a Principle generalise from.
+    _CONSOLIDATABLE = ("raw", KIND_RESOURCE_OBSERVATION, KIND_SOURCE_OBSERVATION,
+                       KIND_AGENT_REPORT, KIND_AGENT_OBSERVATION, KIND_EXPERIENCE)
+
+    async def _consolidate_knowledge(self) -> int:
+        """Compress piled-up observations about one subject into one memory.
+
+        Consolidation is how the Ledger stays readable as it grows: without it
+        assessment keeps re-reading an ever-longer list of raw scraps.  It is
+        deliberately lazy — a subject is only compressed once
+        :attr:`consolidation_threshold` observations about it are not yet
+        covered by any Consolidated Memory, and at most
+        :attr:`consolidations_per_pass` subjects are compressed per tick.
+
+        Needs a reasoning backend: without one the Consolidator would write an
+        unsynthesized listing, which is the right answer for an explicit
+        request but only noise when produced automatically every tick.
+        """
+        if self.backend is None:
+            return 0
+        heads = self.ledger.all_heads()
+        covered = {
+            knowledge_id
+            for item in heads
+            if item.kind == KIND_CONSOLIDATED_MEMORY
+            for knowledge_id in item.derived_from
+        }
+
+        # Group by what each observation is about.  Anything with no subject —
+        # a typed-in note, most obviously — is still compressed, under one
+        # shared bucket, rather than piling up unread forever.
+        groups: dict[str, list[KnowledgeRevision]] = {}
+        pending: dict[str, int] = {}
+        for item in heads:
+            if item.kind not in self._CONSOLIDATABLE and item.kind != KIND_CONSOLIDATED_MEMORY:
+                continue
+            subject = _subject_of(item)
+            groups.setdefault(subject, []).append(item)
+            if item.kind != KIND_CONSOLIDATED_MEMORY and item.knowledge_id not in covered:
+                pending[subject] = pending.get(subject, 0) + 1
+
+        subjects = sorted(
+            (s for s, count in pending.items() if count >= self.consolidation_threshold),
+            key=lambda s: (-pending[s], s),
+        )[: self.consolidations_per_pass]
+        if not subjects:
+            return 0
+
+        consolidator = Consolidator(self.ledger, self.backend)
+        created = 0
+        for subject in subjects:
+            # Oldest first, and existing memories about the same subject are
+            # eligible too, so a long-running subject compresses recursively
+            # instead of growing one unbounded candidate list.
+            candidates = sorted(groups[subject], key=lambda item: item.recorded_at)[
+                : self.assessment_batch_size
+            ]
+            memory = await consolidator.consolidate(
+                candidates,
+                about=None if subject == UNASSIGNED_SUBJECT else subject,
+            )
+            if memory is not None:
+                created += 1
+        return created
+
+    async def _extract_principles(self) -> int:
+        """Look for one reusable principle across consolidated memory.
+
+        A principle is what makes the past usable on a situation it did not
+        come from, so it generalises over *digested* material (consolidated
+        memories and recorded experience), never over one raw observation.
+        Extraction is skipped entirely when a principle already cites exactly
+        this evidence, so a quiet tick costs no LLM call.
+        """
+        if self.backend is None:
+            return 0
+        heads = self.ledger.all_heads()
+        cases = [
+            item
+            for item in heads
+            if item.kind == KIND_CONSOLIDATED_MEMORY
+            or (
+                item.kind == KIND_EXPERIENCE
+                and item.status not in {ARTIFACT_PENDING_REVIEW, ARTIFACT_REJECTED}
+            )
+        ]
+        if len(cases) < self.principle_threshold:
+            return 0
+        cases = sorted(cases, key=lambda item: item.recorded_at)[
+            : self.assessment_batch_size
+        ]
+
+        evidence = {item.knowledge_id for item in cases}
+        for principle in heads:
+            if principle.kind == KIND_PRINCIPLE and set(principle.derived_from) == evidence:
+                return 0  # this exact evidence already produced a principle
+
+        extracted = await PrincipleExtractor(self.ledger, self.backend).extract(cases)
+        return 1 if extracted is not None else 0
+
+    def mature_principles(self) -> list[KnowledgeRevision]:
+        """Principles that survived enough confirmation to steer a decision.
+
+        A ``candidate`` principle has not been tested against a counterexample
+        yet, so it is deliberately withheld from the evaluator's context.
+        """
+        return [
+            item
+            for item in self.ledger.by_kind(KIND_PRINCIPLE)
+            if item.status in {STATUS_SUPPORTED, STATUS_VALIDATED}
+        ]
+
+    def _already_assessed(self):
+        """Return a predicate for "this exact revision has been assessed".
+
+        Keyed by **revision**, not by Knowledge id: a corrected or annotated
+        object is new information and must be read again — "何度も読み直す".
+        Assessments written before revision ids were recorded fall back to a
+        time comparison, so upgrading a database does not re-assess its whole
+        history at once.
+        """
+        assessed_revisions: set[str] = set()
+        legacy_assessed_at: dict[str, Any] = {}
+        for assessment in self.ledger.by_kind(KIND_SITUATION_ASSESSMENT):
+            revision_ids = assessment.metadata.get("evidence_revision_ids")
+            if revision_ids:
+                assessed_revisions.update(revision_ids)
+                continue
+            for knowledge_id in assessment.metadata.get("evidence_ids", []):
+                seen = legacy_assessed_at.get(knowledge_id)
+                if seen is None or assessment.recorded_at > seen:
+                    legacy_assessed_at[knowledge_id] = assessment.recorded_at
+
+        def already_assessed(item: KnowledgeRevision) -> bool:
+            if item.id in assessed_revisions:
+                return True
+            seen = legacy_assessed_at.get(item.knowledge_id)
+            return seen is not None and item.recorded_at <= seen
+
+        return already_assessed
+
     async def _assess_new_knowledge(self) -> int:
         if self.backend is None:
             return 0
-        assessed = {
-            knowledge_id
-            for item in self.ledger.by_kind(KIND_SITUATION_ASSESSMENT)
-            for knowledge_id in item.metadata.get("evidence_ids", [])
-        }
+        already_assessed = self._already_assessed()
         candidates = [
             item
             for item in self.ledger.all_heads()
-            if item.knowledge_id not in assessed
+            if not already_assessed(item)
             and item.kind
             in {
                 "raw",
@@ -914,6 +1082,9 @@ class KnowledgeLoop:
                 KIND_AGENT_REPORT,
                 KIND_AGENT_OBSERVATION,
                 KIND_ENTITY_CANDIDATE,
+                # A Consolidated Memory is evidence in its own right: it is how
+                # many older observations stay usable without re-reading each.
+                KIND_CONSOLIDATED_MEMORY,
             }
             and not (
                 item.kind == KIND_EXPERIENCE
@@ -934,6 +1105,7 @@ class KnowledgeLoop:
                 "world_view": self.world_view(),
                 "new_evidence": [_evidence_dict(item) for item in candidates],
                 "active_projects": active_projects,
+                "principles": [_principle_dict(item) for item in self.mature_principles()],
             },
             output_schema=ASSESSMENT_SCHEMA,
             metadata={"kind": "situation_assessment"},
@@ -949,7 +1121,11 @@ class KnowledgeLoop:
             return 0
 
         evidence_ids = [item.knowledge_id for item in candidates]
-        assessment_id = _stable_id("assessment", "|".join(sorted(evidence_ids)))
+        evidence_revision_ids = [item.id for item in candidates]
+        # Identity is the set of *revisions* read, so re-reading a corrected
+        # object writes a new assessment instead of colliding with the old one
+        # (which would leave the correction permanently unassessed).
+        assessment_id = _stable_id("assessment", "|".join(sorted(evidence_revision_ids)))
         if self.ledger.head(assessment_id) is None:
             self.ledger.record(
                 parsed,
@@ -960,6 +1136,7 @@ class KnowledgeLoop:
                 derived_from=evidence_ids,
                 metadata={
                     "evidence_ids": evidence_ids,
+                    "evidence_revision_ids": evidence_revision_ids,
                     "model": backend_result.model,
                     "proposal_count": len(raw_proposals),
                 },
@@ -1175,6 +1352,14 @@ class ReasoningProjectAgent:
         ]
 
 
+def _subject_of(item: KnowledgeRevision) -> str:
+    """What this Knowledge is about, or the shared bucket when it says nothing."""
+    for relation in item.relations:
+        if relation.type == RELATION_ABOUT:
+            return relation.target
+    return UNASSIGNED_SUBJECT
+
+
 def _stable_id(namespace: str, value: str) -> str:
     digest = hashlib.sha256(f"{namespace}:{value}".encode("utf-8")).hexdigest()[:20]
     return f"K-{namespace}-{digest}"
@@ -1207,6 +1392,18 @@ def _evidence_dict(item: KnowledgeRevision) -> dict[str, Any]:
         "source": item.source.to_dict(),
         "recorded_at": item.recorded_at.isoformat(),
         "status": item.status,
+    }
+
+
+def _principle_dict(item: KnowledgeRevision) -> dict[str, Any]:
+    """One earned principle, with how much evidence stands behind it."""
+    return {
+        "knowledge_id": item.knowledge_id,
+        "principle": item.content.value,
+        "status": item.status,
+        "scope": item.metadata.get("scope"),
+        "support_count": item.metadata.get("support_count", 0),
+        "counterexample_count": item.metadata.get("counterexample_count", 0),
     }
 
 
