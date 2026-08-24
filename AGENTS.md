@@ -1763,11 +1763,8 @@ seventh Core primitive — one new append-only store, `knowledge_revisions`.
   unbuilt; Phase 4C replanning deliberately does not compensate.
 - Event replay (deliberately *not* durable delivery); per-subscriber delivery
   targets (`event_delivery_targets`); a real DLQ with a UI.
-- Office / PDF / OCR extractors registered in the Resource pipeline (the
-  registry is ready for them) — `nexus_seed/knowledge/ingest_pptx.py` is a
-  separate, standalone stopgap that reads `.pptx` slides straight into the
-  Knowledge Ledger without going through `resources/extractors.py` at all;
-  the formal Extractor integration is deliberately still unbuilt; further
+- PDF and OCR extractors (the registry is ready for them; `.pptx`, `.xlsx`
+  and `.docx` are registered since the Office extractors landed); further
   adapters (mail, Slack, GitHub, browser); further ExecutionBackends (Shell /
   Claude Code / OpenClaw / MCP); `resource_links`.
 - A2A streaming/SSE and push notification; automatic propagation of a Work

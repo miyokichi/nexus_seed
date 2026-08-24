@@ -555,17 +555,37 @@ LLMを使う各subcommand（`consolidate`・`extract-principle`・`counterexampl
 します。読み書き系commandの`--json`は、1行要約ではなくKnowledge revision全体を
 出力します（scripting向け）。
 
-### ローカルfile（.pptx）をKnowledgeへ取り込む
+### Officeファイル（.pptx / .xlsx / .docx）を外界の状況として取り込む
 
-`nexus_seed/knowledge/ingest_pptx.py`（`nexus-seed-knowledge pptx`としても使え
-ます）は、ローカル文書を取り込むための小さく独立した最初の一歩です。*正式な*
-Resource/ingress pipeline統合（`nexus_seed/resources/extractors.py`の
-extractor registryはまさにこのために用意されていますが、まだOffice/PDF用の
-実装はありません）ではなく、今日からそのまま動くスクリプトです。
+file observerは以前から、許可フォルダ配下の全ファイルを種類を問わず監視・
+版管理・fingerprint化していました。できなかったのはOfficeファイルを*読む*
+ことだけで、そのため変更は検知されても中身が入りませんでした。PowerPoint・
+Excel・Word用のExtractorがこの穴を埋めます。
 
 ```bash
-pip install -e '.[ingest]'   # python-pptxを追加（core dependencyには含めていません）
+pip install -e '.[ingest]'   # python-pptx, openpyxl, python-docx（core依存ではありません）
+```
 
+監視フォルダにファイルを置けば、次のpollで通常のResource pipelineを通って
+中身がKnowledgeになります。別途importする操作は要りません。
+
+| ファイル | Representation | 中身 |
+| --- | --- | --- |
+| `.pptx` | text | slideごとに1ブロック（`[slide N]`付き） |
+| `.xlsx` / `.xlsm` | structure | `{sheet: {columns, rows, row_count}}`。数式は最後にキャッシュされた値 |
+| `.docx` | text | 段落、続いて表の行 |
+
+監視中のファイルを編集すると、最初の観測を上書きせず**2件目の観測**として
+記録されます。そのdeckが以前何と言っていたかは、今何と言っているかの隣に
+残ります。readerはoptionalです。extraを入れていない場合もファイルは版管理
+され、抽出は「入れるべきpackage名」を示して失敗するので、後から入れれば
+次の変更時に中身を拾います。
+
+監視フォルダを介さない単発の取り込みには `nexus-seed-knowledge pptx` が使え、
+各slideを個別のKnowledge objectとして記録します（同じExtractorでslideを読むので
+両経路の結果は一致します）。
+
+```bash
 nexus-seed-knowledge pptx --db nexus_knowledge.db slide.pptx
 nexus-seed-knowledge pptx --db nexus_knowledge.db --dir ./docs --about project-A
 # 同等: python -m nexus_seed.knowledge.ingest_pptx --db ... --dir ./docs

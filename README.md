@@ -321,18 +321,38 @@ for one call; `--no-llm` always forces the conservative fallback described
 above. `--json` on the read/write commands prints the full Knowledge
 revision instead of a one-line summary, for scripting.
 
-### Ingesting local files (.pptx) into Knowledge
+### Office files (.pptx / .xlsx / .docx) as observed situation
 
-`nexus_seed/knowledge/ingest_pptx.py` (also `nexus-seed-knowledge pptx`) is a
-small, standalone first step for pulling local documents in — it is *not*
-the eventual Resource/ingress pipeline integration (see
-`nexus_seed/resources/extractors.py`, whose extractor registry is built for
-exactly this but does not have an Office/PDF entry yet); it is a script you
-can run today.
+The file observer already watched, versioned and fingerprinted every file
+under an authorized folder, whatever its type — what it could not do was
+*read* an Office file, so a changed deck was noticed and its content never
+arrived. Extractors for PowerPoint, Excel and Word close that:
 
 ```bash
-pip install -e '.[ingest]'   # adds python-pptx; not a core dependency
+pip install -e '.[ingest]'   # python-pptx, openpyxl, python-docx — not core deps
+```
 
+Drop a file into the watched folder and its content becomes Knowledge on the
+next poll, through the ordinary Resource pipeline — no separate import step:
+
+| File | Representation | Content |
+| --- | --- | --- |
+| `.pptx` | text | one block per slide, `[slide N]` marked |
+| `.xlsx` / `.xlsm` | structure | `{sheet: {columns, rows, row_count}}`, formulas as their last cached value |
+| `.docx` | text | paragraphs, then table rows |
+
+Editing a watched file records a *second* observation rather than replacing
+the first, so what the deck used to say stays on the record next to what it
+says now. The readers are optional: without the extra installed, an Office
+file is still versioned and its extraction fails with a message naming the
+package to install, so installing it later picks the content up on the next
+change.
+
+For a one-off import that does not involve the watched folder,
+`nexus-seed-knowledge pptx` records each slide as its own Knowledge object
+(it reads slides through the same extractor, so both paths agree):
+
+```bash
 nexus-seed-knowledge pptx --db nexus_knowledge.db slide.pptx
 nexus-seed-knowledge pptx --db nexus_knowledge.db --dir ./docs --about project-A
 # equivalently: python -m nexus_seed.knowledge.ingest_pptx --db ... --dir ./docs

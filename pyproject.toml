@@ -16,6 +16,8 @@ dev = [
 ]
 ingest = [
     "python-pptx>=0.6.21",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
 ]
 
 [project.scripts]

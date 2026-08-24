@@ -24,6 +24,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ..resources.extractors import slide_texts
 from ..storage import Database, KnowledgeStore
 from .ledger import KnowledgeLedger
 from .models import RELATION_ABOUT, KnowledgeRevision, Relation
@@ -41,19 +42,20 @@ def _pptx_module():
 
 
 def extract_slide_texts(path: Path) -> list[str]:
-    """Return one text block per slide (every text-bearing shape, in order)."""
+    """Return one text block per slide (every text-bearing shape, in order).
+
+    Reading is delegated to the Resource pipeline's :func:`slide_texts`, so a
+    deck read through this shortcut and one read through the file observer see
+    exactly the same slides.  The per-slide ``[slide N]`` marker that the
+    Resource representation carries is dropped here, because this path records
+    one Knowledge object per slide and the position is already in its
+    ``source_ref``.
+    """
     presentation = _pptx_module().Presentation(str(path))
-    texts = []
-    for slide in presentation.slides:
-        parts = []
-        for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            text = shape.text_frame.text.strip()
-            if text:
-                parts.append(text)
-        texts.append("\n".join(parts))
-    return texts
+    return [
+        block.split("\n", 1)[1] if block.startswith("[slide ") else block
+        for block in slide_texts(presentation)
+    ]
 
 
 def ingest_pptx_file(

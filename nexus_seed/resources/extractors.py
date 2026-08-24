@@ -15,6 +15,7 @@ later without touching anything above it.
 from __future__ import annotations
 
 import csv
+import importlib
 import io
 import json
 from dataclasses import dataclass
@@ -142,6 +143,135 @@ class CSVExtractor(_Base):
         }
 
 
+def _require(module: str, package: str):
+    """Import an optional reader, saying what to install when it is missing.
+
+    Office formats need a third-party reader, and NEXUS SEED keeps its runtime
+    dependencies minimal, so the import happens here rather than at module
+    load.  A missing reader is reported as a normal extraction failure naming
+    the fix — the file still becomes a versioned Resource either way, so
+    installing the extra later picks its content up on the next change.
+    """
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise ExtractionError(
+            f"{package} is required to read this format; "
+            f"install it with: pip install -e '.[ingest]'"
+        ) from exc
+
+
+class PptxExtractor(_Base):
+    """Reads a PowerPoint deck as text, one block per slide."""
+
+    def __init__(self, version: str = "1") -> None:
+        super().__init__(
+            name="pptx_text",
+            version=version,
+            representation_type=TEXT,
+            resource_types=("pptx",),
+        )
+
+    def extract(self, data: bytes) -> str:
+        pptx = _require("pptx", "python-pptx")
+        try:
+            presentation = pptx.Presentation(io.BytesIO(data))
+        except Exception as exc:  # noqa: BLE001 - any reader failure is the same answer
+            raise ExtractionError(f"content is not a readable .pptx: {exc}") from exc
+        return "\n\n".join(slide_texts(presentation))
+
+
+def slide_texts(presentation) -> list[str]:
+    """One text block per slide: every text-bearing shape, in slide order."""
+    blocks = []
+    for index, slide in enumerate(presentation.slides, start=1):
+        parts = [
+            shape.text_frame.text.strip()
+            for shape in slide.shapes
+            if shape.has_text_frame and shape.text_frame.text.strip()
+        ]
+        if parts:
+            blocks.append(f"[slide {index}]\n" + "\n".join(parts))
+    return blocks
+
+
+class XlsxExtractor(_Base):
+    """Reads a workbook as ``{sheet: {"columns": [...], "rows": [...]}}``.
+
+    A *structure* representation, like CSV: a spreadsheet is tabular, and a
+    reader that wants columns should not have to re-parse prose.  Formulas are
+    read as their last cached value, because that is what the file records —
+    NEXUS SEED does not recalculate a workbook it only observed.
+    """
+
+    def __init__(self, version: str = "1", *, max_rows: int = 1000) -> None:
+        super().__init__(
+            name="xlsx",
+            version=version,
+            representation_type=STRUCTURE,
+            resource_types=("xlsx",),
+        )
+        object.__setattr__(self, "max_rows", max_rows)
+
+    def extract(self, data: bytes) -> Any:
+        openpyxl = _require("openpyxl", "openpyxl")
+        try:
+            workbook = openpyxl.load_workbook(
+                io.BytesIO(data), read_only=True, data_only=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ExtractionError(f"content is not a readable .xlsx: {exc}") from exc
+        try:
+            return {name: self._sheet(workbook[name]) for name in workbook.sheetnames}
+        finally:
+            workbook.close()
+
+    def _sheet(self, sheet) -> dict[str, Any]:
+        rows = []
+        for row in sheet.iter_rows(values_only=True):
+            if row is None or all(cell is None for cell in row):
+                continue
+            rows.append(["" if cell is None else cell for cell in row])
+            if len(rows) > self.max_rows:
+                break
+        if not rows:
+            return {"columns": [], "rows": [], "row_count": 0}
+        columns = [str(cell).strip() for cell in rows[0]]
+        body = rows[1 : self.max_rows + 1]
+        return {
+            "columns": columns,
+            "rows": [dict(zip(columns, row)) for row in body],
+            "row_count": len(body),
+            "truncated": len(rows) > self.max_rows,
+        }
+
+
+class DocxExtractor(_Base):
+    """Reads a Word document as text: paragraphs, then table cells."""
+
+    def __init__(self, version: str = "1") -> None:
+        super().__init__(
+            name="docx_text",
+            version=version,
+            representation_type=TEXT,
+            resource_types=("docx",),
+        )
+
+    def extract(self, data: bytes) -> str:
+        docx = _require("docx", "python-docx")
+        try:
+            document = docx.Document(io.BytesIO(data))
+        except Exception as exc:  # noqa: BLE001
+            raise ExtractionError(f"content is not a readable .docx: {exc}") from exc
+        parts = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+
+
 class ExtractorRegistry:
     """``(representation_type, resource_type) -> extractor``, deterministic.
 
@@ -187,8 +317,22 @@ class ExtractorRegistry:
 
 
 def default_registry() -> ExtractorRegistry:
-    """The extractors Phase 3E ships with."""
-    return ExtractorRegistry([PlainTextExtractor(), JSONExtractor(), CSVExtractor()])
+    """The extractors NEXUS SEED ships with.
+
+    Office readers are registered unconditionally even though their libraries
+    are optional: an unreadable file then fails with a message naming the
+    package to install, rather than silently producing no Knowledge at all.
+    """
+    return ExtractorRegistry(
+        [
+            PlainTextExtractor(),
+            JSONExtractor(),
+            CSVExtractor(),
+            PptxExtractor(),
+            XlsxExtractor(),
+            DocxExtractor(),
+        ]
+    )
 
 
 #: Map a file suffix to a coarse resource type (spec §4: not a MIME registry).
@@ -198,6 +342,10 @@ SUFFIX_TYPES: dict[str, str] = {
     ".md": "markdown",
     ".csv": "csv",
     ".json": "json",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+    ".xlsm": "xlsx",
+    ".docx": "docx",
 }
 
 
