@@ -31,7 +31,11 @@ from ..adapters.manual import ManualAdapter
 from ..backends.base import BackendRequest, ExecutionBackend
 from ..core.event import Event
 from ..orchestrator.models import A2AMessage, A2AMessageType
-from ..observation_sources import SYSTEM_SNAPSHOT_EVENT, flatten_snapshot
+from ..observation_sources import (
+    FOLDER_STATUS_EVENT,
+    SYSTEM_SNAPSHOT_EVENT,
+    flatten_snapshot,
+)
 from .consolidation import Consolidator
 from .ledger import KnowledgeLedger
 from .models import (
@@ -641,49 +645,60 @@ class KnowledgeLoop:
             count += 1
         return count
 
+    #: ``event type -> (source_type, entity prefix)`` for every authorized
+    #: ObservationSource kind.  Each reading is measured, so it enters the
+    #: World View directly rather than waiting on an interpretation.
+    _SOURCE_EVENTS = {
+        SYSTEM_SNAPSHOT_EVENT: ("system_snapshot", "system"),
+        FOLDER_STATUS_EVENT: ("folder_status", "folder"),
+    }
+
     def _ingest_source_observations(self) -> int:
         """Turn measured source fields into provenance-bearing World facts."""
         count = 0
-        for event in self.runtime.event_store.by_type(SYSTEM_SNAPSHOT_EVENT):
-            payload = event.payload or {}
-            source_id = str(payload.get("source_id") or "")
-            values = payload.get("values")
-            if not source_id or not isinstance(values, dict):
-                continue
-            for attribute, value in flatten_snapshot(values):
-                knowledge_id = _stable_id(
-                    "system-observation", f"{event.id}:{attribute}"
-                )
-                if self.ledger.head(knowledge_id) is not None:
+        for event_type, (source_type, prefix) in self._SOURCE_EVENTS.items():
+            for event in self.runtime.event_store.by_type(event_type):
+                payload = event.payload or {}
+                source_id = str(payload.get("source_id") or "")
+                values = payload.get("values")
+                if not source_id or not isinstance(values, dict):
                     continue
-                recorded = self.ledger.record(
-                    value,
-                    knowledge_id=knowledge_id,
-                    source_type="system_snapshot",
-                    source_ref=str(event.id),
-                    format="json",
-                    kind=KIND_SOURCE_OBSERVATION,
-                    relations=[Relation(type=RELATION_ABOUT, target=f"system:{source_id}")],
-                    metadata={
-                        "source_id": source_id,
-                        "event_id": str(event.id),
-                        "field": attribute,
-                        "ingress_receipt_id": (
-                            str(event.ingress_receipt_id)
-                            if event.ingress_receipt_id else None
-                        ),
-                    },
-                )
-                annotate_world_fact(
-                    self.ledger,
-                    recorded.knowledge_id,
-                    entity=f"system:{source_id}",
-                    attribute=attribute,
-                    value=value,
-                    confidence=1.0,
-                    created_by="system_snapshot",
-                )
-                count += 1
+                entity = f"{prefix}:{source_id}"
+                for attribute, value in flatten_snapshot(values):
+                    knowledge_id = _stable_id(
+                        f"{source_type}-observation", f"{event.id}:{attribute}"
+                    )
+                    if self.ledger.head(knowledge_id) is not None:
+                        continue
+                    recorded = self.ledger.record(
+                        value,
+                        knowledge_id=knowledge_id,
+                        source_type=source_type,
+                        source_ref=str(event.id),
+                        format="json",
+                        kind=KIND_SOURCE_OBSERVATION,
+                        relations=[Relation(type=RELATION_ABOUT, target=entity)],
+                        metadata={
+                            "source_id": source_id,
+                            "event_id": str(event.id),
+                            "field": attribute,
+                            "path": payload.get("path"),
+                            "ingress_receipt_id": (
+                                str(event.ingress_receipt_id)
+                                if event.ingress_receipt_id else None
+                            ),
+                        },
+                    )
+                    annotate_world_fact(
+                        self.ledger,
+                        recorded.knowledge_id,
+                        entity=entity,
+                        attribute=attribute,
+                        value=value,
+                        confidence=1.0,
+                        created_by=source_type,
+                    )
+                    count += 1
         return count
 
     def _ingest_resources(self) -> int:

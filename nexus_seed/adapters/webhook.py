@@ -500,12 +500,18 @@ class WebhookServer:
                 name = body.get("name")
                 fields = body.get("fields")
                 interval = body.get("poll_interval_seconds", 60)
+                kind = body.get("kind", "system_snapshot")
+                path_value = body.get("path")
                 if not isinstance(name, str) or not name.strip():
                     raise ValueError("name must be a non-empty string")
                 if not isinstance(fields, list) or not all(
                     isinstance(item, str) for item in fields
                 ):
                     raise ValueError("fields must be an array of strings")
+                if not isinstance(kind, str) or not kind.strip():
+                    raise ValueError("kind must be a non-empty string")
+                if path_value is not None and not isinstance(path_value, str):
+                    raise ValueError("path must be a string")
                 try:
                     poll_interval = float(interval)
                 except (TypeError, ValueError) as exc:
@@ -514,6 +520,8 @@ class WebhookServer:
                     name=name,
                     fields=fields,
                     poll_interval_seconds=poll_interval,
+                    kind=kind.strip(),
+                    path=path_value,
                 )
             elif len(parts) == 6 and parts[:4] == [
                 "cockpit", "api", "knowledge", "sources"

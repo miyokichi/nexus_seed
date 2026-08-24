@@ -655,6 +655,43 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         runtime.close()
 
 
+def cmd_watch_folder(args: argparse.Namespace) -> int:
+    """Authorize a folder as a standing observation of how much is piling up.
+
+    Distinct from the file observer, which reports that a file *changed*:
+    this reports the folder's situation — how many, how large, how old — which
+    is a fact about the world even on a day when nothing changed.  Only
+    directory metadata is read; no file is opened.
+    """
+    from .observation_sources import DEFAULT_FOLDER_FIELDS, ObservationSourceService
+    from .runtime.runtime import Runtime
+
+    runtime = Runtime(args.db)
+    try:
+        service = ObservationSourceService(runtime, data_root=args.data_root or ".")
+        source = service.create_folder_status(
+            name=args.name,
+            path=args.path,
+            fields=args.fields or list(DEFAULT_FOLDER_FIELDS),
+            poll_interval_seconds=args.interval,
+            recursive=not args.no_recursive,
+        )
+        outcomes = asyncio.run(service.poll_due(force_source_id=source.id))
+        if args.json:
+            print(json.dumps(
+                {"source": source.to_dict(), "outcomes": outcomes},
+                ensure_ascii=False, indent=2,
+            ))
+        else:
+            print(f"{source.id}  {source.name}  {source.config['path']}")
+            print(f"    fields: {', '.join(source.fields)}")
+            for outcome in outcomes:
+                print(f"    first reading: {outcome.get('status')}")
+    finally:
+        runtime.close()
+    return 0
+
+
 def cmd_principles(args: argparse.Namespace) -> int:
     """What the loop has generalised from experience, and how well it holds."""
     ledger = _open_ledger(args.db)
@@ -916,6 +953,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--switches-json", default=None, help='JSON list, e.g. \'[{"from": "a", "to": "b", "reason": "..."}]\'')
     p.add_argument("--source-ref", default=None)
     p.set_defaults(func=cmd_experience)
+
+    p = sub.add_parser(
+        "watch-folder",
+        help="authorize a folder as a standing observation of what is piling up",
+    )
+    _add_db(p); _add_json(p)
+    p.add_argument("path", help="absolute path to the folder to size up")
+    p.add_argument("--name", required=True, help="what to call this observation source")
+    p.add_argument("--fields", nargs="*", default=None,
+                   help="file_count / total_bytes / oldest_change / newest_change / by_extension")
+    p.add_argument("--interval", type=float, default=300.0, help="seconds between readings")
+    p.add_argument("--no-recursive", action="store_true", help="do not descend into subfolders")
+    p.add_argument("--data-root", default=None, help="NEXUS_SEED_DATA_DIR (unused by this kind)")
+    p.set_defaults(func=cmd_watch_folder)
 
     p = sub.add_parser("principles", help="what the loop generalised, and how well each holds up")
     _add_db(p); _add_json(p)

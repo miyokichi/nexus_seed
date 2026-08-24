@@ -16,6 +16,7 @@ from ..knowledge.autonomous_loop import (
 )
 from ..knowledge.models import KIND_CONSOLIDATED_MEMORY, KIND_PRINCIPLE
 from ..knowledge.projection import WorldStateProjection
+from ..observation_sources import DEFAULT_FOLDER_FIELDS, FOLDER_STATUS, SYSTEM_SNAPSHOT
 from ..projects.projections import get_project_situation, get_project_summaries
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
 
@@ -310,16 +311,28 @@ class CockpitService:
         name: str,
         fields: list[str],
         poll_interval_seconds: float = 60.0,
+        kind: str = SYSTEM_SNAPSHOT,
+        path: str | None = None,
     ) -> dict[str, Any]:
-        """Create and immediately take the first explicitly authorized snapshot."""
+        """Create and immediately take the first explicitly authorized reading."""
         service = getattr(self.runtime, "observation_sources", None)
         if service is None:
             raise ValueError("observation sources are unavailable")
-        source = service.create_system_snapshot(
-            name=name,
-            fields=fields,
-            poll_interval_seconds=poll_interval_seconds,
-        )
+        if kind == FOLDER_STATUS:
+            source = service.create_folder_status(
+                name=name,
+                path=path or "",
+                fields=fields or list(DEFAULT_FOLDER_FIELDS),
+                poll_interval_seconds=poll_interval_seconds,
+            )
+        elif kind == SYSTEM_SNAPSHOT:
+            source = service.create_system_snapshot(
+                name=name,
+                fields=fields,
+                poll_interval_seconds=poll_interval_seconds,
+            )
+        else:
+            raise ValueError(f"unsupported observation source kind: {kind}")
         outcomes = await service.poll_due(force_source_id=source.id)
         loop = getattr(self.runtime, "knowledge_loop", None)
         if loop is not None:

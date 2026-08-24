@@ -15,7 +15,7 @@ import shutil
 import socket
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,22 @@ SYSTEM_SNAPSHOT = "system_snapshot"
 SYSTEM_SNAPSHOT_EVENT = "system_snapshot_observed"
 SYSTEM_FIELDS = frozenset({"platform", "hostname", "cpu", "memory", "data_disk"})
 DEFAULT_SYSTEM_FIELDS = ("platform", "cpu", "memory", "data_disk")
+
+#: A folder's *standing situation*, which is a different question from the
+#: file observer's "this file changed": how much is in there, how old the
+#: oldest thing is, what kinds of file they are.  A backlog is a fact about
+#: the world even on a day when nothing changed.
+FOLDER_STATUS = "folder_status"
+FOLDER_STATUS_EVENT = "folder_status_observed"
+FOLDER_FIELDS = frozenset(
+    {"file_count", "total_bytes", "oldest_change", "newest_change", "by_extension"}
+)
+DEFAULT_FOLDER_FIELDS = ("file_count", "total_bytes", "oldest_change")
+
+#: How many entries one folder poll will stat.  A source is a standing
+#: observation, not a crawl: past this the count is reported as capped rather
+#: than the poll growing without bound.
+FOLDER_SCAN_LIMIT = 5000
 
 
 @dataclass(slots=True)
@@ -139,6 +155,102 @@ class SystemSnapshotAdapter:
         )
 
 
+class FolderStatusAdapter:
+    """Read how much is sitting in one operator-authorized folder.
+
+    Only directory metadata is read — name, size and modification time from
+    ``stat``.  No file is ever opened, so authorizing a folder here says
+    nothing about letting NEXUS SEED read what is in it; that is the file
+    observer's separate, separately-scoped job.
+    """
+
+    source_type = FOLDER_STATUS
+
+    def __init__(self, source: ObservationSource) -> None:
+        if source.kind != FOLDER_STATUS:
+            raise ValueError(f"unsupported observation source kind: {source.kind}")
+        invalid = set(source.fields) - FOLDER_FIELDS
+        if invalid:
+            raise ValueError(f"unsupported folder fields: {', '.join(sorted(invalid))}")
+        path = str(source.config.get("path") or "").strip()
+        if not path:
+            raise ValueError("a folder observation source needs config['path']")
+        self.source = source
+        self.path = Path(path).expanduser().resolve()
+        self.recursive = bool(source.config.get("recursive", True))
+
+    @property
+    def adapter_id(self) -> str:
+        return self.source.adapter_id
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return only the fields present in the source's allow-list."""
+        if not self.path.is_dir():
+            raise ValueError(f"not a readable folder: {self.path}")
+        fields = set(self.source.fields)
+        count = 0
+        total = 0
+        oldest: float | None = None
+        newest: float | None = None
+        by_extension: dict[str, int] = {}
+        truncated = False
+
+        walker = self.path.rglob("*") if self.recursive else self.path.glob("*")
+        for entry in walker:
+            try:
+                if not entry.is_file():
+                    continue
+                stat = entry.stat()
+            except OSError:  # vanished or unreadable; it is simply not counted
+                continue
+            count += 1
+            if count > FOLDER_SCAN_LIMIT:
+                truncated = True
+                break
+            total += stat.st_size
+            oldest = stat.st_mtime if oldest is None else min(oldest, stat.st_mtime)
+            newest = stat.st_mtime if newest is None else max(newest, stat.st_mtime)
+            suffix = entry.suffix.lower() or "(none)"
+            by_extension[suffix] = by_extension.get(suffix, 0) + 1
+
+        values: dict[str, Any] = {}
+        if "file_count" in fields:
+            values["file_count"] = min(count, FOLDER_SCAN_LIMIT)
+            if truncated:
+                values["file_count_capped"] = True
+        if "total_bytes" in fields:
+            values["total_bytes"] = total
+        if "oldest_change" in fields:
+            values["oldest_change"] = _iso_from_epoch(oldest)
+        if "newest_change" in fields:
+            values["newest_change"] = _iso_from_epoch(newest)
+        if "by_extension" in fields:
+            values["by_extension"] = dict(sorted(by_extension.items()))
+        return values
+
+    def envelope(
+        self, values: dict[str, Any], *, generation: int, digest: str
+    ) -> IngressEnvelope:
+        """Describe one changed folder reading for the existing Ingress boundary."""
+        return IngressEnvelope(
+            adapter_id=self.adapter_id,
+            source_type=self.source_type,
+            source_event_key=f"{self.source.id}:{generation}:{digest}",
+            event_type=FOLDER_STATUS_EVENT,
+            payload={
+                "source_id": self.source.id,
+                "path": str(self.path),
+                "values": values,
+            },
+            source_cursor=str(generation),
+            metadata={
+                "fields": list(self.source.fields),
+                "digest": digest,
+                "path": str(self.path),
+            },
+        )
+
+
 class ObservationSourceService:
     """Manage and poll durable ObservationSources."""
 
@@ -175,6 +287,47 @@ class ObservationSourceService:
         self.store.save(source)
         return source
 
+    def create_folder_status(
+        self,
+        *,
+        name: str,
+        path: str | Path,
+        fields: list[str] | tuple[str, ...] = DEFAULT_FOLDER_FIELDS,
+        poll_interval_seconds: float = 300.0,
+        recursive: bool = True,
+    ) -> ObservationSource:
+        """Persist one folder the operator authorized NEXUS SEED to size up.
+
+        Only directory metadata is read; no file is opened.  The folder must
+        exist when it is registered, so a typo is refused here rather than
+        becoming a source that silently fails on every poll.
+        """
+        label = (name or "").strip()
+        selected = tuple(
+            dict.fromkeys(str(item).strip() for item in fields if str(item).strip())
+        )
+        if not label:
+            raise ValueError("name must not be empty")
+        if not selected:
+            raise ValueError("at least one observation field is required")
+        invalid = set(selected) - FOLDER_FIELDS
+        if invalid:
+            raise ValueError(f"unsupported folder fields: {', '.join(sorted(invalid))}")
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be greater than zero")
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"not a readable folder: {resolved}")
+        source = ObservationSource(
+            name=label,
+            kind=FOLDER_STATUS,
+            fields=selected,
+            poll_interval_seconds=float(poll_interval_seconds),
+            config={"path": str(resolved), "recursive": bool(recursive)},
+        )
+        self.store.save(source)
+        return source
+
     def all(self) -> list[ObservationSource]:
         """Return every configured source."""
         return self.store.all()
@@ -200,7 +353,7 @@ class ObservationSourceService:
             if not source.enabled or (force_source_id is None and not source.due(now)):
                 continue
             try:
-                outcome = await self._poll_system_snapshot(source, now=now)
+                outcome = await self._poll(source, now=now)
             except Exception as exc:  # noqa: BLE001 - one source cannot stop the rest
                 source.last_checked_at = now
                 source.last_error = str(exc)
@@ -211,10 +364,24 @@ class ObservationSourceService:
                 outcomes.append(outcome)
         return outcomes
 
-    async def _poll_system_snapshot(
+    def _adapter(self, source: ObservationSource):
+        """The reader for one source kind.  Adding a kind is adding a case."""
+        if source.kind == SYSTEM_SNAPSHOT:
+            return SystemSnapshotAdapter(source, data_root=self.data_root)
+        if source.kind == FOLDER_STATUS:
+            return FolderStatusAdapter(source)
+        raise ValueError(f"unsupported observation source kind: {source.kind}")
+
+    async def _poll(
         self, source: ObservationSource, *, now: datetime
     ) -> dict[str, Any]:
-        adapter = SystemSnapshotAdapter(source, data_root=self.data_root)
+        """Read one source; an unchanged reading produces no Event.
+
+        Kind-independent: every source is read, digested, compared with its
+        checkpoint and — only when the reading actually differs — put through
+        the same Ingress boundary as any other external observation.
+        """
+        adapter = self._adapter(source)
         values = adapter.snapshot()
         digest = hashlib.sha256(
             json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -284,12 +451,25 @@ def _physical_memory_bytes() -> int | None:
         return None
 
 
+def _iso_from_epoch(value: float | None) -> str | None:
+    """A filesystem timestamp as UTC ISO-8601, or ``None`` when there is none."""
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
 __all__ = [
+    "DEFAULT_FOLDER_FIELDS",
     "DEFAULT_SYSTEM_FIELDS",
+    "FOLDER_FIELDS",
+    "FOLDER_SCAN_LIMIT",
+    "FOLDER_STATUS",
+    "FOLDER_STATUS_EVENT",
+    "FolderStatusAdapter",
     "ObservationSource",
     "ObservationSourceService",
     "SYSTEM_FIELDS",

@@ -141,6 +141,21 @@ PC情報は自動では読み取りません。**World → Observation Sources**
 値が同じ場合はKnowledgeを重複生成しません。観測元、差分判定checkpoint、最終Event、
 エラーは再起動後も保持されます。1つの観測元が失敗しても、他の観測元は継続します。
 
+#### フォルダの「溜まり具合」を観測する
+
+同じ**World → Observation Sources**から、フォルダの状況を観測元として登録できます。
+file監視が「このfileが変わった」を伝えるのに対し、こちらは「何件あるか、合計何バイトか、
+最も古い更新はいつか、拡張子ごとに何件か」という*状況*を伝えます。何も編集されなかった
+日でも、溜まっていること自体は世界についての事実です。
+
+読むのはフォルダの目録（名前・サイズ・更新日時）だけで、**fileを開くことはありません**。
+ここでフォルダを許可しても、中身を読む許可にはなりません（中身の取り込みは
+`NEXUS_SEED_DATA_DIR/resources`の別の仕組みです）。CLIからも登録できます。
+
+```bash
+nexus-seed-knowledge watch-folder --db k.db /path/to/inbox --name 受信箱
+```
+
 #### fileをKnowledgeへ取り込む
 
 起動時に次のdirectoryが作成され、継続監視されます。
@@ -314,8 +329,10 @@ Agent Runtime          どう実行するか
   削除せず、解決できない矛盾を無理に解決しない
 - 複数事例からcandidate principleを一般化し、反例で検証し、実際の結果に対する予測器として
   評価するPrinciple Extraction
-- 検出したGap/Risk/Opportunityを、既存の`ProjectOrchestrator.submit()`経由の通常requestへ
+- 検出したGap/Risk/Opportunityを、他と同じautonomy policyで判断されるproject proposalへ
   変換するGoal bridge（Projectを直接作成することはありません）
+- operatorが明示的に許可した観測元: PC自身の固定項目と、フォルダの「溜まり具合」
+  （件数・合計サイズ・最古の更新日時）。読むのは目録だけで、fileは開きません
 
 library（`nexus_seed.knowledge`）、専用CLI（`nexus-seed-knowledge`）に加え、
 applicationではautonomous Knowledge loopとしても
@@ -541,6 +558,7 @@ autonomous loopもここから操作できるので、headless運用がCockpit�
 縛られません。
 
 ```bash
+nexus-seed-knowledge watch-folder --db k.db /path/to/inbox --name 受信箱
 nexus-seed-knowledge principles --db k.db       # 何を学んだか、どれだけ支持されているか
 nexus-seed-knowledge principles --db k.db --mature-only
 nexus-seed-knowledge memories --db k.db         # 何を、何から統合したか

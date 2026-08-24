@@ -94,9 +94,12 @@ Agent Runtime          "how does it get done?"
 - Principle Extraction that generalises several cases into a candidate
   principle, tests it against counterexamples, and evaluates it as a
   predictor against actual outcomes;
-- a Goal bridge that turns a detected Gap/Risk/Opportunity into an ordinary
-  request through the existing `ProjectOrchestrator.submit()` — it never
-  creates a Project directly.
+- a Goal bridge that turns a detected Gap/Risk/Opportunity into a project
+  proposal, judged by the same autonomy policy as any other — it never
+  creates a Project directly;
+- operator-authorized observation sources: the machine's own fixed fields,
+  and a folder's standing situation (how many files, how large, how old the
+  oldest is) — read from directory metadata only, never by opening a file.
 
 It is usable as a library (`nexus_seed.knowledge`), from the command line
 (`nexus-seed-knowledge`, below), and as the application's autonomous Knowledge
@@ -305,6 +308,7 @@ The autonomous loop is drivable from here too, so a headless deployment is
 not limited to what the Cockpit can reach:
 
 ```bash
+nexus-seed-knowledge watch-folder --db k.db /path/to/inbox --name 受信箱
 nexus-seed-knowledge principles --db k.db       # what it learned, and how well each holds
 nexus-seed-knowledge principles --db k.db --mature-only
 nexus-seed-knowledge memories --db k.db         # what it compressed, and from what
