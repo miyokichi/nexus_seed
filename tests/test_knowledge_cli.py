@@ -287,7 +287,7 @@ def test_evaluate_without_predicted_state_errors_cleanly(tmp_path, capsys):
     assert "predicted_state" in err
 
 
-# --- K5: signals / submit (no LLM -> safe, no fabricated risk) -------------
+# --- K5: signals / propose (no LLM -> safe, no fabricated risk) -------------
 
 
 def test_signals_without_llm_finds_nothing(tmp_path, capsys):
@@ -297,11 +297,11 @@ def test_signals_without_llm_finds_nothing(tmp_path, capsys):
     assert "no signals detected" in out
 
 
-def test_submit_without_llm_submits_nothing(tmp_path, capsys):
+def test_propose_without_llm_proposes_nothing(tmp_path, capsys):
     db = tmp_path / "k.db"
-    code, out, _ = _run(["submit", "--db", str(db), "--no-llm"], capsys)
+    code, out, _ = _run(["propose", "--db", str(db), "--no-llm"], capsys)
     assert code == 0
-    assert "nothing submitted" in out
+    assert "nothing proposed" in out
 
 
 # --- K6: experience / advise -------------------------------------------------

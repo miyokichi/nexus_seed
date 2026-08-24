@@ -5,12 +5,18 @@ Knowledge Runtime never queues work directly (spec §20: "直接Taskを乱発し
 
     Current View x Relevant Principles x Intentions
         -> Gap / Risk / Opportunity / Conflict  (:class:`Signal`)
-        -> the *existing*, unmodified ProjectRouter / ProjectOrchestrator
-           entry point (``orchestrator.submit``)
+        -> a project proposal on the Knowledge Ledger
+        -> the autonomy policy, and a person for anything that is not
+           low-risk read-only work
+        -> ``ProjectOrchestrator.submit``, run by the loop
 
-The bridge only ever calls the Project Orchestrator's own public API — it
-does not touch ``orchestrator/`` internals, so nothing here can break the
-existing routing/escalation test suite.
+That last half is deliberately *not* re-implemented here.  There is one route
+from Knowledge to a Project, and this joins it: filing a proposal is all this
+module does, and :class:`~nexus_seed.knowledge.autonomous_loop.KnowledgeLoop`
+routes it like any other.  What this adds is a different lens — the evaluator
+inside the loop reacts to new evidence, while this asks the standing question
+"where does a principle we already trust apply to the world as it is now?",
+which can be true without anything new having arrived.
 """
 
 from __future__ import annotations
@@ -37,8 +43,11 @@ DETECTION_INSTRUCTION = (
     "fact actually present in the World View — never invent a risk with no "
     "connection to either. It is correct to return no signals at all.\n"
     "Phrase `request` as a short, concrete request a person would type to "
-    "ask for the work — it becomes a Goal candidate handed to the existing "
-    "project router, so it must stand on its own without this context.\n"
+    "ask for the work — it becomes a project proposal, so it must stand on "
+    "its own without this context.\n"
+    "Set `risk` and `read_only` honestly: `read_only` work may inspect or "
+    "analyse but must not change an external system. They decide whether the "
+    "proposal can proceed automatically or has to wait for a person.\n"
     "Answer with JSON only."
 )
 DETECTION_SCHEMA = {
@@ -56,6 +65,8 @@ DETECTION_SCHEMA = {
                     "request": {"type": "string"},
                     "confidence": {"type": "number"},
                     "principle_id": {"type": ["string", "null"]},
+                    "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "read_only": {"type": "boolean"},
                 },
             },
         }
@@ -65,13 +76,20 @@ DETECTION_SCHEMA = {
 
 @dataclass
 class Signal:
-    """One detected Gap / Risk / Opportunity / Conflict."""
+    """One detected Gap / Risk / Opportunity / Conflict.
+
+    ``risk`` and ``read_only`` are what the autonomy policy judges, and both
+    default to the cautious answer: an unstated finding is treated as work
+    that could change something, so it waits for a person.
+    """
 
     type: str
     description: str
     request: str
     confidence: float
     principle_id: str | None = None
+    risk: str = "medium"
+    read_only: bool = False
 
 
 class GapRiskOpportunityDetector:
@@ -141,6 +159,7 @@ class GapRiskOpportunityDetector:
                 confidence = float(item.get("confidence", 0.0))
             except (TypeError, ValueError):
                 confidence = 0.0
+            risk = str(item.get("risk") or "medium").lower()
             signals.append(
                 Signal(
                     type=type_,
@@ -148,64 +167,96 @@ class GapRiskOpportunityDetector:
                     request=str(request_text),
                     confidence=confidence,
                     principle_id=item.get("principle_id"),
+                    risk=risk if risk in {"low", "medium", "high"} else "medium",
+                    read_only=item.get("read_only") is True,
                 )
             )
         return signals
 
 
 class GoalBridge:
-    """Submits detected Signals to the existing, unmodified Project Orchestrator.
+    """Files detected Signals as project proposals on the Knowledge Ledger.
 
-    Every submission is also recorded back onto the Knowledge Ledger
-    (``kind="signal"``), so the causal chain
-    Principle -> Signal -> Project stays queryable from the Ledger itself,
-    closing the loop back to "what did this Knowledge lead us to do".
+    There is exactly one route from Knowledge to a Project: a proposal, judged
+    by :class:`~nexus_seed.knowledge.autonomous_loop.ProjectProposalPolicy`,
+    then routed through ``ProjectOrchestrator.submit`` by the loop.  This
+    bridge joins that route rather than running beside it, so a
+    principle-driven finding gets the same autonomy gate, the same human
+    review for anything that is not low-risk read-only work, and the same
+    exactly-once submission as an evidence-driven one.
+
+    What it adds is the *lens*: the evaluator inside the loop reacts to new
+    evidence, while this asks the standing question "where does a principle we
+    already trust apply to the world as it is now?" — which can be true
+    without anything new having arrived.
     """
 
     def __init__(
         self,
         ledger: "KnowledgeLedger",
-        orchestrator: "ProjectOrchestrator",
         *,
+        policy: "ProjectProposalPolicy | None" = None,
         min_confidence: float = 0.5,
     ) -> None:
+        from .autonomous_loop import ProjectProposalPolicy
+
         self.ledger = ledger
-        self.orchestrator = orchestrator
+        self.policy = policy or ProjectProposalPolicy()
         self.min_confidence = min_confidence
 
     async def submit(
         self, signals: list[Signal], *, source: str = "knowledge_runtime"
-    ) -> list[tuple[Signal, Any, Any]]:
-        """Submit every signal at or above :attr:`min_confidence`.
+    ) -> list[tuple[Signal, KnowledgeRevision]]:
+        """File every signal at or above :attr:`min_confidence` as a proposal.
 
-        Returns ``(signal, RoutingDecision, Project | None)`` triples, in the
-        same order the signals were given.
+        Returns ``(signal, proposal)`` pairs for the ones that were filed.  A
+        proposal whose identity already exists is skipped rather than
+        duplicated, so re-running over an unchanged world view is a no-op.
         """
-        results = []
+        from .autonomous_loop import KIND_PROJECT_PROPOSAL, _proposal_id
+
+        filed = []
         for signal in signals:
             if signal.confidence < self.min_confidence:
                 continue
-            decision, project = await self.orchestrator.submit(signal.request, source=source)
-            self._record_outcome(signal, decision, project)
-            results.append((signal, decision, project))
-        return results
-
-    def _record_outcome(self, signal: Signal, decision: Any, project: Any) -> KnowledgeRevision:
-        relations = [Relation(type=RELATION_ABOUT, target=signal.principle_id)] if signal.principle_id else []
-        summary = f"[{signal.type}] {signal.description} -> {decision.action.value}"
-        if project is not None:
-            summary += f" ({project.id})"
-        return self.ledger.record(
-            summary,
-            source_type="knowledge_runtime_signal",
-            kind="signal",
-            derived_from=[signal.principle_id] if signal.principle_id else [],
-            relations=relations,
-            metadata={
-                "signal_type": signal.type,
-                "request": signal.request,
+            evidence = [signal.principle_id] if signal.principle_id else []
+            proposal = {
+                "objective": signal.request,
+                "reason": signal.description or f"{signal.type} detected from a principle",
+                "evidence_ids": evidence,
                 "confidence": signal.confidence,
-                "routing_action": decision.action.value,
-                "project_id": project.id if project is not None else None,
-            },
-        )
+                "risk": signal.risk,
+                "read_only": signal.read_only,
+                "expected_artifacts": [],
+            }
+            proposal_id = _proposal_id(proposal)
+            existing = self.ledger.head(proposal_id)
+            if existing is not None:
+                continue
+            decision = self.policy.decide(proposal)
+            relations = (
+                [Relation(type=RELATION_ABOUT, target=signal.principle_id)]
+                if signal.principle_id
+                else []
+            )
+            filed.append(
+                (
+                    signal,
+                    self.ledger.record(
+                        signal.request,
+                        knowledge_id=proposal_id,
+                        source_type=source,
+                        kind=KIND_PROJECT_PROPOSAL,
+                        status=decision.status,
+                        derived_from=evidence,
+                        relations=relations,
+                        metadata={
+                            **proposal,
+                            "policy_reason": decision.reason,
+                            "signal_type": signal.type,
+                            "detected_from_principle": signal.principle_id,
+                        },
+                    ),
+                )
+            )
+        return filed

@@ -149,10 +149,11 @@ PC情報は自動では読み取りません。**World → Observation Sources**
 NEXUS_SEED_DATA_DIR/resources
 ```
 
-この中へplain text、JSON、CSVを置くと、fileの作成・変更がIngressを通り、Resource、
+この中へplain text、Markdown、JSON、CSV、PowerPoint（`.pptx`）、Excel（`.xlsx`）、
+Word（`.docx`）を置くと、fileの作成・変更がIngressを通り、Resource、
 immutableなResourceVersion、抽出Representationとして記録された後、Knowledge loopへ
 入ります。同じ内容は重複versionになりません。directory外のfileは監視しません。
-PowerPointは後述の`nexus-seed-knowledge pptx`を使用してください。
+Office形式を読むには`pip install -e '.[ingest]'`が必要です（core依存ではありません）。
 
 #### 手動で状況を伝える
 
@@ -401,7 +402,6 @@ from nexus_seed.knowledge.projection import (
     annotate_world_fact,
     diff_world_views,
 )
-from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
 from nexus_seed.storage import Database, KnowledgeStore
 
 
@@ -462,9 +462,8 @@ async def main() -> None:
     principle = record_support(ledger, principle, "evidence-1")
     principle = record_support(ledger, principle, "evidence-2")  # ここで"supported"になる
 
-    # 7) 成熟したprincipleの条件が現在のWorld Viewに一致する箇所からGap/Risk/
-    #    Opportunityを検出し、*既存*のProjectOrchestratorの公開submit()へそのまま
-    #    渡します — bridge自身はProjectを一切作成しません。
+    # 7) 成熟したprincipleの条件が現在のWorld Viewに一致する箇所から
+    #    Gap/Risk/Opportunityを検出します。
     detect_backend = FakeLLMBackend(script=[proposal_response({
         "signals": [{
             "type": "opportunity",
@@ -476,18 +475,11 @@ async def main() -> None:
     })])
     signals = await GapRiskOpportunityDetector(detect_backend).detect(view_after, [principle])
 
-    routing_backend = FakeLLMBackend(script=[proposal_response({
-        "action": "CREATE_PROJECT",
-        "proposed_goal": "project-AでB案の再検討を行う",
-        "reason": "opportunity",
-        "confidence": 0.9,
-    })])
-    orchestrator = ProjectOrchestrator(
-        "nexus.db", agent_runtime=InProcessAgentRuntime(), backend=routing_backend
-    )
-    for signal, decision, project in await GoalBridge(ledger, orchestrator).submit(signals):
-        print(decision.action.value, project.goal if project else None)
-    orchestrator.close()
+    # 8) 各signalをproject proposalとして登録します。ここで止まります —
+    #    自動で進めてよいかはautonomy policyが判断し、low-risk read-only以外は
+    #    人が判断し、承認済みproposalをProject Orchestratorへ渡すのはloopです。
+    for signal, proposal in await GoalBridge(ledger).submit(signals):
+        print(signal.type, proposal.status, proposal.knowledge_id)
 
 
 asyncio.run(main())
@@ -511,10 +503,13 @@ asyncio.run(main())
   その場合は何も返さないか、統合・一般化しない素の回答を返します — 結論・反例・
   business riskを推測で捏造することはありません。LLMを使った挙動が必要な場合は、
   本物の`ExecutionBackend`（`nexus_seed/backends/llm.py`参照）を渡してください。
-- **`GoalBridge`は`orchestrator.submit()`/`.handle_request()`だけを呼びます** —
-  人間のmessageと同じ公開entry pointです。Projectを自分で作成・変更・routingする
-  ことはできず、requestをどう扱うかは常にProject Orchestrator自身の`ProjectRouter`
-  が決めます。
+- **KnowledgeからProjectへの経路は1本だけです**。proposalを作り、autonomy
+  policyが判断し、loopが`ProjectOrchestrator.submit()`へ渡します。`GoalBridge`は
+  その経路の横に並ぶのではなく、その経路に合流します — proposalを登録して止まる
+  ので、principle起点の発見にもevidence起点と同じgate・同じ人間レビュー
+  （low-risk read-only以外）・同じexactly-once submissionが適用されます。
+  principleを1つも挙げない発見は根拠が無いということなので、実行されず
+  `FORBIDDEN`として記録されます。
 - より詳しく知りたい場合は`tests/test_knowledge_*.py`を読んでください。各fileが
   1つのphase（K1: revision・temporal query、K2: projection・diff、K3:
   consolidation、K4: principle、K5: Goal bridge、K6: experience・advisory）の
@@ -537,7 +532,7 @@ nexus-seed-knowledge support --db k.db --principle-id K-xxxx --evidence-id ev-1
 nexus-seed-knowledge predict --db k.db --principle-id K-xxxx --subject project-A
 nexus-seed-knowledge evaluate --db k.db --prediction-id K-xxxx --actual '{"project-A": {"risk": "high"}}'
 nexus-seed-knowledge signals --db k.db          # 検出のみ
-nexus-seed-knowledge submit --db k.db           # 検出 + 実際のProjectOrchestratorへ渡す
+nexus-seed-knowledge propose --db k.db          # 検出 + proposalとして登録（routingはloop）
 nexus-seed-knowledge advise --db k.db --subject project-A
 nexus-seed-knowledge --help                     # 全subcommand（各subcommandにも--help）
 ```

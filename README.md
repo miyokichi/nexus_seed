@@ -160,7 +160,6 @@ from nexus_seed.knowledge.projection import (
     annotate_world_fact,
     diff_world_views,
 )
-from nexus_seed.orchestrator import InProcessAgentRuntime, ProjectOrchestrator
 from nexus_seed.storage import Database, KnowledgeStore
 
 
@@ -224,9 +223,7 @@ async def main() -> None:
     principle = record_support(ledger, principle, "evidence-2")  # now "supported"
 
     # 7) Detect a Gap/Risk/Opportunity where a mature principle's condition
-    #    matches the current World View, then hand it to the *existing*
-    #    ProjectOrchestrator through its own public submit() — the bridge
-    #    never creates a Project itself.
+    #    matches the current World View.
     detect_backend = FakeLLMBackend(script=[proposal_response({
         "signals": [{
             "type": "opportunity",
@@ -238,18 +235,12 @@ async def main() -> None:
     })])
     signals = await GapRiskOpportunityDetector(detect_backend).detect(view_after, [principle])
 
-    routing_backend = FakeLLMBackend(script=[proposal_response({
-        "action": "CREATE_PROJECT",
-        "proposed_goal": "project-AでB案の再検討を行う",
-        "reason": "opportunity",
-        "confidence": 0.9,
-    })])
-    orchestrator = ProjectOrchestrator(
-        "nexus.db", agent_runtime=InProcessAgentRuntime(), backend=routing_backend
-    )
-    for signal, decision, project in await GoalBridge(ledger, orchestrator).submit(signals):
-        print(decision.action.value, project.goal if project else None)
-    orchestrator.close()
+    # 8) File each signal as a project proposal. That is where this stops:
+    #    the autonomy policy decides whether it may proceed, a person decides
+    #    anything that is not low-risk read-only work, and the loop is what
+    #    submits an approved proposal to the Project Orchestrator.
+    for signal, proposal in await GoalBridge(ledger).submit(signals):
+        print(signal.type, proposal.status, proposal.knowledge_id)
 
 
 asyncio.run(main())
@@ -275,10 +266,14 @@ A few things worth knowing before you reach for this:
   unsynthesized answer — they never invent a conclusion, a counterexample, or
   a business risk to fill the gap. Pass a real `ExecutionBackend` (see
   `nexus_seed/backends/llm.py`) when you want the LLM-assisted behaviour.
-- **`GoalBridge` only ever calls `orchestrator.submit()`/`.handle_request()`**
-  — the same public entry point a human message uses. It cannot create,
-  modify or route a Project on its own; the Project Orchestrator's own
-  `ProjectRouter` still decides what happens to the request.
+- **There is exactly one route from Knowledge to a Project**: a proposal,
+  judged by the autonomy policy, then submitted through
+  `ProjectOrchestrator.submit()` by the loop. `GoalBridge` joins that route
+  rather than running beside it — it files a proposal and stops, so a
+  principle-driven finding gets the same gate, the same human review for
+  anything that is not low-risk read-only work, and the same exactly-once
+  submission as an evidence-driven one. A finding that cites no principle
+  cites nothing, and is recorded `FORBIDDEN` rather than acted on.
 - For a fuller tour, read `tests/test_knowledge_*.py` — each file is a
   runnable, self-contained example of one phase (K1 revisions/temporal
   queries, K2 projection/diff, K3 consolidation, K4 principles, K5 the Goal
@@ -301,7 +296,7 @@ nexus-seed-knowledge support --db k.db --principle-id K-xxxx --evidence-id ev-1
 nexus-seed-knowledge predict --db k.db --principle-id K-xxxx --subject project-A
 nexus-seed-knowledge evaluate --db k.db --prediction-id K-xxxx --actual '{"project-A": {"risk": "high"}}'
 nexus-seed-knowledge signals --db k.db          # detect only
-nexus-seed-knowledge submit --db k.db           # detect + hand to the real ProjectOrchestrator
+nexus-seed-knowledge propose --db k.db          # detect + file as proposals (the loop routes them)
 nexus-seed-knowledge advise --db k.db --subject project-A
 nexus-seed-knowledge --help                     # every subcommand, with its own --help
 ```

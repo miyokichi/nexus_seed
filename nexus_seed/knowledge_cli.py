@@ -470,41 +470,40 @@ def cmd_signals(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_submit(args: argparse.Namespace) -> int:
-    from .orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+def cmd_propose(args: argparse.Namespace) -> int:
+    """Detect signals and file them as proposals for the loop to route.
 
+    Filing is where this stops: the autonomy policy decides whether a proposal
+    proceeds automatically or waits for a person, and ``reconcile`` is what
+    submits an approved one to the Project Orchestrator.
+    """
     ledger = _open_ledger(args.db)
-    detect_backend = _build_backend(args)
     principles = _select_principles(ledger, args.principle_ids)
     view = WorldStateProjection(ledger).view()
     signals = asyncio.run(
-        GapRiskOpportunityDetector(detect_backend).detect(view, principles, intentions=args.intention)
+        GapRiskOpportunityDetector(_build_backend(args)).detect(
+            view, principles, intentions=args.intention
+        )
     )
     if not signals:
-        print("no signals detected; nothing submitted")
+        print("no signals detected; nothing proposed")
         return 0
 
-    orchestrator_db = args.orchestrator_db or args.db
-    routing_backend = _build_backend(args)
-    orchestrator = ProjectOrchestrator(
-        orchestrator_db, agent_runtime=InProcessAgentRuntime(), backend=routing_backend
-    )
-    try:
-        results = asyncio.run(
-            GoalBridge(ledger, orchestrator, min_confidence=args.min_confidence).submit(
-                signals, source=args.source
-            )
+    filed = asyncio.run(
+        GoalBridge(ledger, min_confidence=args.min_confidence).submit(
+            signals, source=args.source
         )
-    finally:
-        orchestrator.close()
-
-    if not results:
-        print(f"{len(signals)} signal(s) detected; none met --min-confidence {args.min_confidence}")
+    )
+    if not filed:
+        print(
+            f"{len(signals)} signal(s) detected; none filed "
+            f"(below --min-confidence {args.min_confidence}, or already proposed)"
+        )
         return 0
-    for signal, decision, project in results:
+    for signal, proposal in filed:
         _print_signal(signal)
-        print(f"    -> {decision.action.value}"
-              f"{' project=' + project.id + ' goal=' + project.goal if project else ''}")
+        print(f"    -> {proposal.status}  {proposal.knowledge_id}")
+    print("run `reconcile` to route whatever the policy approved")
     return 0
 
 
@@ -897,14 +896,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--intention", action="append", default=None)
     p.set_defaults(func=cmd_signals)
 
-    p = sub.add_parser("submit", help="detect signals and submit them through the real ProjectOrchestrator")
+    p = sub.add_parser(
+        "propose",
+        help="detect signals and file them as project proposals (the loop routes them)",
+    )
     _add_db(p); _add_backend_args(p)
     p.add_argument("--principle-ids", nargs="*", default=None)
     p.add_argument("--intention", action="append", default=None)
-    p.add_argument("--orchestrator-db", default=None, help="default: same file as --db")
     p.add_argument("--source", default="knowledge_runtime_cli")
     p.add_argument("--min-confidence", type=float, default=0.5)
-    p.set_defaults(func=cmd_submit)
+    p.set_defaults(func=cmd_propose)
 
     p = sub.add_parser("experience", help="record one Agent execution episode as Experience Knowledge")
     _add_db(p); _add_json(p)
