@@ -402,8 +402,9 @@ class WebhookServer:
         """Instruct an orchestrator Project, or clear what is blocking it.
 
         Both actions only reach the Project Orchestrator: an instruction adds
-        work to a Project (or becomes one), and unblocking hands the Project
-        back to its Agent.  Neither runs the work here.
+        work to a Project (or becomes one), unblocking hands the Project back
+        to its Agent, and granting gives it one more resource and continues
+        the same Task.  None of them runs the work here.
         """
 
         security_headers = {
@@ -420,7 +421,7 @@ class WebhookServer:
             )
         parts = path.strip("/").split("/")
         # cockpit/api/orchestrator/projects/<id>/<action>
-        if len(parts) != 6 or parts[5] not in {"instruct", "unblock"}:
+        if len(parts) != 6 or parts[5] not in {"instruct", "unblock", "grant"}:
             return WebhookResponse(
                 404, {"error": "unknown orchestrator path"}, headers=security_headers
             )
@@ -450,6 +451,22 @@ class WebhookServer:
                     project_id,
                     message,
                     request_id=str(request_id) if request_id else None,
+                )
+            elif action == "grant":
+                uri = body.get("uri")
+                if not isinstance(uri, str) or not uri.strip():
+                    return WebhookResponse(
+                        400,
+                        {"error": "uri must be a non-empty string"},
+                        headers=security_headers,
+                    )
+                access = body.get("access")
+                reason = body.get("reason")
+                result = await self.cockpit.orchestrator_grant(
+                    project_id,
+                    uri,
+                    access=access if isinstance(access, str) and access else "read",
+                    reason=reason if isinstance(reason, str) else "",
                 )
             else:
                 note = body.get("note")

@@ -59,7 +59,10 @@ The Project Orchestrator is available as a Python API and includes:
 - `A2AAgentRuntime`, which delegates a whole Project to a real external Agent
   over A2A;
 - ordinary requests — `nexus-seed task`, a webhook, any connector — always
-  routed into Projects; and
+  routed into Projects;
+- authorized, per-resource delegation: a Task can be *given* a file, Resource
+  or Knowledge object outside its workspace, decided by deterministic policy
+  against configured roots, with the same Task continuing afterwards; and
 - a Cockpit **Projects** view over the orchestrator's own records.
 
 What is deliberately not built yet: several Agents on one Project, and Agents
@@ -535,6 +538,77 @@ that data directory. When one is running, send requests with `nexus-seed task`
 instead: one process reconciling a Project is the assumption, and two would ask
 the same Agent for the same answer.
 
+## Giving a Project a resource it asked for
+
+A Project Agent gets its own workspace directory and nothing else. That is
+deliberate: NEXUS SEED never hands an Agent the host it happens to be running
+on. So when the Agent needs a file that is not in its workspace, it does not go
+looking — it escalates with `NEED_RESOURCE` and the Project blocks, exactly as
+above.
+
+Answering that is one command. First say which trees a Project may ever be
+given anything from — with neither set, nothing outside a workspace is
+grantable at all:
+
+```dotenv
+# Readable roots (os.pathsep-separated: ";" on Windows, ":" elsewhere).
+NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS=C:/work/shared;C:/work/specs
+# Of those, the ones a Project may also write back into. Readable does not
+# imply writable, which is why this is a separate list.
+NEXUS_SEED_PROJECT_RESOURCE_WRITE_ROOTS=C:/work/shared/out
+```
+
+Then look at what is being asked for, and answer it:
+
+```powershell
+nexus-seed-knowledge grants --db nexus_seed.db
+```
+
+```text
+[BLOCKED] project-8a49c176-...  Analyze sales data to identify reasons ...
+    REQUESTED read       (no uri - a person has to say which resource)
+              asked for: SAP historical export for FY2025
+              reason:    the comparison cannot be computed without it
+```
+
+```powershell
+nexus-seed-knowledge grant --db nexus_seed.db project-8a49c176-... `
+    "file:C:/work/shared/sap_fy2025.csv" --reason "前年比較の元データ"
+```
+
+```text
+granted: read access to file:C:/work/shared/sap_fy2025.csv is within policy
+```
+
+The same Task then continues. Nothing is restarted and no new Project is
+created: the workspace is rebuilt with the file in it and the *same* Project is
+delegated to the *same* Agent, because nothing about the task changed except
+what it can reach.
+
+What the Agent sees is a copy under `resources/` in its workspace, plus a
+`RESOURCES.md` and a `.nexus-seed/manifest.json` listing what it has and at
+what access. It is told what it was given, not where on the host it came from.
+
+Grant `--access read_write` to let the Agent change something. That still only
+gives it a copy; `nexus-seed-knowledge collect --db nexus_seed.db <project-id>` is what
+carries a changed copy back to the original afterwards. A read grant is never carried
+back, whatever the Agent did to its copy.
+
+Everything above is refused unless it is inside an authorized root, and the
+check resolves symlinks first, so a link pointing out of the tree is refused
+rather than followed:
+
+```text
+refused: target 'C:/work/private/keys.txt' escapes allowed_root C:/work/shared
+```
+
+The decision is deterministic policy code, never a model: an LLM that can be
+talked into widening its own access is not a boundary. The Cockpit shows the
+same request under **Needs Attention** and grants it from the Project view, and
+`resource:<uri>` (a Resource version) and `knowledge:<id>` (a Knowledge object)
+can be granted the same way — Knowledge read-only, since it is an append-only
+record.
+
 ## Normal operation
 
 Ordinary requests always become Projects. Run NEXUS SEED and submit work:
@@ -609,6 +683,13 @@ alike. They are not the same thing:
 the configured NEXUS SEED reasoning backend and has no direct tool authority.
 Set `NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a` to delegate a whole Project to an
 external Agent Runtime with its own model, keys, skills, and configuration.
+
+A third thing is configured here and is neither: **what a Project may be
+given.** `NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS` and
+`..._WRITE_ROOTS` name the host directories a task can ever be granted a file
+from. They are empty by default, and an empty list means nothing outside a
+task's own workspace is grantable — see [Giving a Project a resource it asked
+for](#giving-a-project-a-resource-it-asked-for).
 
 Rather than reading `.env` to work out which is which, ask:
 

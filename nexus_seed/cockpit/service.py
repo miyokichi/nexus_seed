@@ -17,6 +17,7 @@ from ..knowledge.autonomous_loop import (
 from ..knowledge.models import KIND_CONSOLIDATED_MEMORY, KIND_PRINCIPLE
 from ..knowledge.projection import WorldStateProjection
 from ..observation_sources import DEFAULT_FOLDER_FIELDS, FOLDER_STATUS, SYSTEM_SNAPSHOT
+from ..orchestrator.models import A2AMessageType
 from ..projects.projections import get_project_situation, get_project_summaries
 from ..storage.orchestrator_store import A2AMessageStore, AgentStore, ProjectStore
 
@@ -165,7 +166,30 @@ class CockpitService:
                     }
                 )
         for project in live_projects:
-            if project["blockers"]:
+            if not project["blockers"]:
+                continue
+            # "何かに詰まっている" と "このファイルが要る" は人がやることが
+            # 違うので、Resource要求だけは別項目として出す。
+            asked = [
+                blocker
+                for blocker in project["blockers"]
+                if blocker.get("kind") == A2AMessageType.NEED_RESOURCE.value
+            ]
+            for blocker in asked:
+                detail = blocker.get("detail") or {}
+                items.append(
+                    {
+                        "kind": "resource_request",
+                        "severity": "warning",
+                        "title": "AgentがResourceを要求しています",
+                        "message": str(
+                            detail.get("required_resource") or blocker.get("reason") or ""
+                        ),
+                        "target_id": project["id"],
+                        "raw": {**project, "requested": detail},
+                    }
+                )
+            if len(asked) < len(project["blockers"]):
                 items.append(
                     {
                         "kind": "project_blocked",
@@ -535,6 +559,38 @@ class CockpitService:
         if project is None:
             return None
         return {"project_id": project_id, "project": self.orchestrator_project(project_id)}
+
+    async def orchestrator_grant(
+        self,
+        project_id: str,
+        uri: str,
+        *,
+        access: str = "read",
+        reason: str = "",
+    ) -> dict[str, Any] | None:
+        """Give one Project one resource, and let the same Task continue.
+
+        The decision itself belongs to
+        :class:`~nexus_seed.workspace.policy.GrantPolicy`, so a refusal comes
+        back as a result with a reason rather than an error: a person asking
+        for something outside the authorized roots has not broken anything.
+        """
+
+        orchestrator = getattr(self.runtime, "project_orchestrator", None)
+        if orchestrator is None or self.orchestrator_projects.get(project_id) is None:
+            return None
+        target = (uri or "").strip()
+        if not target:
+            raise ValueError("uri must not be empty")
+        decision = await orchestrator.grant_resource(
+            project_id, target, access=access, reason=(reason or "").strip()
+        )
+        return {
+            "project_id": project_id,
+            "decision": decision.to_dict(),
+            "granted": [item.to_dict() for item in orchestrator.granted(project_id)],
+            "project": self.orchestrator_project(project_id),
+        }
 
     def _orchestrator_project(self, project) -> dict[str, Any]:
         agent = self.orchestrator_agents.active_for_project(project.id)

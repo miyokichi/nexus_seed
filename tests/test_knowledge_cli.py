@@ -363,3 +363,129 @@ def test_diff_requires_exactly_one_before_kind(tmp_path, capsys):
     code, out, err = _run(["diff", "--db", str(db)], capsys)
     assert code == 1
     assert "exactly one" in err
+
+
+# --- resource grants: see what an Agent asked for, and answer it -------------
+
+
+def _grant_env(monkeypatch, tmp_path, *, writable=False):
+    """Authorize one shared directory, the way an operator would in .env."""
+    shared = tmp_path / "shared"
+    shared.mkdir(exist_ok=True)
+    (shared / "spec.md").write_text("共通仕様", encoding="utf-8")
+    outside = tmp_path / "private"
+    outside.mkdir(exist_ok=True)
+    (outside / "keys.txt").write_text("TOP SECRET", encoding="utf-8")
+    monkeypatch.setenv("NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS", str(shared))
+    monkeypatch.setenv(
+        "NEXUS_SEED_PROJECT_RESOURCE_WRITE_ROOTS", str(shared) if writable else ""
+    )
+    monkeypatch.setenv("NEXUS_SEED_PROJECT_WORKSPACE", str(tmp_path / "workspaces"))
+    return shared, outside
+
+
+def _project(db, goal="共通仕様に合わせて計画を直す"):
+    """Create one project directly, the way the orchestrator would."""
+    from nexus_seed.storage.database import Database
+    from nexus_seed.storage.orchestrator_store import ProjectStore
+    from nexus_seed.orchestrator.models import Project
+
+    database = Database(str(db))
+    project = Project(goal=goal)
+    ProjectStore(database).save(project)
+    database.close()
+    return project.id
+
+
+def test_grant_puts_the_file_in_the_workspace_and_continues_the_task(
+    tmp_path, capsys, monkeypatch
+):
+    db = tmp_path / "k.db"
+    shared, _ = _grant_env(monkeypatch, tmp_path)
+    project_id = _project(db)
+
+    code, out, err = _run(
+        ["grant", "--db", str(db), project_id, f"file:{shared / 'spec.md'}", "--json"],
+        capsys,
+    )
+    assert code == 0, err
+    assert json.loads(out)["allowed"] is True
+
+    workspace = tmp_path / "workspaces" / project_id
+    assert (workspace / "resources" / "spec.md").read_text(encoding="utf-8") == "共通仕様"
+
+
+def test_a_path_outside_the_authorized_root_is_refused_with_a_reason(
+    tmp_path, capsys, monkeypatch
+):
+    db = tmp_path / "k.db"
+    _shared, outside = _grant_env(monkeypatch, tmp_path)
+    project_id = _project(db)
+
+    code, _out, err = _run(
+        ["grant", "--db", str(db), project_id, f"file:{outside / 'keys.txt'}"], capsys
+    )
+    assert code == 1
+    assert "refused" in err
+    assert "TOP SECRET" not in err
+
+
+def test_grants_lists_what_a_project_has_been_given(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "k.db"
+    shared, _ = _grant_env(monkeypatch, tmp_path)
+    project_id = _project(db)
+    assert _run(
+        ["grant", "--db", str(db), project_id, f"file:{shared / 'spec.md'}"], capsys
+    )[0] == 0
+
+    code, out, err = _run(["grants", "--db", str(db), "--json"], capsys)
+    assert code == 0, err
+    rows = json.loads(out)
+    assert [item["uri"] for item in rows[0]["granted"]] == [f"file:{shared / 'spec.md'}"]
+    assert rows[0]["granted"][0]["access"] == "read"
+
+
+def test_grants_says_so_plainly_when_nothing_has_been_asked_for(
+    tmp_path, capsys, monkeypatch
+):
+    db = tmp_path / "k.db"
+    _grant_env(monkeypatch, tmp_path)
+    _project(db)
+
+    code, out, err = _run(["grants", "--db", str(db)], capsys)
+    assert code == 0, err
+    assert "no project has asked for or been given a resource" in out
+
+
+def test_with_no_authorized_root_the_cli_grants_nothing(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "k.db"
+    shared, _ = _grant_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS", "")
+    project_id = _project(db)
+
+    code, _out, err = _run(
+        ["grant", "--db", str(db), project_id, f"file:{shared / 'spec.md'}"], capsys
+    )
+    assert code == 1
+    assert "no grant policy is configured" in err
+
+
+def test_collect_carries_a_writable_grant_back(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "k.db"
+    shared, _ = _grant_env(monkeypatch, tmp_path, writable=True)
+    project_id = _project(db)
+    assert _run(
+        [
+            "grant", "--db", str(db), project_id,
+            f"file:{shared / 'spec.md'}", "--access", "read_write",
+        ],
+        capsys,
+    )[0] == 0
+
+    copy = tmp_path / "workspaces" / project_id / "resources" / "spec.md"
+    copy.write_text("共通仕様v2", encoding="utf-8")
+
+    code, out, err = _run(["collect", "--db", str(db), project_id], capsys)
+    assert code == 0, err
+    assert "written back" in out
+    assert (shared / "spec.md").read_text(encoding="utf-8") == "共通仕様v2"

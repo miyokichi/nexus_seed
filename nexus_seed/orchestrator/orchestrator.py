@@ -26,6 +26,16 @@ from ..storage.orchestrator_store import (
     InstructionLedger,
     ProjectStore,
 )
+from ..workspace.models import (
+    AccessMode,
+    GrantDecision,
+    GrantRequest,
+    ResourceGrant,
+    grants_in,
+    with_grant,
+)
+from ..workspace.policy import GrantPolicy
+from ..workspace.provisioner import WorkspaceProvisioner
 from .a2a_gateway import A2AGateway
 from .agent_manager import AgentManager
 from .agent_runtime import (
@@ -88,6 +98,8 @@ class ProjectOrchestrator:
         retry_max_seconds: float = RETRY_MAX_SECONDS,
         assignment_timeout_seconds: float = ASSIGNMENT_TIMEOUT_SECONDS,
         completion_review_enabled: bool = False,
+        grant_policy: "GrantPolicy | None" = None,
+        provisioner: "WorkspaceProvisioner | None" = None,
     ) -> None:
         self.db = db_path if isinstance(db_path, Database) else Database(db_path)
         self.agent_runtime = agent_runtime or InProcessAgentRuntime()
@@ -109,12 +121,20 @@ class ProjectOrchestrator:
             user_context_provider=user_context_provider,
         )
         self.router = ProjectRouter(backend)
+        # Grants are optional: with no policy nothing beyond the task's own
+        # workspace is grantable, which is exactly how delegation behaved
+        # before workspaces could be provisioned.
+        self.grant_policy = grant_policy
+        if provisioner is None and grant_policy is not None:
+            provisioner = WorkspaceProvisioner(grant_policy)
+        self.provisioner = provisioner
         self.agents = AgentManager(
             self.agent_store,
             self.agent_runtime,
             default_constraints=default_constraints,
             workspace_root=workspace_root,
             a2a_endpoint=a2a_endpoint,
+            provisioner=provisioner,
         )
         self.gateway = A2AGateway(self.message_store, self.agent_runtime)
 
@@ -700,6 +720,104 @@ class ProjectOrchestrator:
         )
 
     # --- human resolution --------------------------------------------------
+
+    # --- resources a task asked for ----------------------------------------
+
+    def grant_requests(self, project_id: str) -> list[GrantRequest]:
+        """What this Project's Agent is currently asking to be given.
+
+        Read from the Project's own open blockers rather than a second
+        journal: a ``NEED_RESOURCE`` escalation already *is* the request, and
+        recording it twice would let the two disagree about what is pending.
+        """
+        project = self.projects.get(project_id)
+        if project is None:
+            return []
+        requests = []
+        for blocker in project.current_blockers:
+            if blocker.get("kind") != A2AMessageType.NEED_RESOURCE.value:
+                continue
+            detail = blocker.get("detail") or {}
+            requests.append(
+                GrantRequest(
+                    project_id=project.id,
+                    requested=str(detail.get("required_resource") or blocker.get("reason") or ""),
+                    reason=str(detail.get("reason") or blocker.get("reason") or ""),
+                    uri=detail.get("uri") or None,
+                    access=AccessMode(detail["access"])
+                    if detail.get("access") in {m.value for m in AccessMode}
+                    else AccessMode.READ,
+                )
+            )
+        return requests
+
+    async def grant_resource(
+        self,
+        project_id: str,
+        uri: str,
+        *,
+        access: AccessMode | str = AccessMode.READ,
+        reason: str = "",
+        name: str = "",
+        resume: bool = True,
+    ) -> GrantDecision:
+        """Decide whether a Project may have ``uri``, and continue it if so.
+
+        This is the whole request-and-continue loop: the Agent asked with
+        ``NEED_RESOURCE``, a person or a policy answers here, and an allowed
+        grant re-delegates the *same* Project — whose workspace is rebuilt
+        with the new resource in it on the way out. Nothing about the task is
+        restarted, because nothing about it changed except what it can reach.
+
+        A refusal is recorded and the Project stays blocked: an Agent that
+        cannot get what it needs must not be told to try again regardless.
+        """
+        project = self.projects.get(project_id)
+        if project is None:
+            return GrantDecision(False, f"no project {project_id!r}")
+        if self.grant_policy is None:
+            return GrantDecision(
+                False, "no grant policy is configured, so nothing is grantable"
+            )
+
+        mode = access if isinstance(access, AccessMode) else AccessMode(str(access))
+        decision = self.grant_policy.decide(
+            GrantRequest(project_id=project.id, requested=uri, uri=uri, access=mode, reason=reason)
+        )
+        if not decision.allowed or decision.grant is None:
+            logger.info("grant refused for project %s: %s", project.id, decision.reason)
+            self.projects.add_blocker(
+                project,
+                kind="RESOURCE_REFUSED",
+                reason=decision.reason,
+                detail={"uri": uri, "access": mode.value},
+            )
+            return decision
+
+        granted = ResourceGrant(
+            uri=decision.grant.uri,
+            access=mode,
+            name=name,
+            reason=reason or decision.grant.reason,
+        )
+        self.projects.set_context(project, with_grant(project.context, granted))
+        logger.info("project %s granted %s (%s)", project.id, granted.uri, mode.value)
+        if resume:
+            await self.resolve_block(project.id, note=f"granted {granted.uri}")
+        return GrantDecision(True, decision.reason, granted)
+
+    def granted(self, project_id: str) -> list[ResourceGrant]:
+        """Everything this Project may currently reach."""
+        project = self.projects.get(project_id)
+        return grants_in(project.context) if project else []
+
+    def collect_workspace(self, project_id: str) -> list[str]:
+        """Carry a finished task's writable grants back to their originals."""
+        project = self.projects.get(project_id)
+        if project is None or self.provisioner is None or self.agents.workspace_root is None:
+            return []
+        workspace = f"{self.agents.workspace_root.rstrip('/')}/{project.id}"
+        return self.provisioner.collect(workspace, grants_in(project.context))
 
     async def resolve_block(
         self, project_id: str, *, note: str = "", reactivate: bool = True

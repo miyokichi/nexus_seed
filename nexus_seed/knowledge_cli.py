@@ -522,13 +522,20 @@ def _open_loop(args: argparse.Namespace):
     """
     from .knowledge.autonomous_loop import KnowledgeLoop
     from .orchestrator import InProcessAgentRuntime, ProjectOrchestrator
+    from .orchestrator_config import ProjectAgentSettings, build_grant_policy
     from .runtime.runtime import Runtime
 
     runtime = Runtime(args.db)
+    # The same workspace root and authorized roots the application runs with,
+    # so a grant made from the command line lands where the Agent looks and is
+    # judged against the roots an operator actually authorized.
+    settings = ProjectAgentSettings.from_env(getattr(args, "env_file", ".env") or ".env")
     orchestrator = ProjectOrchestrator(
         runtime.db,
         agent_runtime=InProcessAgentRuntime(),
         backend=_build_backend(args),
+        workspace_root=settings.workspace_root,
+        grant_policy=build_grant_policy(settings),
     )
     loop = KnowledgeLoop(runtime, orchestrator, backend=_build_backend(args))
     runtime.knowledge_loop = loop
@@ -609,6 +616,105 @@ def cmd_decide(args: argparse.Namespace) -> int:
             print("error: nothing to decide under that id", file=sys.stderr)
             return 1
         _print_rev(result, as_json=args.json)
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_grants(args: argparse.Namespace) -> int:
+    """What Agents are asking to be given, and what they already have.
+
+    Read straight from the Projects rather than a separate queue: a
+    ``NEED_RESOURCE`` escalation already *is* the request, so this is a view
+    of live state and never disagrees with it.
+    """
+    runtime, loop = _open_loop(args)
+    try:
+        projects = (
+            [loop.orchestrator.projects.get(args.project_id)]
+            if args.project_id
+            else loop.orchestrator.projects.all()
+        )
+        rows = []
+        for project in projects:
+            if project is None:
+                raise ValueError(f"unknown project_id: {args.project_id}")
+            requests = loop.orchestrator.grant_requests(project.id)
+            granted = loop.orchestrator.granted(project.id)
+            if not requests and not granted and args.project_id is None:
+                continue
+            rows.append(
+                {
+                    "project_id": project.id,
+                    "goal": project.goal,
+                    "status": project.status.value,
+                    "requested": [item.to_dict() for item in requests],
+                    "granted": [item.to_dict() for item in granted],
+                }
+            )
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("no project has asked for or been given a resource")
+            return 0
+        for row in rows:
+            print(f"[{row['status']}] {row['project_id']}  {_preview(row['goal'], 60)}")
+            for item in row["granted"]:
+                print(f"    granted   {item['access']:10} {item['uri']}")
+            for item in row["requested"]:
+                uri = item.get("uri") or "(no uri - a person has to say which resource)"
+                print(f"    REQUESTED {item['access']:10} {uri}")
+                if item.get("requested"):
+                    print(f"              asked for: {_preview(item['requested'], 70)}")
+                if item.get("reason"):
+                    print(f"              reason:    {_preview(item['reason'], 70)}")
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_grant(args: argparse.Namespace) -> int:
+    """Give one Project one resource, and let the same Task continue.
+
+    Nothing about the task restarts: an allowed grant rebuilds the workspace
+    with the resource in it and re-delegates the *same* Project.
+    """
+    runtime, loop = _open_loop(args)
+    try:
+        decision = asyncio.run(
+            loop.orchestrator.grant_resource(
+                args.project_id,
+                args.uri,
+                access=args.access,
+                reason=args.reason,
+                name=args.name or "",
+                resume=not args.no_resume,
+            )
+        )
+        if args.json:
+            print(json.dumps(decision.to_dict(), ensure_ascii=False, indent=2))
+        elif decision.allowed:
+            print(f"granted: {decision.reason}")
+        else:
+            print(f"refused: {decision.reason}", file=sys.stderr)
+        return 0 if decision.allowed else 1
+    finally:
+        runtime.close()
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    """Carry a finished task's writable grants back to the files they came from."""
+    runtime, loop = _open_loop(args)
+    try:
+        written = loop.orchestrator.collect_workspace(args.project_id)
+        if args.json:
+            print(json.dumps(written, ensure_ascii=False, indent=2))
+        elif written:
+            for uri in written:
+                print(f"written back: {uri}")
+        else:
+            print("nothing to carry back (no writable grant was changed)")
     finally:
         runtime.close()
     return 0
@@ -998,6 +1104,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("knowledge_id")
     p.add_argument("answer")
     p.set_defaults(func=cmd_answer)
+
+    p = sub.add_parser("grants", help="what Agents are asking to be given, and what they already have")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("--project-id", default=None, help="only this project (default: every project with a request or a grant)")
+    p.set_defaults(func=cmd_grants)
+
+    p = sub.add_parser("grant", help="give one Project one resource and continue the same Task")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("project_id")
+    p.add_argument("uri", help="file:<path>, resource:<uri> or knowledge:<id>")
+    p.add_argument("--access", default="read", choices=["read", "read_write"], help="default: read")
+    p.add_argument("--reason", default="", help="why this is being granted (kept with the grant)")
+    p.add_argument("--name", default=None, help="name to give it inside the workspace")
+    p.add_argument("--no-resume", action="store_true", help="record the grant without re-delegating the Task")
+    p.set_defaults(func=cmd_grant)
+
+    p = sub.add_parser("collect", help="carry a finished task's writable grants back to their originals")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("project_id")
+    p.set_defaults(func=cmd_collect)
 
     p = sub.add_parser("advise", help="list mature (supported/validated) principles as plain advisories")
     _add_db(p)

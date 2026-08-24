@@ -13,6 +13,8 @@ from typing import Any
 
 from ..core.event import utcnow
 from ..storage.orchestrator_store import AgentStore
+from ..workspace.models import grants_in
+from ..workspace.provisioner import WorkspaceProvisioner
 from .agent_runtime import AgentRuntime, AgentUnavailable
 from .models import (
     Agent,
@@ -37,12 +39,17 @@ class AgentManager:
         default_constraints: dict[str, Any] | None = None,
         workspace_root: str | None = None,
         a2a_endpoint: str | None = None,
+        provisioner: "WorkspaceProvisioner | None" = None,
     ) -> None:
         self.store = store
         self.runtime = runtime
         self.default_constraints = dict(default_constraints or {})
         self.workspace_root = workspace_root
         self.a2a_endpoint = a2a_endpoint
+        #: Fills the task workspace with what the Project was granted.  Without
+        #: one, a workspace is still an empty directory the Agent may work in —
+        #: which is exactly the behaviour that predates grants.
+        self.provisioner = provisioner
 
     async def assign_or_spawn(self, project: Project) -> Agent:
         """Return the Agent that owns ``project``, starting one if needed.
@@ -93,7 +100,13 @@ class AgentManager:
         return agent
 
     def build_config(self, project: Project, agent: Agent) -> ProjectAgentConfig:
-        """Build the config a generic Project Agent is started with."""
+        """Build the config a generic Project Agent is started with.
+
+        Rebuilt from the Project each time, so a Project that has since been
+        granted more gets a workspace holding it on the very next delegation —
+        which is what makes "grant, then continue the same task" work without
+        a second kind of hand-over.
+        """
         workspace = None
         if self.workspace_root is not None:
             workspace = f"{self.workspace_root.rstrip('/')}/{project.id}"
@@ -105,7 +118,24 @@ class AgentManager:
             constraints=dict(self.default_constraints),
             workspace=workspace,
             nexus_seed_a2a_endpoint=self.a2a_endpoint,
+            resources=self.provision(project, workspace),
         )
+
+    def provision(self, project: Project, workspace: str | None) -> list[dict[str, Any]]:
+        """Materialise the Project's grants into ``workspace``.
+
+        A provisioning failure must not cost the Project its Agent: the task
+        goes ahead with whatever was provided, and the Agent asks for what is
+        missing the same way it would have anyway.
+        """
+        if self.provisioner is None or workspace is None:
+            return []
+        try:
+            manifest = self.provisioner.provision(workspace, grants_in(project.context))
+        except Exception:  # noqa: BLE001 - degrade to "granted nothing extra"
+            logger.exception("could not provision workspace for project %s", project.id)
+            return []
+        return list(manifest.entries)
 
     def get(self, agent_id: str) -> Agent | None:
         """Return an agent by id."""

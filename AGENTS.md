@@ -1745,6 +1745,84 @@ seventh Core primitive — one new append-only store, `knowledge_revisions`.
      by `kind` — never a separate Memory/WorldModel/Principle DB. A
      materialized cache is allowed later; it is never the source of truth.
 
+## Done: a Task is given what it needs, and nothing more
+
+A Project Agent used to get a workspace directory and nothing else, so a task
+needing a file outside it could only escalate `NEED_RESOURCE` and stop. It can
+now be *given* that file — deliberately, one resource at a time:
+
+```text
+Task -> declares what it needs -> NEXUS SEED decides -> workspace is filled -> Agent runs
+```
+
+- `workspace/` is a new package with three small pieces and no dependency on
+  the orchestrator: `models.py` (`AccessMode`, `ResourceGrant`, `GrantRequest`,
+  `GrantDecision`, `WorkspaceManifest`, and `grants_in`/`with_grant` for
+  reading and writing grants in a Project's `context`), `policy.py`
+  (`GrantPolicy` — the decision), `provisioner.py` (`WorkspaceProvisioner` —
+  materialising it).
+- The decision is deterministic policy code and never a model. `GrantPolicy`
+  reuses the existing `ResourceScope` for the path boundary, which resolves
+  symlinks before deciding, and keeps read and write roots apart. Everything
+  else is closed: an unknown scheme, a path outside every root, a write into a
+  read-only root, a writable `resource:` (versions are immutable) or a writable
+  `knowledge:` (the ledger is append-only) are all refused with a reason.
+- Nothing about the Agent changed, and nothing needed to. The grant travels as
+  A2A `metadata` under `https://nexus-seed.dev/a2a/ext/provisioned-workspace/v1`
+  — an extension key an Agent that does not read it simply ignores — plus a
+  `RESOURCES.md` and `.nexus-seed/manifest.json` written into the workspace it
+  already had. No Hermes, OpenCode or other Agent body is modified, and no
+  bridge process was added.
+- The request-and-continue loop reuses the existing escalation path rather than
+  adding a second one. `NEED_RESOURCE` already blocks a Project with its
+  reason, so `grant_requests()` reads the Project's own open blockers instead
+  of a parallel journal, and `grant_resource()` re-delegates the *same* Project
+  to the *same* Agent. Nothing restarts: the workspace is rebuilt from
+  `project.context` on every `build_config`, so a Project granted more gets it
+  on the very next delegation.
+- What a read grant guarantees is a *copy* the original never sees again:
+  `collect()` carries back only writable grants. The read-only file mode
+  (`0o444`) is a signal on top of that, not the boundary — a process running as
+  root, or as the file's owner, can write its own copy anyway, which is why the
+  boundary is "never collected back" and not the mode.
+- Provisioning failure never costs a Project its Agent. `AgentManager.provision`
+  degrades to "granted nothing extra" and the task proceeds; the Agent asks for
+  what is missing exactly as it would have.
+- Authorized roots are configuration, empty by default:
+  `NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS` / `_WRITE_ROOTS` in
+  `orchestrator_config.build_grant_policy()`, which returns `None` when nothing
+  is authorized — so an unconfigured system behaves exactly as it did before
+  grants existed. `nexus-seed config` reports both and says so when neither is
+  set.
+- Two ways in for a person, one decision underneath: `nexus-seed-knowledge
+  grants` / `grant` / `collect`, and the Cockpit, which raises a
+  `resource_request` attention item (distinct from `project_blocked` — "it
+  wants this file" and "it is stuck" need different actions) and posts to
+  `POST /cockpit/api/orchestrator/projects/<id>/grant`.
+
+## Resource-grant invariants (keep them)
+
+277. **The host is never handed over wholesale.** A Project reaches exactly
+     what it was granted, one resource at a time, inside an authorized root.
+     With no root configured there is no `GrantPolicy` and nothing outside a
+     task's own workspace is grantable — that is the default, not a setting.
+278. **No model decides access.** `GrantPolicy` is deterministic code. An LLM
+     may *ask* (that is what `NEED_RESOURCE` is), and a person or the policy
+     answers; nothing an Agent says widens what it can reach.
+279. **A grant is re-checked when it is used, not only when it is made.**
+     `permitted()` runs at provisioning time, so narrowing a root retroactively
+     narrows every stored grant. A grant never outlives its permission.
+280. **Read means a copy that never travels back.** `collect()` carries only
+     writable grants; a read grant's original is unchanged whatever the Agent
+     did to its copy. File modes are a hint, never the boundary.
+281. **Granting continues a Task, it never restarts one.** The same Project and
+     the same Agent carry on with more in the workspace; a grant creates no new
+     Project, and a refusal leaves the Project blocked rather than retrying.
+282. **The A2A contract is not extended, only used.** Everything a workspace
+     grant adds rides in `metadata` under one extension URI. NEXUS SEED never
+     adds a message type, a field outside `metadata`, or a requirement that the
+     Agent understand any of it — and never modifies the Agent to make it work.
+
 ## Later-phase candidates (do not build yet)
 
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,

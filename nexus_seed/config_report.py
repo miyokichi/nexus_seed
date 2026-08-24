@@ -143,6 +143,24 @@ def _delegation_group(env_file) -> ConfigGroup:
     rows.append(
         ("NEXUS_SEED_PROJECT_WORKSPACE", settings.workspace_root or "(none)")
     )
+    rows.extend(
+        [
+            (
+                "NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS",
+                os.pathsep.join(settings.resource_read_roots) or "(none)",
+            ),
+            (
+                "NEXUS_SEED_PROJECT_RESOURCE_WRITE_ROOTS",
+                os.pathsep.join(settings.resource_write_roots) or "(none)",
+            ),
+        ]
+    )
+    if not settings.resource_read_roots:
+        notes.append(
+            "No resource root is authorized, so nothing outside a task's own "
+            "workspace can be granted to an Agent. Name the directories a "
+            "Project may be given files from to allow any."
+        )
     return ConfigGroup(
         name="Delegation",
         purpose="where a Project is handed over (NEXUS_SEED_PROJECT_AGENT_*)",

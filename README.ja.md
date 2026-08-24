@@ -274,6 +274,11 @@ NEXUS_SEED_PROJECT_WORKSPACE=projects
 workspaceを渡し、AgentがTask分解、Skill、toolを選びます。AgentのSkill inventoryは
 NEXUS SEED側へ複製しません。詳しい起動例は[実Agentでの実行](#実agentでの実行)を参照してください。
 
+Agentへ渡るのはworkspace directoryだけです。workspace外のfileも必要な場合は、
+渡してよいdirectoryを`NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS`で宣言したうえで、
+要求ごとに許可します。[要求されたResourceをProjectへ渡す](#要求されたresourceをprojectへ渡す)
+を参照してください。
+
 ### 8. よくある問題
 
 | 状況 | 確認すること |
@@ -301,6 +306,8 @@ NEXUS SEED側へ複製しません。詳しい起動例は[実Agentでの実行]
 - テストやローカル統合向けの決定的な`InProcessAgentRuntime`
 - Project全体を実際の外部AgentへA2Aで委譲する`A2AAgentRuntime`
 - `nexus-seed task`・webhook・各種connectorからの通常requestを常にProjectへrouting
+- workspace外のfile・Resource・KnowledgeをTaskごとに許可して渡す仕組み。許可判断は
+  設定されたroot に対する決定的なpolicyが行い、許可後は同じTaskがそのまま続行します
 - Cockpitの**Projects**画面（orchestrator自身のrecordを表示）
 
 今回も意図的に作っていないものは、1 Projectへの複数AgentとAgent同士の直接通信です。
@@ -779,6 +786,71 @@ runtimeで動きます。orchestration自体はどちらでも同一です。
 このコマンドはdatabaseを直接操作します。同じdata directoryでNEXUS SEEDを常駐させて
 いる場合は`nexus-seed task`を使ってください。1つのProjectをreconcileするのは1 process
 という前提であり、2つあると同じAgentへ同じ問い合わせを行うことになります。
+
+## 要求されたResourceをProjectへ渡す
+
+Project Agentに渡るのは自分専用のworkspace directoryだけで、それ以外はありません。
+これは意図的な設計です。NEXUS SEEDは、動作しているhost PC全体をAgentへ無条件で
+公開しません。そのためworkspaceにないfileが必要になっても、Agentは自分で探しに
+行かず、`NEED_RESOURCE`をescalationしてProjectがblockされます（上の例のとおり）。
+
+これに答えるのは1コマンドです。まず、Projectへ渡すことがありうるdirectoryを
+宣言します。どちらも未設定なら、workspace以外は一切渡せません。
+
+```dotenv
+# 読み取りを許可するroot（区切りはWindowsなら ";"、それ以外は ":"）。
+NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS=C:/work/shared;C:/work/specs
+# そのうち書き戻しも許可するroot。読めることは書けることを意味しないため、
+# 別のlistになっています。
+NEXUS_SEED_PROJECT_RESOURCE_WRITE_ROOTS=C:/work/shared/out
+```
+
+そのうえで、何を要求されているかを見て答えます。
+
+```powershell
+nexus-seed-knowledge grants --db nexus_seed.db
+```
+
+```text
+[BLOCKED] project-8a49c176-...  Analyze sales data to identify reasons ...
+    REQUESTED read       (no uri - a person has to say which resource)
+              asked for: SAP historical export for FY2025
+              reason:    the comparison cannot be computed without it
+```
+
+```powershell
+nexus-seed-knowledge grant --db nexus_seed.db project-8a49c176-... `
+    "file:C:/work/shared/sap_fy2025.csv" --reason "前年比較の元データ"
+```
+
+```text
+granted: read access to file:C:/work/shared/sap_fy2025.csv is within policy
+```
+
+このあと**同じTaskがそのまま続行**します。Taskの作り直しも新しいProjectの作成も
+ありません。workspaceがそのfileを含む形で再構築され、*同じ*Projectが*同じ*Agentへ
+再委譲されます。変わったのは「何に手が届くか」だけだからです。
+
+Agentから見えるのは、workspace内の`resources/`に置かれたcopyと、何をどの権限で
+持っているかを書いた`RESOURCES.md`および`.nexus-seed/manifest.json`です。渡された
+ものは伝えますが、host上のどこから来たかは伝えません。
+
+書き換えを許すなら`--access read_write`を指定します。それでも渡るのはcopyです。
+変更を元のfileへ戻すのは`nexus-seed-knowledge collect --db nexus_seed.db <project-id>`
+で、readのgrantはAgentがcopyに何をしても決して書き戻されません。
+
+許可したroot内にないものはすべて拒否されます。判定前にsymlinkを解決するため、
+tree外を指すlinkは辿らずに拒否されます。
+
+```text
+refused: target 'C:/work/private/keys.txt' escapes allowed_root C:/work/shared
+```
+
+この判断は決定的なpolicy codeであり、modelではありません。説得されて自分の権限を
+広げられてしまうLLMは境界として機能しないからです。Cockpitでも同じ要求が
+**Needs Attention**に出て、Project画面から許可できます。`resource:<uri>`
+（Resourceのversion）と`knowledge:<id>`（Knowledge object）も同じ方法で渡せます。
+Knowledgeは追記のみの記録なので読み取り専用です。
 
 ## 通常運転
 

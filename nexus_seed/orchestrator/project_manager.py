@@ -100,6 +100,16 @@ class ProjectManager:
         project.summary = summary
         return self.store.save(project)
 
+    def set_context(self, project: Project, context: dict[str, Any]) -> Project:
+        """Replace what is known about the project.
+
+        The context travels with every delegation and survives a restart, so
+        this is also where durable per-project decisions live — what the task
+        has been granted, most notably.
+        """
+        project.context = dict(context)
+        return self.store.save(project)
+
     def add_task(
         self,
         project: Project,

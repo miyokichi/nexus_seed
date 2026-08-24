@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 #: The wire type of the message that hands a whole Project to an Agent.
 PROJECT_ASSIGNMENT = "PROJECT_ASSIGNMENT"
 
+#: A2A extension URI for the provisioned-workspace contract.
+#:
+#: The spec reserves ``metadata`` for extension data keyed by an extension URI,
+#: which is exactly the shape this needs: an agent that does not implement the
+#: extension sees an ordinary message and keeps working, because the resources
+#: it describes are already *in* the workspace.  That is what makes the whole
+#: thing usable with Hermes, OpenCode or anything else, unmodified.
+WORKSPACE_EXTENSION = "https://nexus-seed.dev/a2a/ext/provisioned-workspace/v1"
+
 #: What the Project Agent is: an owner of one Goal, not a single tool call.
 #:
 #: NEXUS SEED deliberately does not say *how* to reach the goal here — no task
@@ -68,7 +77,20 @@ The project assignment is in the context as `assignment`:
   context           what is already known about the project
   constraints       limits you must respect
   workspace         the directory to read and write in
+  resources         what was granted to you, inside that workspace
   task              (only on a follow-up) an extra task for the same goal
+
+Your workspace already holds everything you were granted. `resources` lists
+each one as a workspace-relative `path` with an `access` of `read` or
+`read_write`; `RESOURCES.md` in the workspace says the same thing. A `read`
+file is a copy — editing it changes nothing anywhere. A `read_write` file is
+carried back to where it came from when your work is accepted.
+
+Work inside the workspace. Files elsewhere on this machine were not granted to
+you, and reading around for them is not how to get them: if you need something
+you do not have, ask with NEED_RESOURCE, naming what you need and why. NEXUS
+SEED decides, and if it agrees the same task continues with the resource
+provisioned into your workspace.
 
 Answer with one JSON object: {"messages": [{"type": ..., "payload": {...}}]}.
 
@@ -258,6 +280,11 @@ class A2AProjectAgentTransport:
             "constraints": dict(config.constraints),
             "workspace": config.workspace,
             "nexus_seed_endpoint": config.nexus_seed_a2a_endpoint,
+            # What was provisioned into the workspace, as workspace-relative
+            # paths.  An Agent that ignores this still finds the same files by
+            # reading its workspace, which is the point: the manifest describes
+            # the directory, it does not replace it.
+            "resources": list(config.resources),
         }
         if envelope.get("kind") == "ADD_TASK":
             assignment["task"] = envelope.get("task") or {}
@@ -320,6 +347,12 @@ def _send_params(assignment: dict[str, Any], config: ProjectAgentConfig) -> dict
         "metadata": {
             "nexus_seed/project_id": config.project_id,
             "nexus_seed/agent_id": config.agent_id,
+            # A2A extension data belongs in `metadata` under a URI-namespaced
+            # key, so an agent that does not know this extension ignores it and
+            # the request stays a plain, valid A2A message.  Nothing here is
+            # load-bearing: the same facts are in the workspace on disk.
+            f"{WORKSPACE_EXTENSION}/workspace": config.workspace,
+            f"{WORKSPACE_EXTENSION}/resources": list(config.resources),
         },
     }
 
@@ -410,4 +443,5 @@ __all__ = [
     "PROJECT_AGENT_INSTRUCTION",
     "PROJECT_ASSIGNMENT",
     "REPLY_SCHEMA",
+    "WORKSPACE_EXTENSION",
 ]

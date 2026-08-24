@@ -337,6 +337,10 @@ class ProjectAgentConfig:
     constraints: dict[str, Any] = field(default_factory=dict)
     workspace: str | None = None
     nexus_seed_a2a_endpoint: str | None = None
+    #: What was provisioned into the workspace beyond the Agent's own scratch
+    #: space: ``{"path", "access", "uri", "reason"}`` per entry.  Empty means
+    #: the task was granted nothing extra — never that it may go looking.
+    resources: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON form handed to the agent runtime."""
@@ -348,6 +352,7 @@ class ProjectAgentConfig:
             "constraints": self.constraints,
             "workspace": self.workspace,
             "nexus_seed_a2a_endpoint": self.nexus_seed_a2a_endpoint,
+            "resources": list(self.resources),
         }
 
 
