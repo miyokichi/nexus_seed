@@ -338,6 +338,77 @@ async def test_revision_after_a_legacy_assessment_is_read_again(tmp_path):
     runtime.close()
 
 
+# --- P3: the ledger-position cursors are a cache, never a queue -------------
+
+
+async def test_a_restarted_loop_does_not_re_assess_its_history(tmp_path):
+    """Cursors live in memory; the recorded assessments are what decide "seen"."""
+    backend = DispatchBackend()
+    runtime, loop = build(tmp_path, backend)
+    record(loop, "契約Aの期限は9月1日")
+    await loop.reconcile()
+    assert len(backend.calls_of("situation_assessment")) == 1
+
+    # A fresh loop over the same database: every cursor starts at zero again.
+    restarted = KnowledgeLoop(runtime, loop.orchestrator, backend=backend)
+    assert restarted._assessment_cursor == 0
+    await restarted.reconcile()
+
+    assert len(backend.calls_of("situation_assessment")) == 1
+    runtime.close()
+
+
+async def test_a_restarted_loop_still_reads_a_correction(tmp_path):
+    backend = DispatchBackend()
+    runtime, loop = build(tmp_path, backend)
+    item = record(loop, "契約Aの期限は9月1日")
+    await loop.reconcile()
+
+    loop.ledger.revise(item.knowledge_id, value="契約Aの期限は9月15日だった")
+    restarted = KnowledgeLoop(runtime, loop.orchestrator, backend=backend)
+    await restarted.reconcile()
+
+    latest = backend.calls_of("situation_assessment")[-1]
+    assert [entry["content"] for entry in latest.context["new_evidence"]] == [
+        "契約Aの期限は9月15日だった"
+    ]
+    runtime.close()
+
+
+async def test_a_quiet_tick_does_not_read_the_whole_ledger(tmp_path):
+    """A settled Ledger must not cost more to re-check as it grows.
+
+    This is what makes the loop usable for long-running operation: without it
+    every tick re-reads every object ever recorded.
+    """
+    backend = DispatchBackend()
+    runtime, loop = build(tmp_path, backend, assessment_batch_size=10_000)
+    for n in range(300):
+        record(loop, f"観測 {n}")
+    for _ in range(4):
+        await loop.reconcile()
+
+    rows = 0
+    real_query = runtime.db.query
+
+    def counting_query(sql, params=()):
+        nonlocal rows
+        result = real_query(sql, params)
+        rows += len(result)
+        return result
+
+    runtime.db.query = counting_query
+    try:
+        await loop.reconcile()
+    finally:
+        runtime.db.query = real_query
+
+    # Well under one row per stored object: the pass looks at what is new,
+    # not at all 300 objects.
+    assert rows < 100, f"quiet tick read {rows} rows for 300 objects"
+    runtime.close()
+
+
 async def test_reassessment_of_the_same_objective_creates_no_second_proposal(tmp_path):
     """Re-reading may repeat a conclusion; it must not repeat the work."""
     backend = DispatchBackend(

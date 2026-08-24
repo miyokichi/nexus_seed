@@ -222,6 +222,13 @@ class KnowledgeLoop:
         #: reusable principle across them.
         self.principle_threshold = max(2, principle_threshold)
         self.ledger = KnowledgeLedger(runtime.knowledge_store)
+        #: How far into the Ledger each pass has already looked.  These are
+        #: caches, never queues: they start at zero after a restart, so the
+        #: first pass re-reads everything and the durable records — the change
+        #: Events, the recorded assessments — remain what decides "seen".
+        self._knowledge_event_cursor = 0
+        self._assessment_cursor = 0
+        self._consolidation_cursor = 0
         self.manual = ManualAdapter("knowledge_manual")
         # Completion remains an Agent report until Knowledge and a person have
         # accepted the deliverables.  Standalone orchestrators keep their
@@ -944,7 +951,15 @@ class KnowledgeLoop:
         """
         if self.backend is None:
             return 0
-        heads = self.ledger.all_heads()
+        kinds = self._CONSOLIDATABLE + (KIND_CONSOLIDATED_MEMORY,)
+        # Nothing consolidatable has arrived since the last look, so there is
+        # nothing new to compress and no reason to read the Ledger at all.
+        arrived = self.ledger.store.heads_since(self._consolidation_cursor, kinds=kinds)
+        if not arrived:
+            return 0
+        self._consolidation_cursor = max(seq for seq, _ in arrived)
+
+        heads = self.ledger.store.heads_of_kinds(kinds)
         covered = {
             knowledge_id
             for item in heads
@@ -958,8 +973,6 @@ class KnowledgeLoop:
         groups: dict[str, list[KnowledgeRevision]] = {}
         pending: dict[str, int] = {}
         for item in heads:
-            if item.kind not in self._CONSOLIDATABLE and item.kind != KIND_CONSOLIDATED_MEMORY:
-                continue
             subject = _subject_of(item)
             groups.setdefault(subject, []).append(item)
             if item.kind != KIND_CONSOLIDATED_MEMORY and item.knowledge_id not in covered:
@@ -1000,15 +1013,13 @@ class KnowledgeLoop:
         """
         if self.backend is None:
             return 0
-        heads = self.ledger.all_heads()
         cases = [
             item
-            for item in heads
-            if item.kind == KIND_CONSOLIDATED_MEMORY
-            or (
-                item.kind == KIND_EXPERIENCE
-                and item.status not in {ARTIFACT_PENDING_REVIEW, ARTIFACT_REJECTED}
+            for item in self.ledger.store.heads_of_kinds(
+                (KIND_CONSOLIDATED_MEMORY, KIND_EXPERIENCE)
             )
+            if item.kind != KIND_EXPERIENCE
+            or item.status not in {ARTIFACT_PENDING_REVIEW, ARTIFACT_REJECTED}
         ]
         if len(cases) < self.principle_threshold:
             return 0
@@ -1017,8 +1028,8 @@ class KnowledgeLoop:
         ]
 
         evidence = {item.knowledge_id for item in cases}
-        for principle in heads:
-            if principle.kind == KIND_PRINCIPLE and set(principle.derived_from) == evidence:
+        for principle in self.ledger.by_kind(KIND_PRINCIPLE):
+            if set(principle.derived_from) == evidence:
                 return 0  # this exact evidence already produced a principle
 
         extracted = await PrincipleExtractor(self.ledger, self.backend).extract(cases)
@@ -1065,37 +1076,49 @@ class KnowledgeLoop:
 
         return already_assessed
 
+    #: Kinds the situation evaluator is willing to read as evidence.  A
+    #: Consolidated Memory is evidence in its own right: it is how many older
+    #: observations stay usable without re-reading each one.
+    _ASSESSABLE = (
+        "raw",
+        KIND_RESOURCE_OBSERVATION,
+        KIND_SOURCE_OBSERVATION,
+        KIND_EXPERIENCE,
+        KIND_AGENT_REPORT,
+        KIND_AGENT_OBSERVATION,
+        KIND_ENTITY_CANDIDATE,
+        KIND_CONSOLIDATED_MEMORY,
+    )
+
+    def _assessable(self, item: KnowledgeRevision) -> bool:
+        """Whether this head is evidence the evaluator should be shown."""
+        if item.kind == KIND_EXPERIENCE:
+            return item.status not in {ARTIFACT_PENDING_REVIEW, ARTIFACT_REJECTED}
+        if item.kind == KIND_ENTITY_CANDIDATE:
+            return item.status != ENTITY_UNRESOLVED
+        return True
+
     async def _assess_new_knowledge(self) -> int:
         if self.backend is None:
             return 0
         already_assessed = self._already_assessed()
-        candidates = [
-            item
-            for item in self.ledger.all_heads()
-            if not already_assessed(item)
-            and item.kind
-            in {
-                "raw",
-                KIND_RESOURCE_OBSERVATION,
-                KIND_SOURCE_OBSERVATION,
-                KIND_EXPERIENCE,
-                KIND_AGENT_REPORT,
-                KIND_AGENT_OBSERVATION,
-                KIND_ENTITY_CANDIDATE,
-                # A Consolidated Memory is evidence in its own right: it is how
-                # many older observations stay usable without re-reading each.
-                KIND_CONSOLIDATED_MEMORY,
-            }
-            and not (
-                item.kind == KIND_EXPERIENCE
-                and item.status in {ARTIFACT_PENDING_REVIEW, ARTIFACT_REJECTED}
-            )
-            and not (
-                item.kind == KIND_ENTITY_CANDIDATE
-                and item.status == ENTITY_UNRESOLVED
-            )
-        ][: self.assessment_batch_size]
+        # Walk forward from where the last pass stopped rather than re-reading
+        # the whole Ledger: a revision always lands at a later position, so a
+        # correction is still picked up.  The cursor is only a shortcut — the
+        # recorded assessments above remain what actually decides "seen".
+        candidates: list[KnowledgeRevision] = []
+        cursor = self._assessment_cursor
+        for seq, item in self.ledger.store.heads_since(
+            self._assessment_cursor, kinds=self._ASSESSABLE
+        ):
+            cursor = seq
+            if already_assessed(item) or not self._assessable(item):
+                continue
+            candidates.append(item)
+            if len(candidates) >= self.assessment_batch_size:
+                break
         if not candidates:
+            self._assessment_cursor = cursor
             return 0
 
         active_projects = [item.to_routing_dict() for item in self.orchestrator.projects.live()]
@@ -1142,7 +1165,9 @@ class KnowledgeLoop:
                 },
             )
 
-        known_ids = {item.knowledge_id for item in self.ledger.all_heads()}
+        # Only the identities are needed to check a citation, and only the
+        # cited objects need reading — neither is worth loading the Ledger for.
+        known_ids = set(self.ledger.store.all_knowledge_ids())
         created = 0
         for raw in raw_proposals:
             proposal = self._validate_proposal(raw, known_ids)
@@ -1153,8 +1178,12 @@ class KnowledgeLoop:
                 continue
             decision = self.policy.decide(proposal)
             evidence = [
-                item for item in self.ledger.all_heads()
-                if item.knowledge_id in set(proposal["evidence_ids"])
+                cited
+                for cited in (
+                    self.ledger.head(knowledge_id)
+                    for knowledge_id in proposal["evidence_ids"]
+                )
+                if cited is not None
             ]
             self.ledger.record(
                 proposal["objective"],
@@ -1171,6 +1200,9 @@ class KnowledgeLoop:
                 },
             )
             created += 1
+        # Advanced only once the assessment is durably recorded: a failed pass
+        # above returns early, so the same evidence is read again next tick.
+        self._assessment_cursor = cursor
         return created
 
     @staticmethod
@@ -1239,9 +1271,16 @@ class KnowledgeLoop:
     # --- durable event wakeups -----------------------------------------
 
     def _ensure_knowledge_events(self) -> int:
-        """Ensure every relevant Knowledge object has one durable change Event."""
+        """Ensure every relevant Knowledge object has one durable change Event.
+
+        Only revisions written since the last pass are examined.  The cursor is
+        a position in the append-only Ledger held in memory, not a queue: after
+        a restart it starts at zero and the first pass re-reads everything,
+        which is exactly the old behaviour and still cannot miss a revision.
+        """
+        end = self.ledger.store.max_seq()
         count = 0
-        for item in self.ledger.all_heads():
+        for _seq, item in self.ledger.store.heads_since(self._knowledge_event_cursor):
             event_id = uuid.uuid5(
                 uuid.NAMESPACE_URL, f"nexus-seed:knowledge:{item.id}"
             )
@@ -1261,6 +1300,9 @@ class KnowledgeLoop:
                 )
             )
             count += 1
+        # Advance only after the writes landed: a failure re-reads this slice
+        # next pass rather than skipping it.
+        self._knowledge_event_cursor = end
         return count
 
 
