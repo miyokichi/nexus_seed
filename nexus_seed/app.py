@@ -23,7 +23,7 @@ from .backends.base import BackendRequest
 from .cockpit import CockpitService
 from .config_report import build_report, format_report
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
-from .knowledge import KnowledgeLoop, ReasoningProjectAgent
+from .knowledge import CONTEXT_DIR, KnowledgeLoop, ReasoningProjectAgent
 from .operations import (
     OperationalCommandError,
     read_status,
@@ -175,13 +175,23 @@ def _configure_knowledge_loop(
         return None
     adapter = LocalFileAdapter(resource_root, adapter_id="knowledge_local_file")
     runtime.register_adapter(adapter)
+    context_root = settings.data_dir / CONTEXT_DIR
     loop = KnowledgeLoop(
         runtime,
         orchestrator,
         backend=runtime.backends.get("llm"),
+        context_root=context_root,
     )
+    # Created empty rather than waited for: a person needs somewhere to write
+    # what the words mean and what a good state looks like, and an existing
+    # file with a prompt in it is a better invitation than a missing one.
+    loop.context_documents.ensure()
     runtime.knowledge_loop = loop
-    logger.info("knowledge loop enabled; observing %s", resource_root)
+    logger.info(
+        "knowledge loop enabled; observing %s, reading context from %s",
+        resource_root,
+        context_root,
+    )
     return loop
 
 

@@ -30,7 +30,29 @@ from .models import (
     STATUS_SUPPORTED,
     STATUS_VALIDATED,
 )
+from .bootstrap_context import (
+    CONTEXT_DIR,
+    CONTEXT_DOCUMENTS,
+    KIND_CONTEXT_DOCUMENT,
+    ContextDocuments,
+)
 from .consolidation import Consolidator, select_candidates
+from .context_assessment import (
+    ASSIGNEE_AGENT,
+    ASSIGNEE_HUMAN,
+    ASSIGNEE_UNKNOWN,
+    CANDIDATE_APPROVED,
+    CANDIDATE_PENDING_REVIEW,
+    CANDIDATE_REJECTED,
+    CANDIDATE_ROUTED,
+    FINDING_KINDS,
+    KIND_CONTEXT_ASSESSMENT,
+    KIND_TASK_CANDIDATE,
+    ContextAssessor,
+    Finding,
+    SituationAssessment,
+    TaskCandidate,
+)
 from .experience import DecisionAdvisory, advisories_for, record_agent_experience
 from .goal_bridge import GapRiskOpportunityDetector, GoalBridge, Signal
 from .autonomous_loop import (
@@ -57,6 +79,24 @@ from .principles import (
 
 __all__ = [
     "ARTIFACT_APPROVED",
+    "ASSIGNEE_AGENT",
+    "ASSIGNEE_HUMAN",
+    "ASSIGNEE_UNKNOWN",
+    "CANDIDATE_APPROVED",
+    "CANDIDATE_PENDING_REVIEW",
+    "CANDIDATE_REJECTED",
+    "CANDIDATE_ROUTED",
+    "CONTEXT_DIR",
+    "CONTEXT_DOCUMENTS",
+    "ContextAssessor",
+    "ContextDocuments",
+    "FINDING_KINDS",
+    "Finding",
+    "KIND_CONTEXT_ASSESSMENT",
+    "KIND_CONTEXT_DOCUMENT",
+    "KIND_TASK_CANDIDATE",
+    "SituationAssessment",
+    "TaskCandidate",
     "ARTIFACT_PENDING_REVIEW",
     "ARTIFACT_REJECTED",
     "Consolidator",

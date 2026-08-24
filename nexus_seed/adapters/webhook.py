@@ -569,6 +569,18 @@ class WebhookServer:
                     unquote(parts[4]), parts[5], note=str(body.get("note") or "")
                 )
             elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "task-candidates"
+            ]:
+                description = body.get("description")
+                result = await self.cockpit.decide_task_candidate(
+                    unquote(parts[4]),
+                    parts[5],
+                    note=str(body.get("note") or ""),
+                    description=(
+                        str(description) if isinstance(description, str) else None
+                    ),
+                )
+            elif len(parts) == 6 and parts[:4] == [
                 "cockpit", "api", "knowledge", "questions"
             ] and parts[5] == "answer":
                 answer = body.get("answer")

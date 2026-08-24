@@ -308,6 +308,8 @@ Agentへ渡るのはworkspace directoryだけです。workspace外のfileも必�
 - `nexus-seed task`・webhook・各種connectorからの通常requestを常にProjectへrouting
 - workspace外のfile・Resource・KnowledgeをTaskごとに許可して渡す仕組み。許可判断は
   設定されたroot に対する決定的なpolicyが行い、許可後は同じTaskがそのまま続行します
+- 自然文で書くbootstrap context（用語・Goal・現状）を現在の世界と突き合わせ、矛盾・Gap・
+  Task候補を抽出する仕組み。各Task候補は人が「実行／無視／修正」を決めるまで実行されません
 - Cockpitの**Projects**画面（orchestrator自身のrecordを表示）
 
 今回も意図的に作っていないものは、1 Projectへの複数AgentとAgent同士の直接通信です。
@@ -338,6 +340,9 @@ Agent Runtime          どう実行するか
   評価するPrinciple Extraction
 - 検出したGap/Risk/Opportunityを、他と同じautonomy policyで判断されるproject proposalへ
   変換するGoal bridge（Projectを直接作成することはありません）
+- 人が自然文で書くbootstrap context（用語・Goal・現状）。現在の世界と突き合わせて
+  矛盾・Gap・まだ誰も知らないことを洗い出します
+  （[自分で書くContext](#自分で書くcontext)）
 - operatorが明示的に許可した観測元: PC自身の固定項目と、フォルダの「溜まり具合」
   （件数・合計サイズ・最古の更新日時）。読むのは目録だけで、fileは開きません
 
@@ -786,6 +791,86 @@ runtimeで動きます。orchestration自体はどちらでも同一です。
 このコマンドはdatabaseを直接操作します。同じdata directoryでNEXUS SEEDを常駐させて
 いる場合は`nexus-seed task`を使ってください。1つのProjectをreconcileするのは1 process
 という前提であり、2つあると同じAgentへ同じ問い合わせを行うことになります。
+
+## 自分で書くContext
+
+NEXUS SEEDはfileやPCの状況を観測できますが、あなたが「完了」で何を意味しているのか、
+2つの言葉が同じものを指しているのかは推測できません。それを自然文で伝えるのが
+次の3つのfileです。
+
+```text
+NEXUS_SEED_DATA_DIR/context/
+  terms.md       ここでの言葉の意味・略語
+  goals.md       望ましい状態・方針・制約
+  situation.md   いま何が起きているか
+```
+
+初回起動時に空の状態で作成され、**書いたとおりに読まれます**。schemaへ変換する処理は
+どこにもなく、Goalが数値へ変換されることもありません。「BLOCKED Projectを放置しない」は
+その文のまま扱われ、返ってくるのも「何が足りていないか」という文であって、頼んでいない
+数値目標ではありません。fileを編集するとrevisionが追加されるため、以前どう考えていたかも
+記録に残ります。
+
+書いた内容を現在の世界と突き合わせます。
+
+```powershell
+nexus-seed-knowledge assess --db nexus_seed.db
+```
+
+```text
+goal_gaps:
+    BLOCKED Projectが存在する
+        evidence: goals.md
+        evidence: situation.md
+
+(1 task candidate(s) waiting for a decision)
+```
+
+見るのは5種類で、**何も見つからないのも正常な答え**です。
+`terminology_issues`（2つの意味で使われている語、定義のない語）、
+`contradictions`（両立しない2つの記述）、`goal_gaps`（現状が満たしていないGoal）、
+`unknowns`（先に確定させる必要があること）、そして`task_candidates`
+（それらについて誰かができること）。
+
+**Task候補は提案であり、v0.1では自動実行しません。** 判断を待ちます。
+
+```powershell
+nexus-seed-knowledge candidates --db nexus_seed.db
+```
+
+```text
+[PENDING_REVIEW] K-task-candidate-190a67ac32923a3cde6f  (AGENT, confidence=0.85)
+    Project Aのblockerを調査する
+    reason: goals.mdはBLOCKEDを放置しないと述べている
+```
+
+答え方は3つで、CockpitのTask候補欄でも同じ3つのボタンになっています。
+
+```powershell
+# 実行 — 自分で打った依頼とまったく同じ入口を通ります
+nexus-seed-knowledge candidate --db nexus_seed.db <id> approve
+# 無視 — 理由とともに残り、削除されません
+nexus-seed-knowledge candidate --db nexus_seed.db <id> reject --note "いまはやらない"
+# 修正 — 機械の文言をあなたの文言へ置き換え、判断待ちのまま残ります
+nexus-seed-knowledge candidate --db nexus_seed.db <id> amend `
+    --description "Project Aの担当者に直接確認する" --note "調査より先に人に聞く"
+```
+
+承認すると、人のmessageと同じ`ProjectOrchestrator.submit()`が呼ばれます。新規Projectに
+するか既存Projectへのtask追加にするかはrouterが決めます。ここでProjectを直接作ることは
+ありません。
+
+重要なのは**修正**です。これは「この仕組みの提案」と「あなたが本当に望んだこと」の差が
+最もはっきり残る記録なので、上書きではなくrevisionとして保存します。元の文言はobjectの
+履歴に残り、のちのPrinciple Extractionがその差から学ぶことができます。
+
+この経路で起きたことはすべてKnowledgeになります。3つのdocument、各回の評価、各Task候補、
+そして人による承認・拒否・修正のすべてです。推論backendがない場合、assessorは何も見つけず
+何も記録しません。「矛盾はない」と「誰も見ていない」は別の答えで、真なのは後者だけだからです。
+
+何も動いていないときは読み直しません。判定はmodelを呼ぶ**前**に行われ、fileだけでなく
+各live Projectのstatusも見ています。そのため、誰も何も書いていなくてもProjectがBLOCKEDに
+なれば「読み直す価値のある新しい状況」として扱われます。
 
 ## 要求されたResourceをProjectへ渡す
 

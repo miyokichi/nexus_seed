@@ -489,3 +489,93 @@ def test_collect_carries_a_writable_grant_back(tmp_path, capsys, monkeypatch):
     assert code == 0, err
     assert "written back" in out
     assert (shared / "spec.md").read_text(encoding="utf-8") == "共通仕様v2"
+
+
+# --- bootstrap context: notes in, suggestions out ---------------------------
+
+
+def _context(db, tmp_path, capsys, *, goals=None, situation=None, terms=None):
+    """Create context/ next to the database and write what a person wrote."""
+    code, out, err = _run(["context", "--db", str(db), "--no-llm"], capsys)
+    assert code == 0, err
+    root = tmp_path / "context"
+    for name, text in (("goals", goals), ("situation", situation), ("terms", terms)):
+        if text is not None:
+            (root / f"{name}.md").write_text(text, encoding="utf-8")
+    return root
+
+
+def test_context_creates_the_three_files_when_nobody_has_started(tmp_path, capsys):
+    db = tmp_path / "k.db"
+
+    code, out, err = _run(["context", "--db", str(db), "--no-llm"], capsys)
+
+    assert code == 0, err
+    assert "created" in out
+    for name in ("terms.md", "goals.md", "situation.md"):
+        assert (tmp_path / "context" / name).read_text(encoding="utf-8").strip()
+
+
+def test_context_shows_what_a_person_wrote_verbatim(tmp_path, capsys):
+    db = tmp_path / "k.db"
+    _context(db, tmp_path, capsys, goals="BLOCKED Projectを放置しない")
+
+    code, out, err = _run(["context", "--db", str(db), "--no-llm", "--sync"], capsys)
+
+    assert code == 0, err
+    assert "BLOCKED Projectを放置しない" in out
+    assert "goals.md (rev 1)" in out
+
+
+def test_assess_without_an_llm_says_so_instead_of_inventing_findings(tmp_path, capsys):
+    db = tmp_path / "k.db"
+    _context(db, tmp_path, capsys, goals="BLOCKEDを放置しない")
+
+    code, out, err = _run(["assess", "--db", str(db), "--no-llm"], capsys)
+
+    assert code == 0, err
+    assert "no assessment" in out
+    assert _run(["candidates", "--db", str(db), "--no-llm", "--json"], capsys)[1].strip() == "[]"
+
+
+def test_deciding_a_candidate_that_is_not_there_fails_cleanly(tmp_path, capsys):
+    db = tmp_path / "k.db"
+    _context(db, tmp_path, capsys)
+
+    code, _out, err = _run(
+        ["candidate", "--db", str(db), "--no-llm", "K-nope", "approve"], capsys
+    )
+
+    assert code == 1
+    assert "no task candidate" in err
+    assert "Traceback" not in err
+
+
+def test_amending_without_words_is_a_plain_error(tmp_path, capsys):
+    db = tmp_path / "k.db"
+    _context(db, tmp_path, capsys, goals="x")
+    from nexus_seed.knowledge.context_assessment import (
+        CANDIDATE_PENDING_REVIEW,
+        KIND_TASK_CANDIDATE,
+    )
+    from nexus_seed.knowledge.ledger import KnowledgeLedger
+    from nexus_seed.storage import Database, KnowledgeStore
+
+    database = Database(str(db))
+    KnowledgeLedger(KnowledgeStore(database)).record(
+        "何かする",
+        knowledge_id="K-task-candidate-test",
+        source_type="context_assessment",
+        kind=KIND_TASK_CANDIDATE,
+        status=CANDIDATE_PENDING_REVIEW,
+    )
+    database.close()
+
+    code, _out, err = _run(
+        ["candidate", "--db", str(db), "--no-llm", "K-task-candidate-test", "amend"],
+        capsys,
+    )
+
+    assert code == 1
+    assert "description" in err
+    assert "Traceback" not in err

@@ -1823,8 +1823,79 @@ Task -> declares what it needs -> NEXUS SEED decides -> workspace is filled -> A
      adds a message type, a field outside `metadata`, or a requirement that the
      Agent understand any of it — and never modifies the Agent to make it work.
 
+## Done: the context a person writes, read against the world
+
+NEXUS SEED could observe files and machines but had no way to be *told* what
+the words mean or what a good state looks like.  Three prose files now say so,
+and are read against the live world:
+
+```text
+context/{terms,goals,situation}.md
+  + World Projection + live/blocked/waiting Projects + related Knowledge
+    -> SituationAssessment -> TaskCandidate -> a person -> submit()
+```
+
+- `knowledge/bootstrap_context.py` reads `NEXUS_SEED_DATA_DIR/context/` and
+  keeps the Ledger's copy current.  A document is an ordinary Knowledge object
+  whose revisions accumulate, so an edit appends rather than replaces and what
+  a person used to believe stays on the record.  Syncing is content-addressed:
+  an unchanged file writes nothing.
+- `knowledge/context_assessment.py` holds the reading and what follows from it.
+  Five lists — `terminology_issues`, `contradictions`, `goal_gaps`, `unknowns`,
+  `task_candidates` — each item carrying description / evidence / confidence.
+  Empty lists are the expected answer, not a failure.
+- **Goals stay prose.** Nothing converts "BLOCKED Projectを放置しない" into a
+  metric, a threshold or a desired-state record, and the instruction says so
+  explicitly.  What comes back is a sentence about what is missing.
+- **Nothing is executed.**  A `TaskCandidate` is filed `PENDING_REVIEW` and
+  waits.  Approval calls `ProjectOrchestrator.submit()` — the same door a human
+  message uses, so the router owns the CREATE_PROJECT / ADD_TASK_TO_PROJECT
+  choice.  This module never creates a Project or writes an orchestrator table.
+- Three answers, not two: approve, reject, and **amend**.  An amendment
+  replaces the wording and leaves the candidate waiting, keeping the machine's
+  original in the object's history — the clearest evidence available of how the
+  system's suggestions differ from what a person wanted, and deliberately kept
+  for a later Principle Extraction.
+- Re-reading is skipped *before* the model is called, keyed on the context
+  revisions **and** each live Project's status — so a quiet tick costs nothing,
+  while a Project going BLOCKED is a new situation even though no file changed.
+- Candidate identity is the normalised description, so two readings that
+  suggest the same thing land on one object rather than re-asking a person
+  something they already refused.
+- Wired everywhere behind one optional argument: `KnowledgeLoop(...,
+  context_root=)`.  Without it `context_documents` and `context_assessor` are
+  `None` and every step is a strict no-op — the loop behaves exactly as before.
+  The application passes `data_dir/context` and creates the files empty.
+
+## Bootstrap-context invariants (keep them)
+
+283. **The prose is the source of truth.** A context document is stored as
+     written and never replaced by a parse of itself.  Any structure derived
+     from it is a separate, later, optional read — Structure on Read, as
+     everywhere else in the Knowledge Runtime.
+284. **A Goal is never quantified on the system's own initiative.** Nothing
+     converts a written goal into a metric, threshold or numeric desired
+     state.  A gap is reported as a sentence.
+285. **A TaskCandidate is a suggestion until a person answers.** v0.1 has no
+     auto-approval path for one, and approval is the only thing that reaches
+     the orchestrator.
+286. **Approval goes through the ordinary door.** Routing is
+     `ProjectOrchestrator.submit()`; whether that becomes a new Project or a
+     Task on an existing one is the router's decision, never the assessor's.
+287. **A human correction is kept as evidence.** Rejecting keeps the reason and
+     amending keeps the original wording as a prior revision; neither deletes
+     anything, because how a person changed a suggestion is exactly what a
+     later Principle Extraction needs.
+288. **No context, no behaviour change.** Without a configured context root the
+     loop's context steps are strict no-ops, and without a reasoning backend
+     the assessor records nothing rather than reporting that it found nothing.
+
 ## Later-phase candidates (do not build yet)
 
+- Left out of the bootstrap context on purpose (v0.1 is one path, end to end):
+  an ontology; automatic structuring of a written Goal into a desired state;
+  auto-approving a TaskCandidate; richer Human assignment than
+  AGENT/HUMAN/UNKNOWN; predicting what the context implies will happen next.
 - Phase 7+ is intentionally not started. Plugin/package discovery and install,
   production source-tree patching, permission escalation, Runtime/Core/Policy
   self-update, learning/RL policy changes, long-horizon compensation,

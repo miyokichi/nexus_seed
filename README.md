@@ -62,7 +62,10 @@ The Project Orchestrator is available as a Python API and includes:
   routed into Projects;
 - authorized, per-resource delegation: a Task can be *given* a file, Resource
   or Knowledge object outside its workspace, decided by deterministic policy
-  against configured roots, with the same Task continuing afterwards; and
+  against configured roots, with the same Task continuing afterwards;
+- a prose bootstrap context (terms / goals / situation) read against the live
+  world into contradictions, gaps and suggested Tasks, each waiting for a
+  person to run, ignore or reword it; and
 - a Cockpit **Projects** view over the orchestrator's own records.
 
 What is deliberately not built yet: several Agents on one Project, and Agents
@@ -100,6 +103,9 @@ Agent Runtime          "how does it get done?"
 - a Goal bridge that turns a detected Gap/Risk/Opportunity into a project
   proposal, judged by the same autonomy policy as any other — it never
   creates a Project directly;
+- a bootstrap context a person writes in prose — what the words mean, what a
+  good state looks like, what is true now — read against the live world to
+  find contradictions, gaps and things nobody knows yet ([below](#the-context-you-write-yourself));
 - operator-authorized observation sources: the machine's own fixed fields,
   and a folder's standing situation (how many files, how large, how old the
   oldest is) — read from directory metadata only, never by opening a file.
@@ -537,6 +543,90 @@ It works directly on the database, so use it when no NEXUS SEED is resident on
 that data directory. When one is running, send requests with `nexus-seed task`
 instead: one process reconciling a Project is the assumption, and two would ask
 the same Agent for the same answer.
+
+## The context you write yourself
+
+NEXUS SEED can watch files and machines, but it cannot guess what you *meant*
+by "done", or which of two words you use for the same thing. Three files say
+so, in your own prose:
+
+```text
+NEXUS_SEED_DATA_DIR/context/
+  terms.md       what the words mean here
+  goals.md       what a good state looks like, and what constrains it
+  situation.md   what is true right now
+```
+
+They are created empty on first start, and read exactly as written. Nothing
+parses them into a schema, and a goal is never converted into a metric — "BLOCKED
+Projectを放置しない" stays that sentence, and what comes back is a sentence about
+what is missing, not a number you did not ask for. Editing a file appends a
+revision, so what you used to believe stays on the record.
+
+Read the notes against the live world:
+
+```powershell
+nexus-seed-knowledge assess --db nexus_seed.db
+```
+
+```text
+goal_gaps:
+    BLOCKED Projectが存在する
+        evidence: goals.md
+        evidence: situation.md
+
+(1 task candidate(s) waiting for a decision)
+```
+
+Five things are looked for, and finding nothing is a normal answer:
+`terminology_issues` (a word used two ways, or never defined),
+`contradictions` (two things that cannot both be true), `goal_gaps` (a goal the
+situation does not meet), `unknowns` (something that has to be settled first),
+and `task_candidates` — what someone could do about the rest.
+
+**A candidate is a suggestion, and v0.1 never acts on one.** It waits:
+
+```powershell
+nexus-seed-knowledge candidates --db nexus_seed.db
+```
+
+```text
+[PENDING_REVIEW] K-task-candidate-190a67ac32923a3cde6f  (AGENT, confidence=0.85)
+    Project Aのblockerを調査する
+    reason: goals.mdはBLOCKEDを放置しないと述べている
+```
+
+Three answers, in the CLI and as three buttons in the Cockpit's **Task候補**
+section:
+
+```powershell
+# 実行 — goes through the ordinary door, exactly like a message you typed
+nexus-seed-knowledge candidate --db nexus_seed.db <id> approve
+# 無視 — kept with the reason, never deleted
+nexus-seed-knowledge candidate --db nexus_seed.db <id> reject --note "いまはやらない"
+# 修正 — your wording replaces the machine's, and it stays waiting
+nexus-seed-knowledge candidate --db nexus_seed.db <id> amend \
+    --description "Project Aの担当者に直接確認する" --note "調査より先に人に聞く"
+```
+
+Approving calls the same `ProjectOrchestrator.submit()` a human message uses,
+so the router decides whether this is a new Project or another Task on one that
+already exists. Nothing here creates a Project itself.
+
+An amendment is the interesting one. It is the clearest record there is of how
+this system's suggestions differ from what you actually wanted, so it is kept
+as a revision — the original wording is still in the object's history, and a
+later Principle Extraction is entitled to learn from the difference.
+
+Everything on this path is Knowledge: the documents, each reading, each
+candidate, and every approval, refusal and edit. Without a reasoning backend
+the assessor finds nothing and records nothing, because "no contradiction" and
+"nobody looked" are different answers and only the second one would be true.
+
+Re-reading is skipped when nothing moved. The check is made before the model is
+called, and it covers both the files *and* each live Project's status — so a
+Project going BLOCKED is a new situation worth reading even though nobody typed
+anything.
 
 ## Giving a Project a resource it asked for
 

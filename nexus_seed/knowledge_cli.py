@@ -34,6 +34,7 @@ from typing import Any
 from .backends.base import ExecutionBackend
 from .backends.llm import LLMBackend
 from .knowledge.consolidation import Consolidator, select_candidates
+from .knowledge.context_assessment import CANDIDATE_PENDING_REVIEW, FINDING_KINDS
 from .knowledge.experience import advisories_for, record_agent_experience
 from .knowledge.goal_bridge import GapRiskOpportunityDetector, GoalBridge, Signal
 from .knowledge.ingest_pptx import ingest_pptx_file
@@ -55,6 +56,7 @@ from .knowledge.principles import (
     refine_principle,
 )
 from .knowledge.projection import WorldStateProjection, annotate_world_fact, diff_world_views
+from .knowledge.bootstrap_context import CONTEXT_DIR
 from .llm_config import LLMSettings
 from .storage import Database, EventStore, KnowledgeStore
 
@@ -526,6 +528,12 @@ def _open_loop(args: argparse.Namespace):
     from .runtime.runtime import Runtime
 
     runtime = Runtime(args.db)
+    # The bootstrap context lives beside the database, which is where the
+    # application puts it, so the CLI reads the same three files a running
+    # NEXUS SEED does rather than a second copy.
+    context_root = getattr(args, "context", None) or (
+        Path(args.db).expanduser().resolve().parent / CONTEXT_DIR
+    )
     # The same workspace root and authorized roots the application runs with,
     # so a grant made from the command line lands where the Agent looks and is
     # judged against the roots an operator actually authorized.
@@ -537,7 +545,12 @@ def _open_loop(args: argparse.Namespace):
         workspace_root=settings.workspace_root,
         grant_policy=build_grant_policy(settings),
     )
-    loop = KnowledgeLoop(runtime, orchestrator, backend=_build_backend(args))
+    loop = KnowledgeLoop(
+        runtime,
+        orchestrator,
+        backend=_build_backend(args),
+        context_root=context_root,
+    )
     runtime.knowledge_loop = loop
     return runtime, loop
 
@@ -614,6 +627,131 @@ def cmd_decide(args: argparse.Namespace) -> int:
             return 1
         if result is None:
             print("error: nothing to decide under that id", file=sys.stderr)
+            return 1
+        _print_rev(result, as_json=args.json)
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    """Show — or take a fresh reading of — what a person wrote in context/."""
+    runtime, loop = _open_loop(args)
+    try:
+        source = loop.context_documents
+        created = []
+        if not source.root.exists():
+            # No directory at all means nobody has started: make one with a
+            # prompt in each file rather than reporting that it is missing.
+            created = source.ensure()
+            print(f"created {source.root} with an empty terms/goals/situation")
+        changed = source.sync() if args.sync else []
+        documents = loop.context()
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "root": str(source.root),
+                        "created": [str(path) for path in created],
+                        "changed": [item.knowledge_id for item in changed],
+                        "documents": documents,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        print(f"context root: {source.root}")
+        if not documents:
+            print("(context/ にはまだ何も書かれていません)")
+            return 0
+        for role, document in documents.items():
+            marker = " *changed*" if any(
+                item.knowledge_id == document["knowledge_id"] for item in changed
+            ) else ""
+            print(f"\n--- {role}.md (rev {document['revision']}){marker} ---")
+            print(str(document["text"]).rstrip())
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_assess(args: argparse.Namespace) -> int:
+    """Read the bootstrap context once against the current world.
+
+    Nothing is executed: what comes out is findings and suggestions, and a
+    suggestion waits for ``candidate ... approve``.
+    """
+    runtime, loop = _open_loop(args)
+    try:
+        loop.context_documents.sync()
+        recorded = asyncio.run(loop.context_assessor.assess())
+        if recorded is None:
+            print(
+                "no assessment: nothing changed since the last one, "
+                "context/ is empty, or no LLM is configured (see --llm)"
+            )
+            return 0
+        if args.json:
+            _print_rev(recorded, as_json=True)
+            return 0
+        findings = recorded.content.value
+        for kind in FINDING_KINDS:
+            items = findings.get(kind) or []
+            if not items:
+                continue
+            print(f"{kind}:")
+            for item in items:
+                print(f"    {_preview(item.get('description'), 90)}")
+                for evidence in item.get("evidence") or []:
+                    print(f"        evidence: {_preview(evidence, 80)}")
+        pending = loop.task_candidates(status=CANDIDATE_PENDING_REVIEW)
+        print(f"\n({len(pending)} task candidate(s) waiting for a decision)")
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_candidates(args: argparse.Namespace) -> int:
+    """List suggested Tasks and what each is standing on."""
+    runtime, loop = _open_loop(args)
+    try:
+        items = loop.task_candidates(status=args.status)
+        if args.json:
+            print(json.dumps([item.to_dict() for item in items], ensure_ascii=False, indent=2))
+            return 0
+        for item in items:
+            metadata = item.metadata
+            print(
+                f"[{item.status}] {item.knowledge_id}  "
+                f"({metadata.get('suggested_assignee_type', 'UNKNOWN')}, "
+                f"confidence={metadata.get('confidence', '?')})"
+            )
+            print(f"    {_preview(item.content.value, 90)}")
+            if metadata.get("reason"):
+                print(f"    reason: {_preview(metadata['reason'], 80)}")
+            if metadata.get("project_id"):
+                print(f"    project: {metadata['project_id']}")
+        print(f"({len(items)} candidate(s))")
+    finally:
+        runtime.close()
+    return 0
+
+
+def cmd_candidate(args: argparse.Namespace) -> int:
+    """Run, ignore, or reword one suggested Task."""
+    runtime, loop = _open_loop(args)
+    try:
+        result = asyncio.run(
+            loop.decide_task_candidate(
+                args.knowledge_id,
+                args.decision,
+                note=args.note,
+                description=args.description,
+            )
+        )
+        if result is None:
+            print(f"error: no task candidate under {args.knowledge_id}", file=sys.stderr)
             return 1
         _print_rev(result, as_json=args.json)
     finally:
@@ -744,6 +882,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
                 "manual_observations", "source_observations", "resource_observations",
                 "agent_reports", "consolidations", "principles", "proposals",
                 "projects_routed", "knowledge_events", "completion_decisions_reconciled",
+                "context_documents", "context_assessments", "task_candidates_routed",
             )
         }
         if args.json:
@@ -1104,6 +1243,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("knowledge_id")
     p.add_argument("answer")
     p.set_defaults(func=cmd_answer)
+
+    p = sub.add_parser("context", help="show the bootstrap context (terms/goals/situation)")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("--context", default=None, help="context directory (default: <db dir>/context)")
+    p.add_argument("--sync", action="store_true", help="record any document that changed on disk first")
+    p.set_defaults(func=cmd_context)
+
+    p = sub.add_parser("assess", help="read the bootstrap context against the current world")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("--context", default=None, help="context directory (default: <db dir>/context)")
+    p.set_defaults(func=cmd_assess)
+
+    p = sub.add_parser("candidates", help="suggested Tasks waiting for a person")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("--context", default=None, help="context directory (default: <db dir>/context)")
+    p.add_argument("--status", default=None, help="only this status (default: every candidate)")
+    p.set_defaults(func=cmd_candidates)
+
+    p = sub.add_parser("candidate", help="run, ignore, or reword one suggested Task")
+    _add_db(p); _add_json(p); _add_backend_args(p)
+    p.add_argument("--context", default=None, help="context directory (default: <db dir>/context)")
+    p.add_argument("knowledge_id")
+    p.add_argument("decision", choices=["approve", "reject", "amend"])
+    p.add_argument("--description", default=None, help="the new wording (required with amend)")
+    p.add_argument("--note", default="", help="why (kept with the decision)")
+    p.set_defaults(func=cmd_candidate)
 
     p = sub.add_parser("grants", help="what Agents are asking to be given, and what they already have")
     _add_db(p); _add_json(p); _add_backend_args(p)

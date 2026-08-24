@@ -25,6 +25,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from ..adapters.manual import ManualAdapter
@@ -36,7 +37,9 @@ from ..observation_sources import (
     SYSTEM_SNAPSHOT_EVENT,
     flatten_snapshot,
 )
+from .bootstrap_context import ContextDocuments
 from .consolidation import Consolidator
+from .context_assessment import ContextAssessor
 from .ledger import KnowledgeLedger
 from .models import (
     Annotation,
@@ -192,6 +195,9 @@ class KnowledgeLoopResult:
     principles: int = 0
     proposals: int = 0
     projects_routed: int = 0
+    context_documents: int = 0
+    context_assessments: int = 0
+    task_candidates_routed: int = 0
     knowledge_events: int = 0
     completion_decisions_reconciled: int = 0
     errors: list[str] = field(default_factory=list)
@@ -211,6 +217,7 @@ class KnowledgeLoop:
         consolidation_threshold: int = 5,
         consolidations_per_pass: int = 1,
         principle_threshold: int = 3,
+        context_root: str | Path | None = None,
     ) -> None:
         self.runtime = runtime
         self.orchestrator = orchestrator
@@ -233,6 +240,19 @@ class KnowledgeLoop:
         self._knowledge_event_cursor = 0
         self._assessment_cursor = 0
         self._consolidation_cursor = 0
+        #: The bootstrap context a person writes by hand, if one is configured.
+        #: Without a root this is ``None`` and every context step below is a
+        #: strict no-op — the loop behaves exactly as it did before.
+        self.context_documents = (
+            ContextDocuments(self.ledger, context_root) if context_root else None
+        )
+        self.context_assessor = (
+            ContextAssessor(
+                self.ledger, self.context_documents, orchestrator, backend=backend
+            )
+            if self.context_documents is not None
+            else None
+        )
         self.manual = ManualAdapter("knowledge_manual")
         # Completion remains an Agent report until Knowledge and a person have
         # accepted the deliverables.  Standalone orchestrators keep their
@@ -311,6 +331,11 @@ class KnowledgeLoop:
             result.principles = await self._extract_principles()
             result.proposals = await self._assess_new_knowledge()
             result.projects_routed = await self._route_approved_proposals()
+            # The bootstrap context is read last, so one pass sees the world
+            # after everything above has landed in it.
+            result.context_documents = self._sync_context()
+            result.context_assessments = await self._assess_context()
+            result.task_candidates_routed = await self._route_task_candidates()
         except Exception as exc:  # noqa: BLE001 - next tick must remain usable
             logger.exception("knowledge reconciliation failed")
             result.errors.append(str(exc))
@@ -1303,6 +1328,62 @@ class KnowledgeLoop:
             )
             routed += 1
         return routed
+
+    # --- bootstrap context ----------------------------------------------
+
+    def context(self) -> dict[str, Any]:
+        """What a person wrote in ``context/``, as it currently stands."""
+        if self.context_documents is None:
+            return {}
+        return self.context_documents.as_context()
+
+    def assessments(self) -> list[KnowledgeRevision]:
+        """Readings of the bootstrap context against the world, newest first."""
+        return [] if self.context_assessor is None else self.context_assessor.assessments()
+
+    def task_candidates(self, *, status: str | None = None) -> list[KnowledgeRevision]:
+        """Suggested Tasks, newest first.  Suggestions only — never running work."""
+        if self.context_assessor is None:
+            return []
+        return self.context_assessor.candidates(status=status)
+
+    async def decide_task_candidate(
+        self,
+        knowledge_id: str,
+        decision: str,
+        *,
+        actor: str = "human",
+        note: str = "",
+        description: str | None = None,
+    ) -> KnowledgeRevision | None:
+        """Approve, reject or amend one suggested Task."""
+        if self.context_assessor is None:
+            return None
+        return await self.context_assessor.decide(
+            knowledge_id, decision, actor=actor, note=note, description=description
+        )
+
+    def _sync_context(self) -> int:
+        """Record any bootstrap document whose text changed on disk."""
+        if self.context_documents is None:
+            return 0
+        try:
+            return len(self.context_documents.sync())
+        except Exception:  # noqa: BLE001 - a bad file must not stop the loop
+            logger.exception("could not sync the bootstrap context")
+            return 0
+
+    async def _assess_context(self) -> int:
+        """Read the bootstrap context once against the current world."""
+        if self.context_assessor is None:
+            return 0
+        return 1 if await self.context_assessor.assess() is not None else 0
+
+    async def _route_task_candidates(self) -> int:
+        """Submit whatever a person has already approved."""
+        if self.context_assessor is None:
+            return 0
+        return await self.context_assessor.route_approved()
 
     # --- durable event wakeups -----------------------------------------
 

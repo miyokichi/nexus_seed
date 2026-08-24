@@ -14,6 +14,12 @@ from ..knowledge.autonomous_loop import (
     KIND_PROJECT_PROPOSAL,
     KIND_SITUATION_ASSESSMENT,
 )
+from ..knowledge.context_assessment import (
+    CANDIDATE_PENDING_REVIEW,
+    KIND_CONTEXT_ASSESSMENT,
+    KIND_TASK_CANDIDATE,
+)
+from ..knowledge.bootstrap_context import KIND_CONTEXT_DOCUMENT
 from ..knowledge.models import KIND_CONSOLIDATED_MEMORY, KIND_PRINCIPLE
 from ..knowledge.projection import WorldStateProjection
 from ..observation_sources import DEFAULT_FOLDER_FIELDS, FOLDER_STATUS, SYSTEM_SNAPSHOT
@@ -68,6 +74,9 @@ class CockpitService:
         unresolved_entities = self._with_status(
             knowledge["entities"], "UNRESOLVED"
         )
+        pending_candidates = self._with_status(
+            knowledge["task_candidates"], CANDIDATE_PENDING_REVIEW
+        )
         needs = self._project_attention(
             live_projects=live_projects,
             proposals=pending_proposals,
@@ -75,6 +84,7 @@ class CockpitService:
             completions=pending_completions,
             questions=open_questions,
             entities=unresolved_entities,
+            candidates=pending_candidates,
             failed=failed,
             llm=llm,
         )
@@ -110,6 +120,7 @@ class CockpitService:
                     "pending_reviews": pending_reviews,
                     "open_questions": len(open_questions),
                     "unresolved_entities": len(unresolved_entities),
+                    "task_candidates": len(pending_candidates),
                     "errors": sum(item["severity"] == "error" for item in needs),
                     "warnings": sum(item["severity"] == "warning" for item in needs),
                 },
@@ -140,6 +151,7 @@ class CockpitService:
         completions,
         questions,
         entities,
+        candidates,
         failed,
         llm,
     ) -> list[dict[str, Any]]:
@@ -148,6 +160,7 @@ class CockpitService:
         items: list[dict[str, Any]] = []
         categories = (
             ("project_proposal", "Project提案の確認が必要です", proposals),
+            ("task_candidate", "Task候補の判断をお願いします", candidates),
             ("artifact_review", "成果物の確認が必要です", artifacts),
             ("completion_review", "Project完了の確認が必要です", completions),
             ("agent_question", "Agentから質問があります", questions),
@@ -243,6 +256,9 @@ class CockpitService:
                 "entities": [],
                 "principles": [],
                 "memories": [],
+                "context": {},
+                "assessments": [],
+                "task_candidates": [],
                 "observation_sources": self._observation_sources(),
             }
         view = WorldStateProjection(loop.ledger).view()
@@ -254,6 +270,9 @@ class CockpitService:
             KIND_COMPLETION_REVIEW,
             KIND_PRINCIPLE,
             KIND_CONSOLIDATED_MEMORY,
+            KIND_CONTEXT_ASSESSMENT,
+            KIND_CONTEXT_DOCUMENT,
+            KIND_TASK_CANDIDATE,
         }
         inbox = [
             item for item in loop.ledger.all_heads() if item.kind not in internal_kinds
@@ -305,8 +324,31 @@ class CockpitService:
             ],
             "principles": [self._principle_item(item) for item in loop.principles()[:50]],
             "memories": [self._knowledge_item(item) for item in loop.memories()[:50]],
+            "context": self._context_documents(loop),
+            "assessments": [
+                self._knowledge_item(item) for item in loop.assessments()[:20]
+            ],
+            "task_candidates": [
+                self._knowledge_item(item) for item in loop.task_candidates()[:50]
+            ],
             "observation_sources": self._observation_sources(),
         }
+
+    @staticmethod
+    def _context_documents(loop) -> dict[str, Any]:
+        """The three bootstrap documents as they currently stand.
+
+        Shown as the text a person wrote, not as a parse of it: the Cockpit is
+        where somebody checks that NEXUS SEED is reading what they meant.
+        """
+        documents = {}
+        for role, head in loop.context().items():
+            documents[role] = {
+                "knowledge_id": head["knowledge_id"],
+                "revision": head["revision"],
+                "text": head["text"],
+            }
+        return documents
 
     def _principle_item(self, item) -> dict[str, Any]:
         """A principle, with how much evidence stands for and against it.
@@ -419,6 +461,33 @@ class CockpitService:
             return None
         item = await loop.decide_proposal(
             proposal_id, decision, actor=self.master_id or "human", note=note
+        )
+        return self._knowledge_item(item) if item is not None else None
+
+    async def decide_task_candidate(
+        self,
+        knowledge_id: str,
+        decision: str,
+        *,
+        note: str = "",
+        description: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Run, ignore, or reword one suggested Task.
+
+        Only ``approve`` reaches the orchestrator, and it goes through the same
+        door a human message uses.  ``amend`` changes the wording and leaves it
+        waiting, so nothing is ever submitted that a person did not read.
+        """
+
+        loop = getattr(self.runtime, "knowledge_loop", None)
+        if loop is None:
+            return None
+        item = await loop.decide_task_candidate(
+            knowledge_id,
+            decision,
+            actor=self.master_id or "human",
+            note=note,
+            description=description,
         )
         return self._knowledge_item(item) if item is not None else None
 
