@@ -106,6 +106,34 @@ Project Orchestrator, and Agent results return to Knowledge. See
 [Architecture and phase history](docs/architecture.md) for the full design and
 [AGENTS.md](AGENTS.md) for the invariants it keeps.
 
+Each pass of the loop re-reads before it decides:
+
+```text
+evidence -> consolidate -> extract a principle -> assess -> propose -> Project
+```
+
+- **Consolidation is lazy and grouped.** A subject is compressed once enough
+  observations about it are not yet covered by any memory, at most one or two
+  subjects per pass. Knowledge that names no subject is compressed too, under
+  one shared bucket, rather than piling up unread. A memory is then evidence
+  in its own right — that is what makes compressing worth doing.
+- **A principle generalises over digested material** (consolidated memory and
+  recorded experience), never over a single raw observation, and only mature
+  (`supported`/`validated`) principles reach the evaluator. A `candidate` has
+  not survived a counterexample check yet, so it never steers a decision.
+- **A correction is read again.** "Seen" is tracked per *revision*, so
+  revising an already-assessed observation puts it back in front of the
+  evaluator; repeating a conclusion still does not repeat the work, because
+  the same objective from the same evidence stays one proposal.
+- **A settled Ledger is cheap to re-check.** Each pass walks forward from the
+  position it last reached instead of re-reading everything, so cost tracks
+  what arrived, not what has accumulated. Those positions are caches, not
+  queues: they reset on restart, and the durable records decide what has
+  actually been seen.
+
+Both LLM-backed steps need a reasoning backend. Without one the loop stays
+quiet rather than writing unsynthesized summaries every tick.
+
 ### Knowledge Runtime quick start
 
 Every piece is a plain Python object you can call directly — useful when
