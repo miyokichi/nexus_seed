@@ -337,10 +337,33 @@ class ProjectAgentConfig:
     constraints: dict[str, Any] = field(default_factory=dict)
     workspace: str | None = None
     nexus_seed_a2a_endpoint: str | None = None
-    #: What was provisioned into the workspace beyond the Agent's own scratch
-    #: space: ``{"path", "access", "uri", "reason"}`` per entry.  Empty means
-    #: the task was granted nothing extra — never that it may go looking.
+    #: What this task may reach beyond the Agent's own scratch space:
+    #: ``{"uri", "path", "access", "delivery", "reason"}`` per entry.  A
+    #: ``copy`` entry's path is workspace-relative; a ``reference`` entry's is
+    #: the real host path.  Empty means the task was granted nothing extra —
+    #: never that it may go looking.
     resources: list[dict[str, Any]] = field(default_factory=list)
+
+    def _referenced(self, access: str) -> list[str]:
+        return [
+            str(entry["path"])
+            for entry in self.resources
+            if entry.get("delivery") == "reference" and entry.get("access") == access
+        ]
+
+    @property
+    def readable_paths(self) -> list[str]:
+        """Host paths this task may read in place, for an Agent runtime.
+
+        Derived from :attr:`resources` rather than stored beside it: two lists
+        that can disagree about what a task may read is one list too many.
+        """
+        return self._referenced("read")
+
+    @property
+    def writable_paths(self) -> list[str]:
+        """Host paths this task may change in place, for an Agent runtime."""
+        return self._referenced("read_write")
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON form handed to the agent runtime."""
@@ -353,6 +376,8 @@ class ProjectAgentConfig:
             "workspace": self.workspace,
             "nexus_seed_a2a_endpoint": self.nexus_seed_a2a_endpoint,
             "resources": list(self.resources),
+            "readable_paths": self.readable_paths,
+            "writable_paths": self.writable_paths,
         }
 
 

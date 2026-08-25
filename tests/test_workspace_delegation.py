@@ -26,7 +26,13 @@ from nexus_seed.providers.project_agent import (
     A2AProjectAgentTransport,
 )
 from nexus_seed.resources.scope import ResourceScope
-from nexus_seed.workspace import AccessMode, GrantPolicy, ResourceGrant, with_grant
+from nexus_seed.workspace import (
+    AccessMode,
+    Delivery,
+    GrantPolicy,
+    ResourceGrant,
+    with_grant,
+)
 from nexus_seed.workspace.provisioner import RESOURCES_DIR
 
 
@@ -87,8 +93,9 @@ async def test_a_task_gets_a_workspace_holding_what_it_was_granted(tmp_path):
     orchestrator.projects.set_context(
         project,
         with_grant(
-            with_grant(project.context, ResourceGrant(uri="file:spec.md", reason="参照")),
-            ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE),
+            with_grant(project.context, ResourceGrant(uri="file:spec.md", reason="参照", delivery=Delivery.COPY)),
+            ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE,
+                          delivery=Delivery.COPY),
         ),
     )
     await orchestrator.resolve_block(project.id, reactivate=True)
@@ -118,7 +125,11 @@ async def test_the_agent_is_told_what_it_has_without_being_told_where_from(tmp_p
     orchestrator, shared, _ = build(tmp_path, behaviour=capture)
     _decision, project = await orchestrator.submit("計画を更新して")
     orchestrator.projects.set_context(
-        project, with_grant(project.context, ResourceGrant(uri="file:spec.md"))
+        project,
+        with_grant(
+            project.context,
+            ResourceGrant(uri="file:spec.md", delivery=Delivery.COPY),
+        ),
     )
     await orchestrator.resolve_block(project.id, reactivate=True)
 
@@ -232,7 +243,7 @@ async def test_an_agent_can_ask_for_more_and_the_same_task_continues(tmp_path):
     assert request.uri is None  # naming the real resource is a person's job
 
     decision = await orchestrator.grant_resource(
-        project.id, "file:sap.csv", reason="前年比較のため"
+        project.id, "file:sap.csv", reason="前年比較のため", delivery="copy"
     )
 
     assert decision.allowed is True
@@ -290,7 +301,7 @@ async def test_a_writable_grant_is_carried_back_when_collected(tmp_path):
     orchestrator, shared, _ = build(tmp_path)
     _decision, project = await orchestrator.submit("計画を更新して")
     await orchestrator.grant_resource(
-        project.id, "file:plan.md", access=AccessMode.READ_WRITE
+        project.id, "file:plan.md", access=AccessMode.READ_WRITE, delivery="copy"
     )
 
     edited = workspace_of(tmp_path, project) / RESOURCES_DIR / "plan.md"
@@ -305,7 +316,7 @@ async def test_a_writable_grant_is_carried_back_when_collected(tmp_path):
 async def test_a_read_grant_never_comes_back(tmp_path):
     orchestrator, shared, _ = build(tmp_path)
     _decision, project = await orchestrator.submit("仕様を読んで")
-    await orchestrator.grant_resource(project.id, "file:spec.md")
+    await orchestrator.grant_resource(project.id, "file:spec.md", delivery="copy")
 
     copy = workspace_of(tmp_path, project) / RESOURCES_DIR / "spec.md"
     copy.chmod(0o644)
@@ -328,13 +339,26 @@ def test_the_manifest_travels_as_a_namespaced_a2a_extension(tmp_path):
         project_id="project-1",
         goal="g",
         workspace="/w/project-1",
-        resources=[{"path": "resources/spec.md", "access": "read", "uri": "file:spec.md"}],
+        resources=[
+            {"path": "resources/spec.md", "access": "read", "uri": "file:spec.md",
+             "delivery": "copy"},
+            {"path": "/srv/shared/sap.csv", "access": "read_write",
+             "uri": "file:/srv/shared/sap.csv", "delivery": "reference"},
+        ],
     )
-    params = _send_params({"type": "PROJECT_ASSIGNMENT"}, config)
+    assignment = {
+        "type": "PROJECT_ASSIGNMENT",
+        "resources": list(config.resources),
+        "readable_paths": config.readable_paths,
+        "writable_paths": config.writable_paths,
+    }
+    params = _send_params(assignment, config)
 
     metadata = params["metadata"]
     assert metadata[f"{WORKSPACE_EXTENSION}/workspace"] == "/w/project-1"
     assert metadata[f"{WORKSPACE_EXTENSION}/resources"][0]["path"] == "resources/spec.md"
+    assert metadata[f"{WORKSPACE_EXTENSION}/readable_paths"] == []
+    assert metadata[f"{WORKSPACE_EXTENSION}/writable_paths"] == ["/srv/shared/sap.csv"]
     # Still an ordinary A2A message/send: the extension only adds metadata keys.
     assert params["message"]["kind"] == "message"
     assert params["message"]["parts"][0]["kind"] == "data"
@@ -366,3 +390,166 @@ def test_the_instruction_tells_the_agent_how_to_ask_for_more():
     assert "resources" in PROJECT_AGENT_INSTRUCTION
     assert "read_write" in PROJECT_AGENT_INSTRUCTION
     assert "Work inside the workspace" in PROJECT_AGENT_INSTRUCTION
+
+
+# --- Project resources -> little_agent paths ------------------------------------
+
+
+async def test_a_projects_resources_become_the_agents_readable_and_writable_paths(
+    tmp_path,
+):
+    """The completion condition, end to end.
+
+        Project(workspace, readable_resources, writable_resources)
+          -> little_agent(workspace, readable_paths, writable_paths)
+    """
+    seen: list[dict] = []
+
+    def capture(config, envelope):
+        seen.append(config.to_dict())
+        return [
+            A2AMessage(
+                type=A2AMessageType.PROJECT_STATUS,
+                project_id=config.project_id,
+                payload={"summary": "ok"},
+            )
+        ]
+
+    orchestrator, shared, _ = build(tmp_path, behaviour=capture)
+    _decision, project = await orchestrator.submit("計画を更新して")
+
+    await orchestrator.grant_resource(project.id, "file:spec.md", reason="読むだけ")
+    await orchestrator.grant_resource(
+        project.id, "file:plan.md", access=AccessMode.READ_WRITE, reason="直接更新"
+    )
+
+    handed = seen[-1]
+    assert handed["workspace"] == str(workspace_of(tmp_path, project))
+    assert handed["readable_paths"] == [str(shared / "spec.md")]
+    assert handed["writable_paths"] == [str(shared / "plan.md")]
+    # And the two views a Project exposes agree with them.
+    assert [g.uri for g in orchestrator.readable_resources(project.id)] == ["file:spec.md"]
+    assert [g.uri for g in orchestrator.writable_resources(project.id)] == ["file:plan.md"]
+    orchestrator.close()
+
+
+async def test_a_referenced_grant_is_not_copied_into_the_workspace(tmp_path):
+    orchestrator, shared, _ = build(tmp_path)
+    _decision, project = await orchestrator.submit("計画を更新して")
+
+    await orchestrator.grant_resource(project.id, "file:spec.md")
+
+    workspace = workspace_of(tmp_path, project)
+    assert list((workspace / RESOURCES_DIR).iterdir()) == []
+    assert "spec.md" in (workspace / "RESOURCES.md").read_text(encoding="utf-8")
+    assert (shared / "spec.md").read_text(encoding="utf-8") == "共通仕様"
+    orchestrator.close()
+
+
+async def test_a_directory_can_be_granted_to_a_project(tmp_path):
+    orchestrator, shared, _ = build(tmp_path)
+    (shared / "docs").mkdir()
+    (shared / "docs" / "a.md").write_text("A", encoding="utf-8")
+    _decision, project = await orchestrator.submit("資料を読んで")
+
+    decision = await orchestrator.grant_resource(
+        project.id, "file:docs", reason="資料一式"
+    )
+
+    assert decision.allowed is True
+    assert orchestrator.readable_resources(project.id)[0].uri == "file:docs"
+    manifest = json.loads(
+        (workspace_of(tmp_path, project) / ".nexus-seed/manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["readable_paths"] == [str(shared / "docs")]
+    orchestrator.close()
+
+
+async def test_the_host_outside_the_root_is_never_in_the_paths(tmp_path):
+    seen: list[dict] = []
+
+    def capture(config, envelope):
+        seen.append(config.to_dict())
+        return [
+            A2AMessage(
+                type=A2AMessageType.PROJECT_STATUS,
+                project_id=config.project_id,
+                payload={"summary": "ok"},
+            )
+        ]
+
+    orchestrator, _shared, private = build(tmp_path, behaviour=capture)
+    _decision, project = await orchestrator.submit("何かして")
+
+    await orchestrator.grant_resource(project.id, f"file:{private / 'keys.txt'}")
+    await orchestrator.grant_resource(project.id, "file:/etc")
+    await orchestrator.grant_resource(project.id, "file:spec.md")
+
+    assert seen[-1]["readable_paths"] == [str(_shared / "spec.md")]
+    assert seen[-1]["writable_paths"] == []
+    orchestrator.close()
+
+
+async def test_a_task_can_reach_less_than_its_project_but_never_more(tmp_path):
+    orchestrator, shared, _ = build(tmp_path)
+    _decision, project = await orchestrator.submit("計画を更新して")
+    await orchestrator.grant_resource(project.id, "file:spec.md")
+    await orchestrator.grant_resource(
+        project.id, "file:plan.md", access=AccessMode.READ_WRITE
+    )
+    config = orchestrator.agents.build_config(
+        orchestrator.projects.get(project.id),
+        orchestrator.agents.for_project(project.id),
+    )
+    transport = A2AProjectAgentTransport.__new__(A2AProjectAgentTransport)
+
+    whole = transport.assignment(config, {})
+    narrowed = transport.assignment(
+        config,
+        {
+            "kind": "ADD_TASK",
+            "task": {
+                "id": "t1",
+                "description": "仕様だけ見て",
+                "context": {"resources": ["file:spec.md", "file:never-granted"]},
+            },
+        },
+    )
+
+    assert whole["readable_paths"] == [str(shared / "spec.md")]
+    assert whole["writable_paths"] == [str(shared / "plan.md")]
+    # Narrowed: the writable one is gone, and asking for an ungranted uri
+    # adds nothing.
+    assert narrowed["readable_paths"] == [str(shared / "spec.md")]
+    assert narrowed["writable_paths"] == []
+    assert [entry["uri"] for entry in narrowed["resources"]] == ["file:spec.md"]
+    orchestrator.close()
+
+
+async def test_narrowing_narrows_the_a2a_metadata_too(tmp_path):
+    from nexus_seed.providers.project_agent import _send_params
+
+    orchestrator, shared, _ = build(tmp_path)
+    _decision, project = await orchestrator.submit("計画を更新して")
+    await orchestrator.grant_resource(
+        project.id, "file:plan.md", access=AccessMode.READ_WRITE
+    )
+    config = orchestrator.agents.build_config(
+        orchestrator.projects.get(project.id),
+        orchestrator.agents.for_project(project.id),
+    )
+    transport = A2AProjectAgentTransport.__new__(A2AProjectAgentTransport)
+    assignment = transport.assignment(
+        config,
+        {"kind": "ADD_TASK", "task": {"id": "t1", "context": {"resources": []}}},
+    )
+
+    metadata = _send_params(assignment, config)["metadata"]
+
+    assert metadata[f"{WORKSPACE_EXTENSION}/writable_paths"] == []
+    assert metadata[f"{WORKSPACE_EXTENSION}/resources"] == []
+    # The Project still has it; this one Task simply did not ask for it.
+    assert [g.uri for g in orchestrator.writable_resources(project.id)] == ["file:plan.md"]
+    orchestrator.close()

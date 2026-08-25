@@ -87,13 +87,25 @@ async def test_granting_from_the_cockpit_provisions_and_continues_the_task(tmp_p
     cockpit = CockpitService(runtime, master_id="local-operator")
 
     result = await cockpit.orchestrator_grant(
-        project.id, f"file:{shared / 'spec.md'}", reason="人が許可"
+        project.id, f"file:{shared / 'spec.md'}", reason="人が許可", delivery="copy"
     )
 
     assert result["decision"]["allowed"] is True
     assert [item["uri"] for item in result["granted"]] == [f"file:{shared / 'spec.md'}"]
     copy = tmp_path / "workspaces" / project.id / "resources" / "spec.md"
     assert copy.read_text(encoding="utf-8") == "共通仕様"
+
+
+async def test_granting_by_reference_hands_over_the_real_path(tmp_path):
+    runtime, _orch, project, shared, _outside = await blocked_runtime(tmp_path)
+    cockpit = CockpitService(runtime, master_id="local-operator")
+
+    result = await cockpit.orchestrator_grant(project.id, f"file:{shared / 'spec.md'}")
+
+    assert result["decision"]["allowed"] is True
+    assert result["readable_paths"] == [str(shared / "spec.md")]
+    assert result["writable_paths"] == []
+    assert not (tmp_path / "workspaces" / project.id / "resources" / "spec.md").exists()
 
 
 async def test_the_cockpit_cannot_hand_over_a_file_outside_the_authorized_root(tmp_path):

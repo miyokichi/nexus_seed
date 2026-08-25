@@ -27,12 +27,16 @@ from ..storage.orchestrator_store import (
     ProjectStore,
 )
 from ..workspace.models import (
+    NEW_DELIVERY_DEFAULT,
     AccessMode,
+    Delivery,
     GrantDecision,
     GrantRequest,
     ResourceGrant,
     grants_in,
+    readable_grants,
     with_grant,
+    writable_grants,
 )
 from ..workspace.policy import GrantPolicy
 from ..workspace.provisioner import WorkspaceProvisioner
@@ -757,6 +761,7 @@ class ProjectOrchestrator:
         uri: str,
         *,
         access: AccessMode | str = AccessMode.READ,
+        delivery: Delivery | str = NEW_DELIVERY_DEFAULT,
         reason: str = "",
         name: str = "",
         resume: bool = True,
@@ -768,6 +773,17 @@ class ProjectOrchestrator:
         grant re-delegates the *same* Project — whose workspace is rebuilt
         with the new resource in it on the way out. Nothing about the task is
         restarted, because nothing about it changed except what it can reach.
+
+        ``delivery`` chooses between the three patterns.  By default the
+        Agent is pointed at the real path and nothing is copied:
+
+        ============================  ==========  ==============
+        what you want                 access      delivery
+        ============================  ==========  ==============
+        read it                       read        reference
+        change the real file          read_write  reference
+        edit it, protect the original read_write  copy
+        ============================  ==========  ==============
 
         A refusal is recorded and the Project stays blocked: an Agent that
         cannot get what it needs must not be told to try again regardless.
@@ -781,8 +797,10 @@ class ProjectOrchestrator:
             )
 
         mode = access if isinstance(access, AccessMode) else AccessMode(str(access))
+        how = delivery if isinstance(delivery, Delivery) else Delivery(str(delivery))
         decision = self.grant_policy.decide(
-            GrantRequest(project_id=project.id, requested=uri, uri=uri, access=mode, reason=reason)
+            GrantRequest(project_id=project.id, requested=uri, uri=uri, access=mode, reason=reason),
+            delivery=how,
         )
         if not decision.allowed or decision.grant is None:
             logger.info("grant refused for project %s: %s", project.id, decision.reason)
@@ -797,6 +815,7 @@ class ProjectOrchestrator:
         granted = ResourceGrant(
             uri=decision.grant.uri,
             access=mode,
+            delivery=how,
             name=name,
             reason=reason or decision.grant.reason,
         )
@@ -810,6 +829,21 @@ class ProjectOrchestrator:
         """Everything this Project may currently reach."""
         project = self.projects.get(project_id)
         return grants_in(project.context) if project else []
+
+    def readable_resources(self, project_id: str) -> list[ResourceGrant]:
+        """This Project's read-only resources.
+
+        Derived from the one grant list rather than stored beside it: two
+        lists that can disagree about what a Project may read is one list too
+        many, and the access mode already says which is which.
+        """
+        project = self.projects.get(project_id)
+        return readable_grants(project.context) if project else []
+
+    def writable_resources(self, project_id: str) -> list[ResourceGrant]:
+        """This Project's writable resources."""
+        project = self.projects.get(project_id)
+        return writable_grants(project.context) if project else []
 
     def collect_workspace(self, project_id: str) -> list[str]:
         """Carry a finished task's writable grants back to their originals."""

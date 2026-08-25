@@ -799,7 +799,8 @@ def cmd_grants(args: argparse.Namespace) -> int:
         for row in rows:
             print(f"[{row['status']}] {row['project_id']}  {_preview(row['goal'], 60)}")
             for item in row["granted"]:
-                print(f"    granted   {item['access']:10} {item['uri']}")
+                how = item.get("delivery", "copy")
+                print(f"    granted   {item['access']:10} {how:10} {item['uri']}")
             for item in row["requested"]:
                 uri = item.get("uri") or "(no uri - a person has to say which resource)"
                 print(f"    REQUESTED {item['access']:10} {uri}")
@@ -825,6 +826,7 @@ def cmd_grant(args: argparse.Namespace) -> int:
                 args.project_id,
                 args.uri,
                 access=args.access,
+                delivery=args.delivery,
                 reason=args.reason,
                 name=args.name or "",
                 resume=not args.no_resume,
@@ -1280,6 +1282,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project_id")
     p.add_argument("uri", help="file:<path>, resource:<uri> or knowledge:<id>")
     p.add_argument("--access", default="read", choices=["read", "read_write"], help="default: read")
+    p.add_argument(
+        "--delivery",
+        default="reference",
+        choices=["reference", "copy"],
+        help="reference (default): the Agent reaches the real path, nothing is "
+             "copied. copy: materialised in the workspace so the original is "
+             "untouched by anything the Agent does",
+    )
     p.add_argument("--reason", default="", help="why this is being granted (kept with the grant)")
     p.add_argument("--name", default=None, help="name to give it inside the workspace")
     p.add_argument("--no-resume", action="store_true", help="record the grant without re-delegating the Task")

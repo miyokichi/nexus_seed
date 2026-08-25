@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 
 from nexus_seed.knowledge.ledger import KnowledgeLedger
@@ -16,12 +17,16 @@ from nexus_seed.resources.scope import ResourceScope
 from nexus_seed.storage import Database, KnowledgeStore
 from nexus_seed.workspace import (
     AccessMode,
+    Delivery,
     GrantPolicy,
     GrantRequest,
     ResourceGrant,
     WorkspaceProvisioner,
 )
 from nexus_seed.workspace.provisioner import MANIFEST_PATH, README_PATH
+
+#: These tests are about the isolating pattern, so they always say `copy`.
+COPY = Delivery.COPY
 
 
 def shared_tree(tmp_path):
@@ -123,8 +128,8 @@ def test_granted_resources_appear_in_the_workspace(tmp_path):
     manifest = provisioner.provision(
         workspace,
         [
-            ResourceGrant(uri="file:spec.md", reason="参照用"),
-            ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE),
+            ResourceGrant(uri="file:spec.md", reason="参照用", delivery=COPY),
+            ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE, delivery=COPY),
         ],
     )
 
@@ -133,7 +138,10 @@ def test_granted_resources_appear_in_the_workspace(tmp_path):
         "resources/plan.md",
     ]
     assert (workspace / "resources/spec.md").read_text(encoding="utf-8") == "共通仕様"
-    assert manifest.writable_paths == ["resources/plan.md"]
+    # `writable_paths` is the *in-place* list an Agent runtime is authorized
+    # with; a copy already sits inside the workspace it was given.
+    assert manifest.writable_paths == []
+    assert manifest.copied_writable_paths == ["resources/plan.md"]
 
 
 def test_a_refused_grant_is_simply_not_provisioned(tmp_path):
@@ -143,8 +151,8 @@ def test_a_refused_grant_is_simply_not_provisioned(tmp_path):
     manifest = provisioner.provision(
         tmp_path / "ws",
         [
-            ResourceGrant(uri="file:spec.md"),
-            ResourceGrant(uri=f"file:{outside / 'keys.txt'}"),
+            ResourceGrant(uri="file:spec.md", delivery=COPY),
+            ResourceGrant(uri=f"file:{outside / 'keys.txt'}", delivery=COPY),
         ],
     )
 
@@ -155,7 +163,7 @@ def test_a_refused_grant_is_simply_not_provisioned(tmp_path):
 def test_a_grant_is_rechecked_when_the_root_narrows(tmp_path):
     """A stored grant must not outlive the permission it was made under."""
     shared, _ = shared_tree(tmp_path)
-    grant = ResourceGrant(uri="file:spec.md", access=AccessMode.READ_WRITE)
+    grant = ResourceGrant(uri="file:spec.md", access=AccessMode.READ_WRITE, delivery=COPY)
     narrowed = WorkspaceProvisioner(policy_for(shared, writable=False))
 
     manifest = narrowed.provision(tmp_path / "ws", [grant])
@@ -172,7 +180,7 @@ def test_two_grants_with_the_same_name_do_not_collide(tmp_path):
 
     manifest = provisioner.provision(
         tmp_path / "ws",
-        [ResourceGrant(uri="file:spec.md"), ResourceGrant(uri="file:sub/spec.md")],
+        [ResourceGrant(uri="file:spec.md", delivery=COPY), ResourceGrant(uri="file:sub/spec.md", delivery=COPY)],
     )
 
     paths = [entry["path"] for entry in manifest.entries]
@@ -183,7 +191,7 @@ def test_two_grants_with_the_same_name_do_not_collide(tmp_path):
 def test_an_explicit_name_is_what_the_agent_sees(tmp_path):
     shared, _ = shared_tree(tmp_path)
     manifest = WorkspaceProvisioner(policy_for(shared)).provision(
-        tmp_path / "ws", [ResourceGrant(uri="file:spec.md", name="仕様.md")]
+        tmp_path / "ws", [ResourceGrant(uri="file:spec.md", name="仕様.md", delivery=COPY)]
     )
     assert manifest.entries[0]["path"] == "resources/仕様.md"
 
@@ -192,7 +200,7 @@ def test_the_workspace_says_what_is_in_it_two_ways(tmp_path):
     shared, _ = shared_tree(tmp_path)
     workspace = tmp_path / "ws"
     WorkspaceProvisioner(policy_for(shared)).provision(
-        workspace, [ResourceGrant(uri="file:spec.md", reason="参照用")]
+        workspace, [ResourceGrant(uri="file:spec.md", reason="参照用", delivery=COPY)]
     )
 
     manifest = json.loads((workspace / MANIFEST_PATH).read_text(encoding="utf-8"))
@@ -210,7 +218,7 @@ def test_the_manifest_never_names_the_host_path(tmp_path):
     shared, _ = shared_tree(tmp_path)
     workspace = tmp_path / "ws"
     WorkspaceProvisioner(policy_for(shared)).provision(
-        workspace, [ResourceGrant(uri="file:spec.md")]
+        workspace, [ResourceGrant(uri="file:spec.md", delivery=COPY)]
     )
 
     manifest = (workspace / MANIFEST_PATH).read_text(encoding="utf-8")
@@ -224,7 +232,7 @@ def test_a_read_grant_is_written_read_only(tmp_path):
     shared, _ = shared_tree(tmp_path)
     workspace = tmp_path / "ws"
     WorkspaceProvisioner(policy_for(shared)).provision(
-        workspace, [ResourceGrant(uri="file:spec.md")]
+        workspace, [ResourceGrant(uri="file:spec.md", delivery=COPY)]
     )
     mode = (workspace / "resources/spec.md").stat().st_mode & 0o777
     assert mode == 0o444
@@ -240,7 +248,7 @@ def test_a_read_grant_never_reaches_the_original_even_if_overwritten(tmp_path):
     shared, _ = shared_tree(tmp_path)
     provisioner = WorkspaceProvisioner(policy_for(shared))
     workspace = tmp_path / "ws"
-    grants = [ResourceGrant(uri="file:spec.md")]
+    grants = [ResourceGrant(uri="file:spec.md", delivery=COPY)]
     provisioner.provision(workspace, grants)
 
     copy = workspace / "resources/spec.md"
@@ -255,7 +263,7 @@ def test_a_read_write_grant_is_carried_back_when_work_is_accepted(tmp_path):
     shared, _ = shared_tree(tmp_path)
     provisioner = WorkspaceProvisioner(policy_for(shared))
     workspace = tmp_path / "ws"
-    grants = [ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE)]
+    grants = [ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE, delivery=COPY)]
     provisioner.provision(workspace, grants)
 
     (workspace / "resources/plan.md").write_text("計画v2", encoding="utf-8")
@@ -270,7 +278,7 @@ def test_nothing_is_carried_back_before_it_is_collected(tmp_path):
     provisioner = WorkspaceProvisioner(policy_for(shared))
     workspace = tmp_path / "ws"
     provisioner.provision(
-        workspace, [ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE)]
+        workspace, [ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE, delivery=COPY)]
     )
 
     (workspace / "resources/plan.md").write_text("途中の状態", encoding="utf-8")
@@ -289,7 +297,7 @@ def test_knowledge_can_be_provided_as_a_file(tmp_path):
     workspace = tmp_path / "ws"
 
     manifest = WorkspaceProvisioner(policy, ledger=ledger).provision(
-        workspace, [ResourceGrant(uri=f"knowledge:{item.knowledge_id}")]
+        workspace, [ResourceGrant(uri=f"knowledge:{item.knowledge_id}", delivery=COPY)]
     )
 
     [entry] = manifest.entries
@@ -331,12 +339,12 @@ def test_re_provisioning_adds_the_new_grant_and_keeps_the_agent_s_own_work(tmp_p
     shared, _ = shared_tree(tmp_path)
     provisioner = WorkspaceProvisioner(policy_for(shared))
     workspace = tmp_path / "ws"
-    provisioner.provision(workspace, [ResourceGrant(uri="file:spec.md")])
+    provisioner.provision(workspace, [ResourceGrant(uri="file:spec.md", delivery=COPY)])
     (workspace / "notes.md").write_text("Agentの作業メモ", encoding="utf-8")
 
     manifest = provisioner.provision(
         workspace,
-        [ResourceGrant(uri="file:spec.md"), ResourceGrant(uri="file:plan.md")],
+        [ResourceGrant(uri="file:spec.md", delivery=COPY), ResourceGrant(uri="file:plan.md", delivery=COPY)],
     )
 
     assert [entry["path"] for entry in manifest.entries] == [
@@ -357,3 +365,146 @@ def test_an_empty_grant_list_still_produces_a_usable_workspace(tmp_path):
     assert "No resources beyond this workspace" in (
         workspace / README_PATH
     ).read_text(encoding="utf-8")
+
+
+# --- delivered by reference: the original, not a duplicate of it -------------
+
+
+def test_a_referenced_file_is_not_copied_anywhere(tmp_path):
+    shared, _ = shared_tree(tmp_path)
+    provisioner = WorkspaceProvisioner(policy_for(shared))
+    workspace = tmp_path / "ws"
+
+    manifest = provisioner.provision(workspace, [ResourceGrant(uri="file:spec.md")])
+
+    assert manifest.entries[0]["path"] == str(shared / "spec.md")
+    assert manifest.entries[0]["delivery"] == "reference"
+    assert manifest.readable_paths == [str(shared / "spec.md")]
+    assert list((workspace / "resources").iterdir()) == []
+
+
+def test_writing_a_referenced_file_changes_the_original_immediately(tmp_path):
+    shared, _ = shared_tree(tmp_path)
+    provisioner = WorkspaceProvisioner(
+        policy_for(shared, writable=True)
+    )
+    grants = [ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE)]
+
+    manifest = provisioner.provision(tmp_path / "ws", grants)
+    # This is what the Agent does with the path it was handed.
+    Path(manifest.writable_paths[0]).write_text("計画v2", encoding="utf-8")
+
+    assert (shared / "plan.md").read_text(encoding="utf-8") == "計画v2"
+    # Nothing to carry back: it already landed where it belongs.
+    assert provisioner.collect(tmp_path / "ws", grants) == []
+
+
+def test_a_directory_can_be_referenced_but_never_copied(tmp_path):
+    shared, _ = shared_tree(tmp_path)
+    (shared / "sub").mkdir(exist_ok=True)
+    policy = policy_for(shared)
+
+    allowed = policy.decide(GrantRequest(project_id="p", requested="sub", uri="file:sub"))
+    refused = policy.decide(
+        GrantRequest(project_id="p", requested="sub", uri="file:sub"),
+        delivery=Delivery.COPY,
+    )
+
+    assert allowed.allowed is True
+    assert refused.allowed is False
+    assert "directory" in refused.reason
+    manifest = WorkspaceProvisioner(policy).provision(
+        tmp_path / "ws", [ResourceGrant(uri="file:sub")]
+    )
+    assert manifest.readable_paths == [str(shared / "sub")]
+
+
+def test_a_referenced_path_still_cannot_escape_the_authorized_root(tmp_path):
+    shared, outside = shared_tree(tmp_path)
+    (shared / "sneaky.txt").symlink_to(outside / "keys.txt")
+    provisioner = WorkspaceProvisioner(policy_for(shared))
+
+    manifest = provisioner.provision(
+        tmp_path / "ws",
+        [
+            ResourceGrant(uri=f"file:{outside / 'keys.txt'}"),
+            ResourceGrant(uri="file:sneaky.txt"),
+            ResourceGrant(uri="file:spec.md"),
+        ],
+    )
+
+    assert manifest.readable_paths == [str(shared / "spec.md")]
+
+
+def test_a_record_has_no_host_path_so_it_can_only_be_copied(tmp_path):
+    shared, _ = shared_tree(tmp_path)
+    db = Database(str(tmp_path / "k.db"))
+    try:
+        ledger = KnowledgeLedger(KnowledgeStore(db))
+        item = ledger.record("決まったこと", source_type="meeting")
+        provisioner = WorkspaceProvisioner(policy_for(shared, ledger=ledger))
+
+        manifest = provisioner.provision(
+            tmp_path / "ws",
+            [
+                ResourceGrant(uri=f"knowledge:{item.knowledge_id}"),
+                ResourceGrant(uri=f"knowledge:{item.knowledge_id}", delivery=COPY),
+            ],
+        )
+
+        assert [entry["delivery"] for entry in manifest.entries] == ["copy"]
+        assert manifest.readable_paths == []
+    finally:
+        db.close()
+
+
+def test_both_kinds_can_be_granted_to_the_same_task(tmp_path):
+    shared, _ = shared_tree(tmp_path)
+    (shared / "sap.csv").write_text("year,amount\n", encoding="utf-8")
+    provisioner = WorkspaceProvisioner(policy_for(shared, writable=True))
+    workspace = tmp_path / "ws"
+
+    manifest = provisioner.provision(
+        workspace,
+        [
+            ResourceGrant(uri="file:spec.md", reason="読むだけ"),
+            ResourceGrant(uri="file:sap.csv", access=AccessMode.READ_WRITE, reason="直接更新"),
+            ResourceGrant(uri="file:plan.md", access=AccessMode.READ_WRITE,
+                          delivery=COPY, reason="編集させるが原本は守る"),
+        ],
+    )
+
+    assert manifest.readable_paths == [str(shared / "spec.md")]
+    assert manifest.writable_paths == [str(shared / "sap.csv")]
+    assert manifest.copied_writable_paths == ["resources/plan.md"]
+    assert (workspace / "resources" / "plan.md").is_file()
+    assert not (workspace / "resources" / "spec.md").exists()
+
+
+def test_a_stored_grant_from_before_deliveries_still_means_copy(tmp_path):
+    # Read back from a Project saved before this existed: it copied, and
+    # reading the record must not quietly change that.
+    grant = ResourceGrant.from_dict({"uri": "file:spec.md", "access": "read"})
+
+    assert grant.delivery is Delivery.COPY
+
+    shared, _ = shared_tree(tmp_path)
+    manifest = WorkspaceProvisioner(policy_for(shared)).provision(
+        tmp_path / "ws", [grant]
+    )
+    assert manifest.entries[0]["path"] == "resources/spec.md"
+
+
+def test_a_task_can_narrow_what_it_reaches_but_never_widen_it(tmp_path):
+    shared, _ = shared_tree(tmp_path)
+    manifest = WorkspaceProvisioner(policy_for(shared)).provision(
+        tmp_path / "ws",
+        [ResourceGrant(uri="file:spec.md"), ResourceGrant(uri="file:plan.md")],
+    )
+
+    narrowed = manifest.narrowed_to(["file:spec.md", "file:never-granted.txt"])
+
+
+    assert narrowed.readable_paths == [str(shared / "spec.md")]
+    assert manifest.narrowed_to(None) is manifest
+    assert manifest.narrowed_to([]).entries == []

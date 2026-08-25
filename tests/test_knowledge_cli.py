@@ -405,7 +405,10 @@ def test_grant_puts_the_file_in_the_workspace_and_continues_the_task(
     project_id = _project(db)
 
     code, out, err = _run(
-        ["grant", "--db", str(db), project_id, f"file:{shared / 'spec.md'}", "--json"],
+        [
+            "grant", "--db", str(db), project_id,
+            f"file:{shared / 'spec.md'}", "--delivery", "copy", "--json",
+        ],
         capsys,
     )
     assert code == 0, err
@@ -478,6 +481,7 @@ def test_collect_carries_a_writable_grant_back(tmp_path, capsys, monkeypatch):
         [
             "grant", "--db", str(db), project_id,
             f"file:{shared / 'spec.md'}", "--access", "read_write",
+            "--delivery", "copy",
         ],
         capsys,
     )[0] == 0

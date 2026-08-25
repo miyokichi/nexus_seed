@@ -60,9 +60,11 @@ The Project Orchestrator is available as a Python API and includes:
   over A2A;
 - ordinary requests — `nexus-seed task`, a webhook, any connector — always
   routed into Projects;
-- authorized, per-resource delegation: a Task can be *given* a file, Resource
-  or Knowledge object outside its workspace, decided by deterministic policy
-  against configured roots, with the same Task continuing afterwards;
+- authorized, per-resource delegation: a Project declares the files and
+  directories its Agent may read or change, decided by deterministic policy
+  against configured roots and handed over as the Agent runtime's own
+  `readable_paths` / `writable_paths` — by reference, or as an isolated copy
+  when the original must be protected;
 - a prose bootstrap context (terms / goals / situation) read against the live
   world into contradictions, gaps and suggested Tasks, each waiting for a
   person to run, ignore or reword it; and
@@ -632,9 +634,17 @@ anything.
 
 A Project Agent gets its own workspace directory and nothing else. That is
 deliberate: NEXUS SEED never hands an Agent the host it happens to be running
-on. So when the Agent needs a file that is not in its workspace, it does not go
-looking — it escalates with `NEED_RESOURCE` and the Project blocks, exactly as
-above.
+on. So when the Agent needs a file it was not given, it does not go looking —
+it escalates with `NEED_RESOURCE` and the Project blocks, exactly as above.
+
+What it may reach is decided per Project, and the Project is the ceiling:
+
+```text
+NEXUS SEED Project              little_agent
+  workspace              ->       workspace
+  readable_resources     ->       readable_paths
+  writable_resources     ->       writable_paths
+```
 
 Answering that is one command. First say which trees a Project may ever be
 given anything from — with neither set, nothing outside a workspace is
@@ -667,22 +677,63 @@ nexus-seed-knowledge grant --db nexus_seed.db project-8a49c176-... `
 ```
 
 ```text
-granted: read access to file:C:/work/shared/sap_fy2025.csv is within policy
+granted: read access to file:C:/work/shared/sap_fy2025.csv by reference is within policy
 ```
 
 The same Task then continues. Nothing is restarted and no new Project is
-created: the workspace is rebuilt with the file in it and the *same* Project is
-delegated to the *same* Agent, because nothing about the task changed except
-what it can reach.
+created: the *same* Project is delegated to the *same* Agent with the resource
+available to it, because nothing about the task changed except what it can
+reach.
 
-What the Agent sees is a copy under `resources/` in its workspace, plus a
-`RESOURCES.md` and a `.nexus-seed/manifest.json` listing what it has and at
-what access. It is told what it was given, not where on the host it came from.
+### Three ways to give a task a file
 
-Grant `--access read_write` to let the Agent change something. That still only
-gives it a copy; `nexus-seed-knowledge collect --db nexus_seed.db <project-id>` is what
-carries a changed copy back to the original afterwards. A read grant is never carried
-back, whatever the Agent did to its copy.
+Which one you want depends on whose bytes the Agent should touch:
+
+| what you want | flags | what the Agent gets |
+| --- | --- | --- |
+| it reads the file | *(default)* | the real path, in `readable_paths` |
+| it changes the real file | `--access read_write` | the real path, in `writable_paths` |
+| it edits, original protected | `--access read_write --delivery copy` | a copy under `resources/` |
+
+The first two are **references**: nothing is copied, and the Agent is pointed at
+the file where it lives. A directory can only be granted this way, and is the
+usual way to hand over a folder of material:
+
+```powershell
+nexus-seed-knowledge grant --db nexus_seed.db <project-id> "file:C:/work/shared/docs"
+```
+
+The third is a **copy** into the task's workspace. It costs a copy and buys the
+one thing a reference cannot: the Agent may edit the file while the original
+stays untouched. `nexus-seed-knowledge collect --db nexus_seed.db <project-id>`
+carries a changed copy back to its original afterwards; a read copy is never
+carried back, whatever the Agent did to it, and a reference needs no collecting
+because it already wrote where it belongs.
+
+Copying stays the answer for anything that has to be isolated — it was the only
+behaviour before references existed, and grants recorded back then still copy.
+
+### What reaches the Agent
+
+Whatever the mix, a delegation carries:
+
+```text
+workspace        the task's own directory
+readable_paths   host paths it may read in place
+writable_paths   host paths it may change in place
+resources        every grant, with its path, access and delivery
+```
+
+A Bridge starting `little_agent` passes those three straight through as its
+`workspace` / `readable_paths` / `writable_paths`. Over A2A they ride in
+`metadata` under one extension URI, so an agent that does not know the
+extension sees an ordinary, valid message. The workspace also holds a
+`RESOURCES.md` and a `.nexus-seed/manifest.json` saying the same thing, for an
+agent that reads files rather than metadata.
+
+A Task may reach **less** than its Project allows — put the uris it needs in
+`task["context"]["resources"]` and the delegation narrows to those. It can
+never reach more: naming something the Project was not granted adds nothing.
 
 Everything above is refused unless it is inside an authorized root, and the
 check resolves symlinks first, so a link pointing out of the tree is refused

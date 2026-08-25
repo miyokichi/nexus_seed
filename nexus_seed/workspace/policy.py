@@ -28,10 +28,12 @@ from typing import TYPE_CHECKING
 
 from ..resources.scope import ResourceScope, ScopeViolation
 from .models import (
+    NEW_DELIVERY_DEFAULT,
     SCHEME_FILE,
     SCHEME_KNOWLEDGE,
     SCHEME_RESOURCE,
     AccessMode,
+    Delivery,
     GrantDecision,
     GrantRequest,
     ResourceGrant,
@@ -77,7 +79,9 @@ class GrantPolicy:
 
     # --- deciding ----------------------------------------------------------
 
-    def decide(self, request: GrantRequest) -> GrantDecision:
+    def decide(
+        self, request: GrantRequest, *, delivery: Delivery = NEW_DELIVERY_DEFAULT
+    ) -> GrantDecision:
         """Allow or refuse one request, with the reason either way."""
         uri = (request.uri or "").strip()
         if not uri:
@@ -87,26 +91,34 @@ class GrantPolicy:
                 "a person has to say which resource this is",
             )
         try:
-            self.check(uri, request.access)
+            self.check(uri, request.access, delivery=delivery)
         except GrantRefused as exc:
             return GrantDecision(False, str(exc))
         return GrantDecision(
             True,
-            f"{request.access.value} access to {uri} is within policy",
+            f"{request.access.value} access to {uri} "
+            f"by {delivery.value} is within policy",
             ResourceGrant(
                 uri=uri,
                 access=request.access,
+                delivery=delivery,
                 reason=request.reason or f"requested: {request.requested}",
             ),
         )
 
-    def check(self, uri: str, access: AccessMode) -> None:
-        """Raise :class:`GrantRefused` unless ``uri`` may be granted at ``access``."""
+    def check(
+        self,
+        uri: str,
+        access: AccessMode,
+        *,
+        delivery: Delivery = NEW_DELIVERY_DEFAULT,
+    ) -> None:
+        """Raise :class:`GrantRefused` unless ``uri`` may be granted this way."""
         scheme, _, target = uri.partition(":")
         if not target:
             raise GrantRefused(f"{uri!r} does not name a scheme; expected 'scheme:target'")
         if scheme == SCHEME_FILE:
-            self._check_file(target, access)
+            self._check_file(target, access, delivery)
         elif scheme == SCHEME_RESOURCE:
             self._check_resource(target, access)
         elif scheme == SCHEME_KNOWLEDGE:
@@ -124,7 +136,7 @@ class GrantPolicy:
         allowed = []
         for grant in grants:
             try:
-                self.check(grant.uri, grant.access)
+                self.check(grant.uri, grant.access, delivery=grant.delivery)
             except GrantRefused as exc:
                 logger.warning("dropping grant %s: %s", grant.uri, exc)
                 continue
@@ -133,7 +145,7 @@ class GrantPolicy:
 
     # --- per-scheme rules ---------------------------------------------------
 
-    def _check_file(self, target: str, access: AccessMode) -> None:
+    def _check_file(self, target: str, access: AccessMode, delivery: Delivery) -> None:
         if self.scope is None:
             raise GrantRefused(
                 "no authorized file root is configured, so no host file is grantable"
@@ -142,8 +154,17 @@ class GrantPolicy:
             resolved = self.scope.resolve(target, write=access.writable)
         except ScopeViolation as exc:
             raise GrantRefused(str(exc)) from exc
-        if not Path(resolved).exists():
+        path = Path(resolved)
+        if not path.exists():
             raise GrantRefused(f"{target!r} does not exist under the authorized root")
+        if delivery.copied and path.is_dir():
+            # Refused here rather than at provisioning time so the person who
+            # asked hears why immediately.  Copying a tree of unknown size into
+            # a workspace is not something to do because nobody said otherwise.
+            raise GrantRefused(
+                f"{target!r} is a directory; grant it by reference, or name a "
+                "file if it has to be copied into the workspace"
+            )
 
     def _check_resource(self, target: str, access: AccessMode) -> None:
         if self.resources is None:

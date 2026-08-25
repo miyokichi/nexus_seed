@@ -306,8 +306,10 @@ Agentへ渡るのはworkspace directoryだけです。workspace外のfileも必�
 - テストやローカル統合向けの決定的な`InProcessAgentRuntime`
 - Project全体を実際の外部AgentへA2Aで委譲する`A2AAgentRuntime`
 - `nexus-seed task`・webhook・各種connectorからの通常requestを常にProjectへrouting
-- workspace外のfile・Resource・KnowledgeをTaskごとに許可して渡す仕組み。許可判断は
-  設定されたroot に対する決定的なpolicyが行い、許可後は同じTaskがそのまま続行します
+- Agentが読み書きしてよいfile・directoryをProject単位で宣言する仕組み。許可判断は
+  設定されたrootに対する決定的なpolicyが行い、Agent runtimeの
+  `readable_paths` / `writable_paths`として渡ります。参照で直接渡すか、原本を守る
+  必要があるときはworkspaceへコピーするかを選べます
 - 自然文で書くbootstrap context（用語・Goal・現状）を現在の世界と突き合わせ、矛盾・Gap・
   Task候補を抽出する仕組み。各Task候補は人が「実行／無視／修正」を決めるまで実行されません
 - Cockpitの**Projects**画面（orchestrator自身のrecordを表示）
@@ -876,8 +878,17 @@ nexus-seed-knowledge candidate --db nexus_seed.db <id> amend `
 
 Project Agentに渡るのは自分専用のworkspace directoryだけで、それ以外はありません。
 これは意図的な設計です。NEXUS SEEDは、動作しているhost PC全体をAgentへ無条件で
-公開しません。そのためworkspaceにないfileが必要になっても、Agentは自分で探しに
+公開しません。そのため渡されていないfileが必要になっても、Agentは自分で探しに
 行かず、`NEED_RESOURCE`をescalationしてProjectがblockされます（上の例のとおり）。
+
+何に手が届くかはProject単位で決まり、Projectが上限になります。
+
+```text
+NEXUS SEED Project              little_agent
+  workspace              ->       workspace
+  readable_resources     ->       readable_paths
+  writable_resources     ->       writable_paths
+```
 
 これに答えるのは1コマンドです。まず、Projectへ渡すことがありうるdirectoryを
 宣言します。どちらも未設定なら、workspace以外は一切渡せません。
@@ -909,20 +920,60 @@ nexus-seed-knowledge grant --db nexus_seed.db project-8a49c176-... `
 ```
 
 ```text
-granted: read access to file:C:/work/shared/sap_fy2025.csv is within policy
+granted: read access to file:C:/work/shared/sap_fy2025.csv by reference is within policy
 ```
 
 このあと**同じTaskがそのまま続行**します。Taskの作り直しも新しいProjectの作成も
-ありません。workspaceがそのfileを含む形で再構築され、*同じ*Projectが*同じ*Agentへ
-再委譲されます。変わったのは「何に手が届くか」だけだからです。
+ありません。*同じ*Projectが*同じ*Agentへ、そのResourceに手が届く状態で再委譲され
+ます。変わったのは「何に手が届くか」だけだからです。
 
-Agentから見えるのは、workspace内の`resources/`に置かれたcopyと、何をどの権限で
-持っているかを書いた`RESOURCES.md`および`.nexus-seed/manifest.json`です。渡された
-ものは伝えますが、host上のどこから来たかは伝えません。
+### fileの渡し方は3通り
 
-書き換えを許すなら`--access read_write`を指定します。それでも渡るのはcopyです。
-変更を元のfileへ戻すのは`nexus-seed-knowledge collect --db nexus_seed.db <project-id>`
-で、readのgrantはAgentがcopyに何をしても決して書き戻されません。
+「Agentがどのbytesを触るか」で選びます。
+
+| やりたいこと | 指定 | Agentに渡るもの |
+| --- | --- | --- |
+| 読むだけ | *(既定)* | 元のpath（`readable_paths`） |
+| 元ファイルを直接変更してよい | `--access read_write` | 元のpath（`writable_paths`） |
+| 編集させたいが原本を守りたい | `--access read_write --delivery copy` | `resources/`内のcopy |
+
+上2つは**参照（reference）**で、コピーは作られません。Agentは元の場所のfileを
+直接指されます。directoryはこの方法でのみ渡せて、資料一式を渡す通常の手段です。
+
+```powershell
+nexus-seed-knowledge grant --db nexus_seed.db <project-id> "file:C:/work/shared/docs"
+```
+
+3つ目は**コピー（copy）**で、Taskのworkspaceへ実体化します。コピーの分のコストを
+払う代わりに、参照では得られないものが得られます。**Agentが編集しても原本が変わ
+らない**ことです。変更を元のfileへ戻すのは
+`nexus-seed-knowledge collect --db nexus_seed.db <project-id>`。readのcopyはAgentが
+何をしても決して書き戻されず、referenceは既に元の場所へ書いているので回収は不要
+です。
+
+隔離が必要なResourceにはコピー方式が引き続き答えです。referenceが入る前は
+これが唯一の方式で、当時記録されたgrantは今もコピーとして動きます。
+
+### Agentへ渡る形
+
+どの組み合わせでも、1回の委譲が運ぶのは次の4つです。
+
+```text
+workspace        Task専用のdirectory
+readable_paths   その場で読んでよいhost path
+writable_paths   その場で変更してよいhost path
+resources        全grantとその path / access / delivery
+```
+
+`little_agent`を起動するBridgeは、この3つをそのまま`workspace` /
+`readable_paths` / `writable_paths`へ渡せます。A2A経由では1つのextension URIの
+下の`metadata`に載るため、そのextensionを知らないagentから見ても通常の妥当な
+messageのままです。fileを読むagent向けに、workspace内の`RESOURCES.md`と
+`.nexus-seed/manifest.json`にも同じ内容が書かれます。
+
+TaskはProjectより**狭く**できます。`task["context"]["resources"]`に必要なuriを
+入れると、その委譲はそれだけに絞られます。**広くはできません**。Projectに許可され
+ていないuriを書いても何も増えません。
 
 許可したroot内にないものはすべて拒否されます。判定前にsymlinkを解決するため、
 tree外を指すlinkは辿らずに拒否されます。
