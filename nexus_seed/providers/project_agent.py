@@ -36,7 +36,7 @@ from typing import Any
 
 from ..orchestrator.agent_runtime import AgentUnavailable, Dispatch, RemoteWorkLost
 from ..orchestrator.models import A2AMessage, A2AMessageType, ProjectAgentConfig
-from ..workspace.models import narrow_resources, referenced_paths
+from ..workspace.models import authorized_paths, narrow_resources
 from .a2a import (
     TERMINAL_STATES,
     UNSUPPORTED_STATES,
@@ -77,25 +77,23 @@ The project assignment is in the context as `assignment`:
   goal              what has to be true when you are done
   context           what is already known about the project
   constraints       limits you must respect
-  workspace         the directory to read and write in
-  resources         everything granted to you, and how to reach each one
-  readable_paths    paths outside the workspace you may read
-  writable_paths    paths outside the workspace you may change
+  workspace         the directory to work in
+  resources         everything granted to you, and where to find each one
+  readable_paths    the originals you may read, where they live
+  writable_paths    your own copies, the files you may change
   task              (only on a follow-up) an extra task for the same goal
 
-Each entry in `resources` has a `path`, an `access` of `read` or `read_write`,
-and a `delivery`. `RESOURCES.md` in the workspace says the same thing.
+One rule covers all of it: **you read the original, and you write a copy.**
 
-  delivery `reference`  the real file or directory, at the path shown. Reading
-                        it reads the original; writing a `read_write` one
-                        changes the original, which is what it is for. These
-                        are the paths in `readable_paths` / `writable_paths`.
-  delivery `copy`       a copy inside your workspace, at the relative path
-                        shown. A `read` copy changes nothing anywhere no matter
-                        what you do to it. A `read_write` copy is carried back
-                        to where it came from when your work is accepted.
+  read        the real file or directory, at the path shown. Read it where it
+              is. Nothing you do to it is kept, so it is not a place to work.
+  read_write  your own copy, inside your workspace. Edit it freely. The real
+              file is untouched until your work is accepted, and that is the
+              moment your edits are copied back to it.
 
-Work inside the workspace and the paths you were given. Nothing else on this
+`RESOURCES.md` in the workspace says the same thing.
+
+Work in the workspace and the paths you were given. Nothing else on this
 machine was granted to you, and reading around for it is not how to get it: if
 you need something you do not have, ask with NEED_RESOURCE, naming what you
 need and why. NEXUS SEED decides, and if it agrees the same task continues with
@@ -291,17 +289,17 @@ class A2AProjectAgentTransport:
             "constraints": dict(config.constraints),
             "workspace": config.workspace,
             "nexus_seed_endpoint": config.nexus_seed_a2a_endpoint,
-            # What this task may reach.  A `copy` entry's path is inside the
-            # workspace; a `reference` entry's is the real host path.  An Agent
-            # that ignores this still finds every copy by reading its
+            # What this task may reach.  A read entry's path is the real file
+            # or directory; a write entry's is the copy inside the workspace.
+            # An Agent that ignores this still finds every copy by reading its
             # workspace — the manifest describes the directory, it does not
-            # replace it — but a referenced path exists only here.
+            # replace it — but a read path exists only here.
             "resources": list(resources),
             # The same thing again, split the way an Agent runtime is
             # authorized: exactly what a Bridge passes to little_agent as
             # `readable_paths` / `writable_paths`.
-            "readable_paths": referenced_paths(resources, "read"),
-            "writable_paths": referenced_paths(resources, "read_write"),
+            "readable_paths": authorized_paths(config.workspace, resources, "read"),
+            "writable_paths": authorized_paths(config.workspace, resources, "read_write"),
         }
         if task is not None:
             assignment["task"] = task

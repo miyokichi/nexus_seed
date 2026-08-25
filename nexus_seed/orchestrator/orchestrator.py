@@ -27,9 +27,7 @@ from ..storage.orchestrator_store import (
     ProjectStore,
 )
 from ..workspace.models import (
-    NEW_DELIVERY_DEFAULT,
     AccessMode,
-    Delivery,
     GrantDecision,
     GrantRequest,
     ResourceGrant,
@@ -761,7 +759,6 @@ class ProjectOrchestrator:
         uri: str,
         *,
         access: AccessMode | str = AccessMode.READ,
-        delivery: Delivery | str = NEW_DELIVERY_DEFAULT,
         reason: str = "",
         name: str = "",
         resume: bool = True,
@@ -774,16 +771,9 @@ class ProjectOrchestrator:
         with the new resource in it on the way out. Nothing about the task is
         restarted, because nothing about it changed except what it can reach.
 
-        ``delivery`` chooses between the three patterns.  By default the
-        Agent is pointed at the real path and nothing is copied:
-
-        ============================  ==========  ==============
-        what you want                 access      delivery
-        ============================  ==========  ==============
-        read it                       read        reference
-        change the real file          read_write  reference
-        edit it, protect the original read_write  copy
-        ============================  ==========  ==============
+        ``access`` decides everything, including how the resource arrives:
+        a read is the real path, a write is a copy in the workspace whose
+        edits reach the original only when the work is accepted.
 
         A refusal is recorded and the Project stays blocked: an Agent that
         cannot get what it needs must not be told to try again regardless.
@@ -797,10 +787,8 @@ class ProjectOrchestrator:
             )
 
         mode = access if isinstance(access, AccessMode) else AccessMode(str(access))
-        how = delivery if isinstance(delivery, Delivery) else Delivery(str(delivery))
         decision = self.grant_policy.decide(
-            GrantRequest(project_id=project.id, requested=uri, uri=uri, access=mode, reason=reason),
-            delivery=how,
+            GrantRequest(project_id=project.id, requested=uri, uri=uri, access=mode, reason=reason)
         )
         if not decision.allowed or decision.grant is None:
             logger.info("grant refused for project %s: %s", project.id, decision.reason)
@@ -815,7 +803,6 @@ class ProjectOrchestrator:
         granted = ResourceGrant(
             uri=decision.grant.uri,
             access=mode,
-            delivery=how,
             name=name,
             reason=reason or decision.grant.reason,
         )

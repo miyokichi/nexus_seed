@@ -37,7 +37,7 @@ def asks_for_a_file(config, envelope):
     ]
 
 
-async def blocked_runtime(tmp_path):
+async def blocked_runtime(tmp_path, *, writable=False):
     shared = tmp_path / "shared"
     shared.mkdir()
     (shared / "spec.md").write_text("共通仕様", encoding="utf-8")
@@ -61,7 +61,11 @@ async def blocked_runtime(tmp_path):
         ),
         workspace_root=str(tmp_path / "workspaces"),
         grant_policy=GrantPolicy(
-            scope=ResourceScope(read_roots=[shared], write_roots=[], create=False)
+            scope=ResourceScope(
+                read_roots=[shared],
+                write_roots=[shared] if writable else [],
+                create=False,
+            )
         ),
     )
     bootstrap_project_orchestration(runtime, orch)
@@ -82,18 +86,21 @@ async def test_a_resource_request_is_shown_as_a_request_not_as_stuck(tmp_path):
     assert not [item for item in items if item["kind"] == "project_blocked"]
 
 
-async def test_granting_from_the_cockpit_provisions_and_continues_the_task(tmp_path):
-    runtime, _orch, project, shared, _outside = await blocked_runtime(tmp_path)
+async def test_granting_write_from_the_cockpit_gives_the_agent_a_copy(tmp_path):
+    runtime, _orch, project, shared, _outside = await blocked_runtime(
+        tmp_path, writable=True
+    )
     cockpit = CockpitService(runtime, master_id="local-operator")
 
     result = await cockpit.orchestrator_grant(
-        project.id, f"file:{shared / 'spec.md'}", reason="人が許可", delivery="copy"
+        project.id, f"file:{shared / 'spec.md'}", access="read_write", reason="人が許可"
     )
 
     assert result["decision"]["allowed"] is True
     assert [item["uri"] for item in result["granted"]] == [f"file:{shared / 'spec.md'}"]
     copy = tmp_path / "workspaces" / project.id / "resources" / "spec.md"
     assert copy.read_text(encoding="utf-8") == "共通仕様"
+    assert result["writable_paths"] == [str(copy)]
 
 
 async def test_granting_by_reference_hands_over_the_real_path(tmp_path):

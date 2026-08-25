@@ -826,7 +826,6 @@ def cmd_grant(args: argparse.Namespace) -> int:
                 args.project_id,
                 args.uri,
                 access=args.access,
-                delivery=args.delivery,
                 reason=args.reason,
                 name=args.name or "",
                 resume=not args.no_resume,
@@ -1281,14 +1280,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db(p); _add_json(p); _add_backend_args(p)
     p.add_argument("project_id")
     p.add_argument("uri", help="file:<path>, resource:<uri> or knowledge:<id>")
-    p.add_argument("--access", default="read", choices=["read", "read_write"], help="default: read")
     p.add_argument(
-        "--delivery",
-        default="reference",
-        choices=["reference", "copy"],
-        help="reference (default): the Agent reaches the real path, nothing is "
-             "copied. copy: materialised in the workspace so the original is "
-             "untouched by anything the Agent does",
+        "--access",
+        default="read",
+        choices=["read", "read_write"],
+        help="read (default): the Agent reads the original where it is. "
+             "read_write: it edits a copy, carried back by `collect`",
     )
     p.add_argument("--reason", default="", help="why this is being granted (kept with the grant)")
     p.add_argument("--name", default=None, help="name to give it inside the workspace")

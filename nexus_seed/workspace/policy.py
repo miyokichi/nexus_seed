@@ -28,12 +28,10 @@ from typing import TYPE_CHECKING
 
 from ..resources.scope import ResourceScope, ScopeViolation
 from .models import (
-    NEW_DELIVERY_DEFAULT,
     SCHEME_FILE,
     SCHEME_KNOWLEDGE,
     SCHEME_RESOURCE,
     AccessMode,
-    Delivery,
     GrantDecision,
     GrantRequest,
     ResourceGrant,
@@ -79,9 +77,7 @@ class GrantPolicy:
 
     # --- deciding ----------------------------------------------------------
 
-    def decide(
-        self, request: GrantRequest, *, delivery: Delivery = NEW_DELIVERY_DEFAULT
-    ) -> GrantDecision:
+    def decide(self, request: GrantRequest) -> GrantDecision:
         """Allow or refuse one request, with the reason either way."""
         uri = (request.uri or "").strip()
         if not uri:
@@ -91,34 +87,28 @@ class GrantPolicy:
                 "a person has to say which resource this is",
             )
         try:
-            self.check(uri, request.access, delivery=delivery)
+            self.check(uri, request.access)
         except GrantRefused as exc:
             return GrantDecision(False, str(exc))
+        grant = ResourceGrant(
+            uri=uri,
+            access=request.access,
+            reason=request.reason or f"requested: {request.requested}",
+        )
         return GrantDecision(
             True,
             f"{request.access.value} access to {uri} "
-            f"by {delivery.value} is within policy",
-            ResourceGrant(
-                uri=uri,
-                access=request.access,
-                delivery=delivery,
-                reason=request.reason or f"requested: {request.requested}",
-            ),
+            f"by {grant.delivery.value} is within policy",
+            grant,
         )
 
-    def check(
-        self,
-        uri: str,
-        access: AccessMode,
-        *,
-        delivery: Delivery = NEW_DELIVERY_DEFAULT,
-    ) -> None:
-        """Raise :class:`GrantRefused` unless ``uri`` may be granted this way."""
+    def check(self, uri: str, access: AccessMode) -> None:
+        """Raise :class:`GrantRefused` unless ``uri`` may be granted at ``access``."""
         scheme, _, target = uri.partition(":")
         if not target:
             raise GrantRefused(f"{uri!r} does not name a scheme; expected 'scheme:target'")
         if scheme == SCHEME_FILE:
-            self._check_file(target, access, delivery)
+            self._check_file(target, access)
         elif scheme == SCHEME_RESOURCE:
             self._check_resource(target, access)
         elif scheme == SCHEME_KNOWLEDGE:
@@ -136,7 +126,7 @@ class GrantPolicy:
         allowed = []
         for grant in grants:
             try:
-                self.check(grant.uri, grant.access, delivery=grant.delivery)
+                self.check(grant.uri, grant.access)
             except GrantRefused as exc:
                 logger.warning("dropping grant %s: %s", grant.uri, exc)
                 continue
@@ -145,7 +135,7 @@ class GrantPolicy:
 
     # --- per-scheme rules ---------------------------------------------------
 
-    def _check_file(self, target: str, access: AccessMode, delivery: Delivery) -> None:
+    def _check_file(self, target: str, access: AccessMode) -> None:
         if self.scope is None:
             raise GrantRefused(
                 "no authorized file root is configured, so no host file is grantable"
@@ -157,13 +147,14 @@ class GrantPolicy:
         path = Path(resolved)
         if not path.exists():
             raise GrantRefused(f"{target!r} does not exist under the authorized root")
-        if delivery.copied and path.is_dir():
+        if access.writable and path.is_dir():
             # Refused here rather than at provisioning time so the person who
-            # asked hears why immediately.  Copying a tree of unknown size into
-            # a workspace is not something to do because nobody said otherwise.
+            # asked hears why immediately.  A write is delivered as a copy the
+            # Agent edits, and copying a tree of unknown size into a workspace
+            # is not something to do because nobody said otherwise.
             raise GrantRefused(
-                f"{target!r} is a directory; grant it by reference, or name a "
-                "file if it has to be copied into the workspace"
+                f"{target!r} is a directory; grant it read, or name the file "
+                "inside it that the task has to change"
             )
 
     def _check_resource(self, target: str, access: AccessMode) -> None:

@@ -338,32 +338,29 @@ class ProjectAgentConfig:
     workspace: str | None = None
     nexus_seed_a2a_endpoint: str | None = None
     #: What this task may reach beyond the Agent's own scratch space:
-    #: ``{"uri", "path", "access", "delivery", "reason"}`` per entry.  A
-    #: ``copy`` entry's path is workspace-relative; a ``reference`` entry's is
-    #: the real host path.  Empty means the task was granted nothing extra —
-    #: never that it may go looking.
+    #: ``{"uri", "path", "access", "delivery", "reason"}`` per entry.  A read
+    #: entry's path is the real host path; a write entry's is the copy inside
+    #: the workspace.  Empty means the task was granted nothing extra — never
+    #: that it may go looking.
     resources: list[dict[str, Any]] = field(default_factory=list)
-
-    def _referenced(self, access: str) -> list[str]:
-        return [
-            str(entry["path"])
-            for entry in self.resources
-            if entry.get("delivery") == "reference" and entry.get("access") == access
-        ]
 
     @property
     def readable_paths(self) -> list[str]:
-        """Host paths this task may read in place, for an Agent runtime.
+        """The originals this task may read, for an Agent runtime.
 
         Derived from :attr:`resources` rather than stored beside it: two lists
         that can disagree about what a task may read is one list too many.
         """
-        return self._referenced("read")
+        from ..workspace.models import authorized_paths
+
+        return authorized_paths(self.workspace, self.resources, "read")
 
     @property
     def writable_paths(self) -> list[str]:
-        """Host paths this task may change in place, for an Agent runtime."""
-        return self._referenced("read_write")
+        """The copies this task may write, for an Agent runtime."""
+        from ..workspace.models import authorized_paths
+
+        return authorized_paths(self.workspace, self.resources, "read_write")
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON form handed to the agent runtime."""

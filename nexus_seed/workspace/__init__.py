@@ -17,20 +17,19 @@ receives a workspace and works in it.  That is what keeps this generic — any
 A2A agent, unmodified, can use a directory and a list of paths, so nothing here
 needs Hermes or OpenCode to know what a grant is.
 
-Providing happens one of two ways, per grant (:class:`Delivery`):
+How a resource is provided is not a choice — it follows from the access:
 
-* **reference** — the Agent is pointed at the real path and nothing is copied.
-  The ordinary case, and the only one that works for a directory.
-* **copy** — materialised inside the workspace, so an Agent may edit it while
-  the original stays untouched.  Kept for exactly that: isolation.
+* **read** — the Agent is pointed at the real path and nothing is copied.
+  Cheap, current, and the only thing that works for a directory.
+* **write** — copied into the workspace.  The Agent edits its own copy and
+  the original is untouched until the work is accepted, which is the one
+  moment the edits arrive.
 """
 
 from .models import (
     ACCESS_MODES,
     DELIVERIES,
     GRANTS_KEY,
-    NEW_DELIVERY_DEFAULT,
-    STORED_DELIVERY_DEFAULT,
     AccessMode,
     Delivery,
     GrantDecision,
@@ -38,11 +37,11 @@ from .models import (
     ResourceGrant,
     WorkspaceManifest,
     TASK_RESOURCES_KEY,
+    authorized_paths,
+    delivery_for,
     grants_in,
     narrow_resources,
-    parse_delivery,
     readable_grants,
-    referenced_paths,
     with_grant,
     writable_grants,
 )
@@ -53,8 +52,6 @@ __all__ = [
     "ACCESS_MODES",
     "DELIVERIES",
     "GRANTS_KEY",
-    "NEW_DELIVERY_DEFAULT",
-    "STORED_DELIVERY_DEFAULT",
     "AccessMode",
     "Delivery",
     "GrantDecision",
@@ -65,11 +62,11 @@ __all__ = [
     "WorkspaceManifest",
     "WorkspaceProvisioner",
     "TASK_RESOURCES_KEY",
+    "authorized_paths",
+    "delivery_for",
     "grants_in",
     "narrow_resources",
-    "parse_delivery",
     "readable_grants",
-    "referenced_paths",
     "with_grant",
     "writable_grants",
 ]

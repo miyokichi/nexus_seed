@@ -19,6 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Any
 
 from ..core.event import utcnow
@@ -54,19 +55,21 @@ ACCESS_MODES = tuple(mode.value for mode in AccessMode)
 class Delivery(str, Enum):
     """How a granted resource reaches the task.
 
-    ``REFERENCE`` hands the Agent the real host path and nothing is copied:
-    a read is a read of the original, and a write changes the original.  This
-    is the ordinary case — most files a task consults do not want duplicating,
-    and a directory cannot sensibly be duplicated at all.
+    This is **not a choice** — it follows from the access, one rule:
 
-    ``COPY`` materialises the resource inside the workspace.  It costs a copy
-    and it is the only way to let an Agent edit something while the original
-    stays untouched, so it stays the choice for anything that has to be
-    isolated.  A read copy is never carried back; a read-write copy is,
-    when the work is accepted.
+        read        ->  REFERENCE   the real path, nothing copied
+        read_write  ->  COPY        a copy in the workspace, carried back
 
-    Neither is a security level on its own: both are bounded by the same
-    authorized roots.  The difference is *whose bytes the Agent touches*.
+    Reading does not need a duplicate: pointing the Agent at the file is
+    cheaper, works for a directory, and cannot go stale.  Writing does need
+    one: edits land in the task's own copy, the original is untouched while
+    the work is in progress, and :meth:`WorkspaceProvisioner.collect` is the
+    single moment they arrive — so an abandoned or rejected task leaves
+    nothing behind in the real file.
+
+    Deriving it rather than storing it means a grant cannot describe a
+    combination that does not exist, and an old record cannot mean something
+    the current rule does not.
     """
 
     REFERENCE = "reference"
@@ -79,22 +82,10 @@ class Delivery(str, Enum):
 
 DELIVERIES = tuple(item.value for item in Delivery)
 
-#: What a grant with no recorded delivery means.  Copy, because that is what
-#: every grant written before deliveries existed actually did — reading a
-#: stored record must never change what it was.
-STORED_DELIVERY_DEFAULT = Delivery.COPY
 
-#: What a *new* grant means when nobody says.  Reference, because a task that
-#: only needs to read a file should not be handed a duplicate of it.
-NEW_DELIVERY_DEFAULT = Delivery.REFERENCE
-
-
-def parse_delivery(value: Any, *, default: Delivery = STORED_DELIVERY_DEFAULT) -> Delivery:
-    """Read a delivery mode, falling back to ``default`` for anything unknown."""
-    try:
-        return Delivery(str(value).strip().lower())
-    except (AttributeError, ValueError):
-        return default
+def delivery_for(access: AccessMode) -> Delivery:
+    """The one rule: read is a link, write is a copy."""
+    return Delivery.COPY if access.writable else Delivery.REFERENCE
 
 
 def parse_access(value: Any, *, default: AccessMode = AccessMode.READ) -> AccessMode:
@@ -120,17 +111,22 @@ class ResourceGrant:
             particular name.
         reason: Why this was granted — kept for the audit trail, since a
             granted resource is a decision somebody made.
-        delivery: Whether the Agent reaches the original (``REFERENCE``) or a
-            copy inside its workspace (``COPY``).  See :class:`Delivery`.
         granted_at: When the decision was made.
+
+    How it arrives is not stored: :attr:`delivery` follows from
+    :attr:`access`, so there is nothing here that can disagree with the rule.
     """
 
     uri: str
     access: AccessMode = AccessMode.READ
     name: str = ""
     reason: str = ""
-    delivery: Delivery = NEW_DELIVERY_DEFAULT
     granted_at: datetime = field(default_factory=utcnow)
+
+    @property
+    def delivery(self) -> Delivery:
+        """How this grant reaches the task — read links, write copies."""
+        return delivery_for(self.access)
 
     @property
     def scheme(self) -> str:
@@ -160,9 +156,8 @@ class ResourceGrant:
             access=parse_access(data.get("access")),
             name=str(data.get("name") or ""),
             reason=str(data.get("reason") or ""),
-            # No recorded delivery means the record predates deliveries, and
-            # what it did then was copy.  Reading it must not change it.
-            delivery=parse_delivery(data.get("delivery")),
+            # `delivery` is not read back: it follows from the access, so a
+            # stored one could only ever agree or be wrong.
             granted_at=(
                 datetime.fromisoformat(granted_at)
                 if isinstance(granted_at, str) and granted_at
@@ -233,18 +228,15 @@ class GrantDecision:
 class WorkspaceManifest:
     """What one task may reach, as the Agent will find it.
 
-    Two kinds of entry, and the difference is deliberate:
+    Two kinds of entry, following the one rule:
 
-    * a **copy** entry carries a workspace-relative ``path`` and no origin —
-      the Agent is told what it has without being told where on the host it
-      came from, because it is not going back there;
-    * a **reference** entry carries the resolved host ``path``, because
-      reaching the original *is* the grant.
+    * a **read** entry carries the resolved host ``path`` — the real file or
+      directory, because reading it is the whole grant;
+    * a **write** entry carries a workspace-relative ``path`` — a copy the
+      Agent edits, which reaches the original only when the work is accepted.
 
-    :attr:`readable_paths` and :attr:`writable_paths` are the reference
-    entries only.  A copy already lives inside the workspace the Agent was
-    given, so listing it again as a path to authorize would widen nothing and
-    confuse what those two lists mean.
+    :attr:`readable_paths` and :attr:`writable_paths` are the same two sets as
+    absolute paths, which is the form an Agent runtime is authorized with.
     """
 
     workspace: str
@@ -258,33 +250,22 @@ class WorkspaceManifest:
             "writable_paths": self.writable_paths,
         }
 
-    def _referenced(self, access: AccessMode) -> list[str]:
+    def _absolute(self, access: AccessMode) -> list[str]:
         return [
-            str(entry["path"])
+            _resolve_entry(self.workspace, entry)
             for entry in self.entries
-            if entry.get("delivery") == Delivery.REFERENCE.value
-            and entry.get("access") == access.value
+            if entry.get("access") == access.value
         ]
 
     @property
     def readable_paths(self) -> list[str]:
-        """Host paths the task may read in place."""
-        return self._referenced(AccessMode.READ)
+        """Host paths the task may read — the real files and directories."""
+        return self._absolute(AccessMode.READ)
 
     @property
     def writable_paths(self) -> list[str]:
-        """Host paths the task may change in place."""
-        return self._referenced(AccessMode.READ_WRITE)
-
-    @property
-    def copied_writable_paths(self) -> list[str]:
-        """Workspace-relative copies whose edits are carried back."""
-        return [
-            str(entry["path"])
-            for entry in self.entries
-            if entry.get("delivery") != Delivery.REFERENCE.value
-            and entry.get("access") == AccessMode.READ_WRITE.value
-        ]
+        """Absolute paths of the copies the task may write."""
+        return self._absolute(AccessMode.READ_WRITE)
 
     def narrowed_to(self, uris: list[str] | None) -> "WorkspaceManifest":
         """Return this manifest keeping only ``uris``.
@@ -353,19 +334,31 @@ def narrow_resources(
     return [entry for entry in resources if entry.get("uri") in allowed]
 
 
-def referenced_paths(resources: list[dict[str, Any]], access: str) -> list[str]:
-    """Host paths among ``resources`` delivered by reference at ``access``.
+def _resolve_entry(workspace: str, entry: dict[str, Any]) -> str:
+    """One manifest entry as an absolute path.
 
-    This is the conversion an Agent runtime actually needs: NEXUS SEED's
-    grants on one side, ``readable_paths`` / ``writable_paths`` on the other.
-    A copy is deliberately absent — it is inside the workspace the Agent was
-    already given, so authorizing its path again would say nothing.
+    A read entry already carries the host path.  A write entry carries a
+    workspace-relative one, because that is what the Agent reads in
+    ``RESOURCES.md`` — resolved here against the workspace it was given.
+    """
+    path = str(entry.get("path") or "")
+    if entry.get("delivery") == Delivery.REFERENCE.value:
+        return path
+    return str(PurePosixPath(workspace) / path) if workspace else path
+
+
+def authorized_paths(
+    workspace: str | None, resources: list[dict[str, Any]], access: str
+) -> list[str]:
+    """The conversion an Agent runtime needs, as absolute paths.
+
+    NEXUS SEED's grants on one side; ``readable_paths`` / ``writable_paths``
+    on the other.  Read is the real file, write is the task's copy of it.
     """
     return [
-        str(entry["path"])
+        _resolve_entry(workspace or "", entry)
         for entry in resources
-        if entry.get("delivery") == Delivery.REFERENCE.value
-        and entry.get("access") == access
+        if entry.get("access") == access
     ]
 
 
@@ -383,15 +376,13 @@ __all__ = [
     "ACCESS_MODES",
     "DELIVERIES",
     "Delivery",
-    "NEW_DELIVERY_DEFAULT",
-    "STORED_DELIVERY_DEFAULT",
-    "parse_delivery",
+    "delivery_for",
     "GRANTS_KEY",
     "TASK_RESOURCES_KEY",
     "grants_in",
     "narrow_resources",
     "readable_grants",
-    "referenced_paths",
+    "authorized_paths",
     "with_grant",
     "writable_grants",
     "AccessMode",

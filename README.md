@@ -63,8 +63,8 @@ The Project Orchestrator is available as a Python API and includes:
 - authorized, per-resource delegation: a Project declares the files and
   directories its Agent may read or change, decided by deterministic policy
   against configured roots and handed over as the Agent runtime's own
-  `readable_paths` / `writable_paths` — by reference, or as an isolated copy
-  when the original must be protected;
+  `readable_paths` / `writable_paths` — read is a link to the original, write
+  is a copy whose edits arrive only when the work is accepted;
 - a prose bootstrap context (terms / goals / situation) read against the live
   world into contradictions, gaps and suggested Tasks, each waiting for a
   person to run, ignore or reword it; and
@@ -685,33 +685,47 @@ created: the *same* Project is delegated to the *same* Agent with the resource
 available to it, because nothing about the task changed except what it can
 reach.
 
-### Three ways to give a task a file
+### Read is a link, write is a copy
 
-Which one you want depends on whose bytes the Agent should touch:
+There is no third option and nothing to choose — the access decides:
 
-| what you want | flags | what the Agent gets |
+| grant | what the Agent gets | when it reaches the real file |
 | --- | --- | --- |
-| it reads the file | *(default)* | the real path, in `readable_paths` |
-| it changes the real file | `--access read_write` | the real path, in `writable_paths` |
-| it edits, original protected | `--access read_write --delivery copy` | a copy under `resources/` |
+| `--access read` *(default)* | the original, where it lives | never |
+| `--access read_write` | its own copy, in the workspace | when you accept the work |
 
-The first two are **references**: nothing is copied, and the Agent is pointed at
-the file where it lives. A directory can only be granted this way, and is the
-usual way to hand over a folder of material:
+**Reading does not need a duplicate.** The Agent is pointed at the file, so it
+sees the current contents and nothing is copied. A directory works the same
+way, which is how you hand over a folder of material:
 
 ```powershell
 nexus-seed-knowledge grant --db nexus_seed.db <project-id> "file:C:/work/shared/docs"
 ```
 
-The third is a **copy** into the task's workspace. It costs a copy and buys the
-one thing a reference cannot: the Agent may edit the file while the original
-stays untouched. `nexus-seed-knowledge collect --db nexus_seed.db <project-id>`
-carries a changed copy back to its original afterwards; a read copy is never
-carried back, whatever the Agent did to it, and a reference needs no collecting
-because it already wrote where it belongs.
+**Writing does need one.** The Agent edits its own copy under `resources/`, so
+the real file is untouched while the work is in progress — a task that is
+abandoned, refused, or simply goes wrong leaves nothing behind in it. One
+command is the moment the edits arrive:
 
-Copying stays the answer for anything that has to be isolated — it was the only
-behaviour before references existed, and grants recorded back then still copy.
+```powershell
+nexus-seed-knowledge collect --db nexus_seed.db <project-id>
+```
+
+The cost is that a **writable directory cannot be granted**: copying a tree of
+unknown size into a workspace is not something to do quietly. Grant the
+directory for reading, and name the file inside it that the task has to change.
+
+```text
+refused: 'C:/work/shared/docs' is a directory; grant it read, or name the file
+         inside it that the task has to change
+```
+
+A read grant is a link to the original, and nothing here pretends otherwise:
+an Agent that ignores its instructions can open a read-granted path for
+writing. What a read grant guarantees is what it says — the file is reachable,
+and no edit of it is ever collected back into anything. If the original has to
+be safe from the Agent, grant it for writing so it is copied, and decide at
+`collect` whether the edits are kept.
 
 ### What reaches the Agent
 
@@ -719,8 +733,8 @@ Whatever the mix, a delegation carries:
 
 ```text
 workspace        the task's own directory
-readable_paths   host paths it may read in place
-writable_paths   host paths it may change in place
+readable_paths   the originals it may read, where they live
+writable_paths   its own copies, the files it may change
 resources        every grant, with its path, access and delivery
 ```
 

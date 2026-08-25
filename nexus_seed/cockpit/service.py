@@ -20,7 +20,7 @@ from ..knowledge.context_assessment import (
     KIND_TASK_CANDIDATE,
 )
 from ..knowledge.bootstrap_context import KIND_CONTEXT_DOCUMENT
-from ..workspace.models import NEW_DELIVERY_DEFAULT, referenced_paths
+from ..workspace.models import authorized_paths
 from ..knowledge.models import KIND_CONSOLIDATED_MEMORY, KIND_PRINCIPLE
 from ..knowledge.projection import WorldStateProjection
 from ..observation_sources import DEFAULT_FOLDER_FIELDS, FOLDER_STATUS, SYSTEM_SNAPSHOT
@@ -636,13 +636,12 @@ class CockpitService:
         uri: str,
         *,
         access: str = "read",
-        delivery: str = NEW_DELIVERY_DEFAULT.value,
         reason: str = "",
     ) -> dict[str, Any] | None:
         """Give one Project one resource, and let the same Task continue.
 
-        ``delivery`` is ``reference`` (the Agent reaches the real path) or
-        ``copy`` (materialised in the workspace so the original is untouched).
+        ``access`` decides how it arrives: a read is the original where it
+        lives, a write is a copy the Agent edits.
 
         The decision itself belongs to
         :class:`~nexus_seed.workspace.policy.GrantPolicy`, so a refusal comes
@@ -657,11 +656,7 @@ class CockpitService:
         if not target:
             raise ValueError("uri must not be empty")
         decision = await orchestrator.grant_resource(
-            project_id,
-            target,
-            access=access,
-            delivery=delivery,
-            reason=(reason or "").strip(),
+            project_id, target, access=access, reason=(reason or "").strip()
         )
         return {
             "project_id": project_id,
@@ -675,12 +670,15 @@ class CockpitService:
     @staticmethod
     def _paths(orchestrator, project_id: str, access: str) -> list[str]:
         """What an Agent runtime would actually be authorized with."""
-        return referenced_paths(
+        workspace = (
+            f"{orchestrator.agents.workspace_root.rstrip('/')}/{project_id}"
+            if orchestrator.agents.workspace_root
+            else None
+        )
+        return authorized_paths(
+            workspace,
             orchestrator.agents.provision(
-                orchestrator.projects.get(project_id),
-                f"{orchestrator.agents.workspace_root.rstrip('/')}/{project_id}"
-                if orchestrator.agents.workspace_root
-                else None,
+                orchestrator.projects.get(project_id), workspace
             ),
             access,
         )

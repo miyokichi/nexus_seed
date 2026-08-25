@@ -1812,11 +1812,10 @@ Task -> declares what it needs -> NEXUS SEED decides -> workspace is filled -> A
 279. **A grant is re-checked when it is used, not only when it is made.**
      `permitted()` runs at provisioning time, so narrowing a root retroactively
      narrows every stored grant. A grant never outlives its permission.
-280. **A read *copy* never travels back.** `collect()` carries only writable
-     grants delivered by copy; a read copy's original is unchanged whatever
-     the Agent did to it. File modes are a hint, never the boundary. A read
-     *reference* makes no such promise and must not be described as if it
-     did — it points at the original on purpose.
+280. **Nothing a task did reaches a real file except through `collect`.** It
+     carries the writable copies and nothing else; a read grant was never
+     copied, so there is nothing of it to carry. A read grant points at the
+     original on purpose and must not be described as if it protected it.
 281. **Granting continues a Task, it never restarts one.** The same Project and
      the same Agent carry on with more in the workspace; a grant creates no new
      Project, and a refusal leaves the Project blocked rather than retrying.
@@ -1895,66 +1894,68 @@ context/{terms,goals,situation}.md
 ## Done: a Project says which files its Agent may reach
 
 Grants existed but had exactly one shape — copy it into the workspace — which
-is wrong for the ordinary case. Most files a task consults do not want
-duplicating, a write meant to land in the real file should land there, and a
-directory cannot be copied sensibly at all. A grant now says *how* it arrives:
+is wrong for reading and only half right for writing. A grant now follows one
+rule, and the rule is not a setting:
 
 ```text
 NEXUS SEED Project              little_agent
   workspace              ->       workspace
-  readable_resources     ->       readable_paths
-  writable_resources     ->       writable_paths
+  readable_resources     ->       readable_paths     the originals
+  writable_resources     ->       writable_paths     the task's own copies
 ```
 
-- One new field carries the whole feature: `ResourceGrant.delivery`, a
-  `Delivery` of `reference` or `copy`. No second list and no parallel store —
-  `readable_resources` / `writable_resources` are *derived* from the one grant
-  list by access (`readable_grants` / `writable_grants`), because two lists
-  that can disagree about what a Project may read is one list too many.
-- Two defaults, deliberately different. `from_dict` defaults to **copy**, so a
-  grant recorded before deliveries existed still does exactly what it did. A
-  *new* grant defaults to **reference**, because a task that only reads a file
-  should not be handed a duplicate. Reading a record never changes it; making
-  a decision follows the current policy.
-- `WorkspaceProvisioner` materialises copies as before and resolves references
-  to a host path without touching the filesystem. `collect()` skips
-  references: they already wrote where they belong. A `resource:` or
-  `knowledge:` grant cannot be referenced at all — those are rows in a
-  database, not files on this host.
-- Copying a directory is refused at *decide* time rather than discovered at
-  provisioning time, so the person who asked hears why immediately.
-- `readable_paths` / `writable_paths` are reference entries only. A copy is
-  already inside the workspace the Agent was given, so listing its path again
-  as something to authorize would say nothing and blur what the lists mean.
+**Read is a link. Write is a copy.**
+
+- Reading does not need a duplicate. One would cost a copy, go stale the moment
+  the file changed, and could not represent a directory at all — so reading
+  makes none. The Agent gets the resolved host path.
+- Writing does. The Agent edits its own copy under `resources/`, the original
+  is untouched while the work is in progress, and `collect()` is the single
+  moment the edits arrive — so an abandoned, refused or broken task leaves
+  nothing behind in the real file.
+- `Delivery` survives as a *derived* label, `delivery_for(access)`, not a
+  field and not a parameter. `ResourceGrant.delivery` is a property;
+  `from_dict` does not read a stored one. A grant therefore cannot describe a
+  combination that does not exist, and an old record cannot mean something the
+  current rule does not.
+- `readable_resources` / `writable_resources` are likewise derived from the one
+  grant list by access. Two lists that can disagree about what a Project may
+  read is one list too many.
+- A manifest entry says what *happened*, not what was asked: a `knowledge:` or
+  `resource:` read has no host path to link to, so it is written into the
+  workspace and the entry records `copy`. `authorized_paths` resolves an entry
+  either way, which is why both path lists are absolute.
+- What this costs: **a writable directory cannot be granted.** Refused at
+  decide time with a reason naming the alternative, rather than discovered when
+  a tree of unknown size is already being copied.
 - A Task narrows, never widens. `task["context"]["resources"]` filters the
-  Project's grants for one delegation (`narrow_resources`); a uri the Project
-  never had is not added by asking for it. The narrowing reaches the A2A
-  metadata too, which is why `_send_params` reads the assignment for those
-  lists rather than the config.
-- The A2A surface gained two metadata keys under the existing extension URI
-  and nothing else: no message type, no field outside `metadata`, no change to
-  any Agent. A Bridge starting little_agent passes `workspace` /
-  `readable_paths` / `writable_paths` straight through.
+  Project's grants for one delegation; a uri the Project never had is not added
+  by asking for it, and the narrowing reaches the A2A metadata as well as the
+  assignment.
+- The A2A surface gained two metadata keys under the extension URI it already
+  had, and nothing else: no message type, no field outside `metadata`, no
+  change to any Agent.
 
 ## Resource-delivery invariants (keep them)
 
-289. **The delivery of a stored grant is never reinterpreted.** A record with
-     no `delivery` means copy, because that is what it did. Defaults for new
-     decisions may change; the meaning of an existing record may not.
-290. **Only `file:` can be referenced.** A Resource version and a Knowledge
-     object are records, not paths; asking for one by reference is refused
-     rather than approximated.
-291. **A directory is reference-only.** Copying a tree of unknown size into a
-     workspace is not something to do because nobody said otherwise.
-292. **`readable_paths` / `writable_paths` are references only.** They are what
-     an Agent runtime is authorized with; a workspace copy is covered by the
-     workspace itself and never appears in them.
+289. **Delivery follows access and is never stored.** Read links, write copies.
+     It is derived at every read, so no record, parameter or UI can express a
+     combination the rule does not have.
+290. **A read is never copied, and a write always is.** No caller chooses, and
+     no code path may add a way to choose without changing this rule first.
+291. **A writable directory is refused.** Say so when the decision is made,
+     naming what to do instead — never begin copying a tree because nobody
+     objected.
+292. **`readable_paths` / `writable_paths` are absolute and complete.** They are
+     exactly what an Agent runtime is authorized with: the originals to read,
+     the copies to write.
 293. **A Task may only narrow.** Per-Task resources filter what the Project was
      granted; nothing a Task says can add a resource, and the narrowing must
      reach the A2A metadata as well as the assignment.
-294. **Copy stays.** It is the only way to let an Agent edit something while the
-     original is safe, so it is never removed in favour of references — the two
-     answer different questions.
+294. **A read grant is not a protection and is never sold as one.** It is a
+     link. What it guarantees is that the file is reachable and that no edit of
+     it is ever collected. Something that must be safe from the Agent is
+     granted for writing, so it is copied.
 
 ## Later-phase candidates (do not build yet)
 

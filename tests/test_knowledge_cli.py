@@ -397,22 +397,38 @@ def _project(db, goal="共通仕様に合わせて計画を直す"):
     return project.id
 
 
-def test_grant_puts_the_file_in_the_workspace_and_continues_the_task(
-    tmp_path, capsys, monkeypatch
-):
+def test_a_read_grant_points_the_task_at_the_original(tmp_path, capsys, monkeypatch):
     db = tmp_path / "k.db"
     shared, _ = _grant_env(monkeypatch, tmp_path)
     project_id = _project(db)
 
     code, out, err = _run(
-        [
-            "grant", "--db", str(db), project_id,
-            f"file:{shared / 'spec.md'}", "--delivery", "copy", "--json",
-        ],
+        ["grant", "--db", str(db), project_id, f"file:{shared / 'spec.md'}", "--json"],
         capsys,
     )
     assert code == 0, err
     assert json.loads(out)["allowed"] is True
+
+    workspace = tmp_path / "workspaces" / project_id
+    assert list((workspace / "resources").iterdir()) == []
+    assert str(shared / "spec.md") in (workspace / "RESOURCES.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_write_grant_gives_the_task_a_copy(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "k.db"
+    shared, _ = _grant_env(monkeypatch, tmp_path, writable=True)
+    project_id = _project(db)
+
+    code, _out, err = _run(
+        [
+            "grant", "--db", str(db), project_id,
+            f"file:{shared / 'spec.md'}", "--access", "read_write",
+        ],
+        capsys,
+    )
+    assert code == 0, err
 
     workspace = tmp_path / "workspaces" / project_id
     assert (workspace / "resources" / "spec.md").read_text(encoding="utf-8") == "共通仕様"
@@ -481,8 +497,7 @@ def test_collect_carries_a_writable_grant_back(tmp_path, capsys, monkeypatch):
         [
             "grant", "--db", str(db), project_id,
             f"file:{shared / 'spec.md'}", "--access", "read_write",
-            "--delivery", "copy",
-        ],
+                    ],
         capsys,
     )[0] == 0
 

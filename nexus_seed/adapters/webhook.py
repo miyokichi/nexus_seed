@@ -461,17 +461,11 @@ class WebhookServer:
                         headers=security_headers,
                     )
                 access = body.get("access")
-                delivery = body.get("delivery")
                 reason = body.get("reason")
                 result = await self.cockpit.orchestrator_grant(
                     project_id,
                     uri,
                     access=access if isinstance(access, str) and access else "read",
-                    delivery=(
-                        delivery
-                        if isinstance(delivery, str) and delivery
-                        else "reference"
-                    ),
                     reason=reason if isinstance(reason, str) else "",
                 )
             else:

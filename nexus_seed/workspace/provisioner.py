@@ -9,34 +9,27 @@ was granted, so "which files may I open" never has to be a question it asks.
       RESOURCES.md          the same list, readable by a human or an LLM
       .nexus-seed/manifest.json   the machine-readable manifest
 
-A grant arrives one of two ways, and the choice is the caller's:
+How a resource arrives is not a choice.  It follows from the access:
 
-**By reference** — nothing is copied.  The manifest carries the resolved host
-path and the Agent reads or writes the original in place.  This is the ordinary
-case: most files a task consults do not want duplicating, a write meant to land
-in the real file should just land there, and a directory cannot sensibly be
-duplicated at all.  What bounds it is the authorized root, the same one that
-bounds everything else — not the absence of a path.
+**Read is a link.**  Nothing is copied.  The manifest carries the resolved host
+path and the Agent reads the original where it lives.  A duplicate would cost
+a copy, go stale the moment the file changed, and could not represent a
+directory at all — so reading simply does not make one.  What bounds a read is
+the authorized root, the same thing that bounds everything else.
 
-**By copy** — materialised into ``resources/`` inside the workspace.  It costs
-a copy, and it buys the one thing a reference cannot: an Agent may edit the
-file while the original stays untouched.  A copy is never a symlink, because a
-symlink would let a directory grant be walked out of and would tie the Agent to
-this host.
+**Write is a copy.**  Materialised into ``resources/`` inside the workspace.
+The Agent edits its own copy, so the original is untouched for as long as the
+work is in progress, and :meth:`collect` is the single moment the edits arrive
+— which means a task that is abandoned, refused or goes wrong leaves nothing
+behind in the real file.  A copy is never a symlink: a symlink would let a
+directory grant be walked out of and would tie the Agent to this host.
 
-The guarantee a read *copy* carries is precisely this: the Agent is given a
-copy, and :meth:`collect` never carries a read grant back, so whatever the
-Agent does to that file the original is untouched.  A read-only copy is *also*
-written with a read-only file mode, but that is a signal rather than the
-boundary — a process running as root, or as the file's owner, can write it
-anyway.  Do not read the mode as the protection; the protection is that
-nothing returns.  A read-write copy is carried back by :meth:`collect`, which
-is the one moment edits return to where they came from.
-
-A read *reference* carries no such guarantee and does not pretend to: the Agent
-is pointed at the real file, and read-only is the access it was asked to keep.
-Use a copy when the original has to be safe from the Agent, and a reference
-when it does not.
+A read is a link to the original, and this module does not pretend otherwise:
+nothing here stops an Agent that ignores its instructions from opening a
+read-granted path for writing.  What a read grant guarantees is what it says —
+the file is reachable, and no edit of it is ever collected back into anything.
+If the original must be safe from the Agent, grant it for writing so it is
+copied, and decide at :meth:`collect` whether those edits are kept.
 """
 
 from __future__ import annotations
@@ -114,8 +107,15 @@ class WorkspaceProvisioner:
         entries: list[dict] = []
         used_names: set[str] = set()
         for grant in self.policy.permitted(grants):
+            # read -> the real path; write -> a copy the Agent may edit.  A
+            # record has no path on this host either way, so reading one is
+            # written into the workspace like a copy — and the entry says so,
+            # because the entry describes what happened, not what was asked.
+            delivery = grant.delivery
+            if delivery is Delivery.REFERENCE and grant.scheme != SCHEME_FILE:
+                delivery = Delivery.COPY
             try:
-                if grant.delivery is Delivery.REFERENCE:
+                if delivery is Delivery.REFERENCE:
                     path = self._reference(grant)
                 else:
                     name = self._unique_name(grant, used_names)
@@ -132,7 +132,7 @@ class WorkspaceProvisioner:
                     "uri": grant.uri,
                     "path": path,
                     "access": grant.access.value,
-                    "delivery": grant.delivery.value,
+                    "delivery": delivery.value,
                     "reason": grant.reason,
                 }
             )
@@ -142,20 +142,17 @@ class WorkspaceProvisioner:
         return manifest
 
     def collect(self, workspace: str | Path, grants: list[ResourceGrant]) -> list[str]:
-        """Carry writable *copies* back to where they came from.
+        """Carry the writable copies back to where they came from.
 
-        Called when a task's work is accepted.  Only writable file grants
-        delivered by copy move: a read grant was a copy on purpose, a
-        reference grant already wrote to the original so there is nothing to
-        carry, and a Resource or Knowledge grant has no writable original to
-        return to.
+        Called when a task's work is accepted, and the only moment anything a
+        task did reaches a real file.  Only writable ``file:`` grants move: a
+        read grant was never copied, and a Resource or Knowledge grant has no
+        writable original to return to.
         """
         root = Path(workspace).expanduser().resolve()
         written: list[str] = []
         for grant in grants:
             if not grant.access.writable or grant.scheme != SCHEME_FILE:
-                continue
-            if grant.delivery is Delivery.REFERENCE:
                 continue
             source = root / RESOURCES_DIR / self._name_for(grant)
             if not source.is_file():
@@ -172,17 +169,14 @@ class WorkspaceProvisioner:
     # --- reference ----------------------------------------------------------
 
     def _reference(self, grant: ResourceGrant) -> str:
-        """Return the host path a referenced grant points at.
+        """Return the host path a read grant points at.
 
-        Only ``file:`` can be referenced.  A Resource version and a Knowledge
-        object are records in a database, not files on this host, so there is
-        no path to hand over and asking for one is a mistake worth naming.
+        Only ``file:`` names a path.  A Resource version and a Knowledge
+        object are records in a database, so a read of one is written into the
+        workspace instead — there is nothing on this host to point at.
         """
-        if grant.scheme != SCHEME_FILE:
-            raise GrantRefused(
-                f"{grant.scheme}: can only be delivered as a copy; it is a "
-                "record, not a file on this host"
-            )
+        if grant.scheme != SCHEME_FILE:  # pragma: no cover - guarded by the caller
+            raise GrantRefused(f"{grant.scheme}: names no path on this host")
         if self.policy.scope is None:
             raise GrantRefused("no authorized file root is configured")
         resolved = Path(self.policy.scope.resolve(grant.target, write=grant.access.writable))
@@ -290,21 +284,20 @@ def _readme(manifest: WorkspaceManifest) -> str:
         for entry in manifest.entries:
             access = "read-only" if entry["access"] == AccessMode.READ.value else "read-write"
             referenced = entry.get("delivery") == Delivery.REFERENCE.value
-            kind = "in place" if referenced else "copy"
+            kind = "the original" if referenced else "your copy"
             lines.append(
                 f"| `{entry['path']}` | {access} | {kind} | {entry.get('reason', '')} |"
             )
         lines.extend(
             [
                 "",
-                "**in place** — the real file or directory, at the path shown.",
-                "Reading it reads the original; if it is read-write, writing it",
-                "changes the original, and that is what it is for.",
+                "**read-only** files and directories are the originals, at the",
+                "paths shown. Read them where they are; nothing you do to one is",
+                "kept, so do not treat one as somewhere to work.",
                 "",
-                "**copy** — a copy inside this workspace, at the relative path",
-                "shown. A read-only copy changes nothing anywhere no matter what",
-                "you do to it. A read-write copy is carried back to where it came",
-                "from when your work is accepted.",
+                "**read-write** files are your own copies, inside this workspace.",
+                "Edit them freely — the real file is untouched until your work is",
+                "accepted, which is the moment your edits are copied back to it.",
             ]
         )
     return "\n".join(lines) + "\n"

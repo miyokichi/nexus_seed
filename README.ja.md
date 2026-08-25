@@ -308,8 +308,8 @@ Agentへ渡るのはworkspace directoryだけです。workspace外のfileも必�
 - `nexus-seed task`・webhook・各種connectorからの通常requestを常にProjectへrouting
 - Agentが読み書きしてよいfile・directoryをProject単位で宣言する仕組み。許可判断は
   設定されたrootに対する決定的なpolicyが行い、Agent runtimeの
-  `readable_paths` / `writable_paths`として渡ります。参照で直接渡すか、原本を守る
-  必要があるときはworkspaceへコピーするかを選べます
+  `readable_paths` / `writable_paths`として渡ります。読む時は元fileへのリンク、
+  書く時はcopyで、変更が元に届くのは成果を承認した時だけです
 - 自然文で書くbootstrap context（用語・Goal・現状）を現在の世界と突き合わせ、矛盾・Gap・
   Task候補を抽出する仕組み。各Task候補は人が「実行／無視／修正」を決めるまで実行されません
 - Cockpitの**Projects**画面（orchestrator自身のrecordを表示）
@@ -927,32 +927,44 @@ granted: read access to file:C:/work/shared/sap_fy2025.csv by reference is withi
 ありません。*同じ*Projectが*同じ*Agentへ、そのResourceに手が届く状態で再委譲され
 ます。変わったのは「何に手が届くか」だけだからです。
 
-### fileの渡し方は3通り
+### 読む時はリンク、書く時はコピー
 
-「Agentがどのbytesを触るか」で選びます。
+3つ目の選択肢はなく、選ぶ余地もありません。accessが決めます。
 
-| やりたいこと | 指定 | Agentに渡るもの |
+| grant | Agentに渡るもの | 元ファイルに届くタイミング |
 | --- | --- | --- |
-| 読むだけ | *(既定)* | 元のpath（`readable_paths`） |
-| 元ファイルを直接変更してよい | `--access read_write` | 元のpath（`writable_paths`） |
-| 編集させたいが原本を守りたい | `--access read_write --delivery copy` | `resources/`内のcopy |
+| `--access read`（既定） | 元のfileそのもの | 届きません |
+| `--access read_write` | workspace内の自分用copy | 成果を承認した時 |
 
-上2つは**参照（reference）**で、コピーは作られません。Agentは元の場所のfileを
-直接指されます。directoryはこの方法でのみ渡せて、資料一式を渡す通常の手段です。
+**読むのに複製は要りません。** Agentは元の場所のfileを直接指されるので、常に現在
+の内容を見ます。directoryも同じ扱いで、資料一式を渡す手段はこれです。
 
 ```powershell
 nexus-seed-knowledge grant --db nexus_seed.db <project-id> "file:C:/work/shared/docs"
 ```
 
-3つ目は**コピー（copy）**で、Taskのworkspaceへ実体化します。コピーの分のコストを
-払う代わりに、参照では得られないものが得られます。**Agentが編集しても原本が変わ
-らない**ことです。変更を元のfileへ戻すのは
-`nexus-seed-knowledge collect --db nexus_seed.db <project-id>`。readのcopyはAgentが
-何をしても決して書き戻されず、referenceは既に元の場所へ書いているので回収は不要
-です。
+**書くには複製が要ります。** Agentが編集するのは`resources/`内の自分用copyなので、
+作業中は元のfileが変わりません。中断されたTask、差し戻されたTask、途中で壊れた
+Taskは、元のfileに何も残しません。変更が届くのは次の1コマンドの瞬間だけです。
 
-隔離が必要なResourceにはコピー方式が引き続き答えです。referenceが入る前は
-これが唯一の方式で、当時記録されたgrantは今もコピーとして動きます。
+```powershell
+nexus-seed-knowledge collect --db nexus_seed.db <project-id>
+```
+
+代償として、**書き込み可能なdirectoryは渡せません**。サイズの分からないtreeを
+黙ってworkspaceへ複製するべきではないためです。directoryは読み取りで渡し、変更
+が必要なfileはその中の1つを名指ししてください。
+
+```text
+refused: 'C:/work/shared/docs' is a directory; grant it read, or name the file
+         inside it that the task has to change
+```
+
+readのgrantは元fileへのリンクであり、そこを取り繕ってはいません。指示を無視した
+Agentがread権限のpathを書き込みで開くことは技術的には可能です。readのgrantが保証
+するのは書いてあるとおりのこと、すなわち**そのfileに手が届くこと**と、**そこへの
+編集がどこにも回収されないこと**です。原本をAgentから守る必要があるなら、
+read_writeで渡してcopyにし、`collect`の時点で採否を判断してください。
 
 ### Agentへ渡る形
 
@@ -960,8 +972,8 @@ nexus-seed-knowledge grant --db nexus_seed.db <project-id> "file:C:/work/shared/
 
 ```text
 workspace        Task専用のdirectory
-readable_paths   その場で読んでよいhost path
-writable_paths   その場で変更してよいhost path
+readable_paths   そのまま読んでよい元のfile・directory
+writable_paths   変更してよい自分用copy
 resources        全grantとその path / access / delivery
 ```
 
