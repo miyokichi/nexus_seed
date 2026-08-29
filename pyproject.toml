@@ -22,6 +22,7 @@ ingest = [
 
 [project.scripts]
 nexus-seed = "nexus_seed.app:main"
+nexus-seed-mvp = "nexus_seed.mvp.cli:main"
 nexus-seed-knowledge-ingest-pptx = "nexus_seed.knowledge.ingest_pptx:main"
 nexus-seed-knowledge = "nexus_seed.knowledge_cli:main"
 

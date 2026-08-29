@@ -79,6 +79,18 @@ Event delivery, Process resume, Ingress, Resources, and Context remain because
 the Orchestrator and Knowledge loop use them. Retired tables in an existing
 SQLite database are preserved as history, but are not created in a new one.
 
+## Minimal MVP loop
+
+For the small, explicitly approved Observer-to-Project loop, use the
+replaceable `nexus_seed.mvp` application layer. It reuses the existing durable
+Knowledge Ledger, Project records, and LLM backend through adapters without
+coupling the MVP flow to the full orchestration runtime. See
+[MVP architecture and usage](docs/mvp.md).
+
+```bash
+uv run nexus-seed-mvp "Improve the NEXUS SEED README" --workspace .
+```
+
 ## Knowledge Runtime
 
 Above the Project Orchestrator sits a Knowledge Runtime (`nexus_seed/knowledge/`)
