@@ -1,6 +1,18 @@
 """Knowledge persistence, retrieval, and meaning-model boundary."""
 
 from .adapters.mvp import ExistingKnowledgeGateway
+from .canonical import (
+    SCHEMA_VERSION,
+    CanonicalDocument,
+    CanonicalEntity,
+    CanonicalRelation,
+    CanonicalValidationError,
+    SourceLocation,
+    canonical_from_mapping,
+    canonical_from_text,
+    load_canonical_yaml,
+    loads_canonical_yaml,
+)
 from .bootstrap_context import (
     CONTEXT_DIR,
     CONTEXT_DOCUMENTS,
@@ -20,12 +32,25 @@ from .principles import (
     record_support,
     refine_principle,
 )
+from .semantica import (
+    OntologyVocabulary,
+    SemanticKnowledgeContext,
+    SemanticQueryBackend,
+    SemanticaGraphRuntime,
+    SemanticaKnowledgeAdapter,
+    SemanticaUnavailable,
+    load_ontology_yaml,
+)
 
 __all__ = [
     "Annotation",
     "CONTEXT_DIR",
     "CONTEXT_DOCUMENTS",
     "Consolidator",
+    "CanonicalDocument",
+    "CanonicalEntity",
+    "CanonicalRelation",
+    "CanonicalValidationError",
     "ContextDocuments",
     "CounterexampleSearcher",
     "DecisionAdvisory",
@@ -40,19 +65,32 @@ __all__ = [
     "KnowledgeLedger",
     "KnowledgeRevision",
     "KnowledgeSource",
+    "OntologyVocabulary",
     "PredictionEngine",
     "PrincipleExtractor",
     "Relation",
+    "SCHEMA_VERSION",
+    "SemanticKnowledgeContext",
+    "SemanticQueryBackend",
+    "SemanticaGraphRuntime",
+    "SemanticaKnowledgeAdapter",
+    "SemanticaUnavailable",
+    "SourceLocation",
     "STATUS_CANDIDATE",
     "STATUS_CONFLICT",
     "STATUS_REFINED",
     "STATUS_SUPPORTED",
     "STATUS_VALIDATED",
     "advisories_for",
+    "canonical_from_mapping",
+    "canonical_from_text",
     "apply_prediction_feedback",
     "evaluate_prediction",
     "record_agent_experience",
     "record_support",
     "refine_principle",
+    "load_canonical_yaml",
+    "load_ontology_yaml",
+    "loads_canonical_yaml",
     "select_candidates",
 ]

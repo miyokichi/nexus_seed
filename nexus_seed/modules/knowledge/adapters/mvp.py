@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from ..ledger import KnowledgeLedger
 from ..models import KnowledgeRevision
+from ..semantica import SemanticQueryBackend
 from ....platform.contracts.mvp import JsonObject, JsonValue, KnowledgeItem
 
 
@@ -16,8 +18,14 @@ class ExistingKnowledgeGateway:
     content creates a revision; putting exactly the same value is idempotent.
     """
 
-    def __init__(self, ledger: KnowledgeLedger) -> None:
+    def __init__(
+        self,
+        ledger: KnowledgeLedger,
+        *,
+        semantic_backend: SemanticQueryBackend | None = None,
+    ) -> None:
         self.ledger = ledger
+        self.semantic_backend = semantic_backend
 
     def put(self, item: KnowledgeItem) -> None:
         """Record one normalized MVP Knowledge item in the existing ledger."""
@@ -66,7 +74,32 @@ class ExistingKnowledgeGateway:
         """
 
         needle = query.casefold().strip()
-        matches = []
+        semantic_matches = []
+        if self.semantic_backend is not None:
+            semantic = self.semantic_backend.query(query)
+            if semantic is not None:
+                content = semantic.to_dict()
+                digest = hashlib.sha256(
+                    json.dumps(
+                        content,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    ).encode("utf-8")
+                ).hexdigest()[:24]
+                semantic_matches.append(
+                    KnowledgeItem(
+                        id=f"semantica-{digest}",
+                        content=content,
+                        source="semantica",
+                        metadata={
+                            "backend": "semantica",
+                            "query": query,
+                            "semantic": True,
+                        },
+                    )
+                )
+        lexical_matches = []
         for revision in self.ledger.all_heads():
             item = _from_revision(revision)
             searchable = json.dumps(
@@ -80,8 +113,11 @@ class ExistingKnowledgeGateway:
                 sort_keys=True,
             ).casefold()
             if not needle or needle in searchable:
-                matches.append(item)
-        return sorted(matches, key=lambda item: (item.created_at, item.id))
+                lexical_matches.append(item)
+        return semantic_matches + sorted(
+            lexical_matches,
+            key=lambda item: (item.created_at, item.id),
+        )
 
 
 def _from_revision(revision: KnowledgeRevision) -> KnowledgeItem:

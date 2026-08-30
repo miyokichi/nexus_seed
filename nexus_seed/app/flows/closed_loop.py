@@ -7,8 +7,18 @@ contracts.  In particular, no Agent implementation is imported here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 
+from ...modules.knowledge.ledger import KnowledgeLedger
+from ...modules.knowledge.projection import (
+    WorldStateProjection,
+    WorldView,
+    WorldViewDiff,
+    annotate_world_fact,
+    diff_world_views,
+)
 from ...modules.project_manager import ProjectOrchestrator
 from ...modules.project_manager.models import (
     A2AMessage,
@@ -122,6 +132,18 @@ class ClosedLoopRunReport:
     result_observation: Observation | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class StableLoopRunReport:
+    """Result of a bounded sequence of closed-loop passes."""
+
+    status: str
+    iterations: int
+    stop_reason: str
+    project_ids: tuple[str, ...] = ()
+    last_world_diff: WorldViewDiff = field(default_factory=WorldViewDiff)
+    runs: tuple[ClosedLoopRunReport, ...] = ()
+
+
 class ClosedLoopMVPApplication:
     """Compose one closed loop without taking over any module's work."""
 
@@ -134,6 +156,9 @@ class ClosedLoopMVPApplication:
         approval: HumanApproval,
         project_manager: ProjectOrchestrator,
         max_relevant_knowledge: int = 20,
+        knowledge_ledger: KnowledgeLedger | None = None,
+        project_settle_timeout: float = 1800.0,
+        project_settle_interval: float = 2.0,
     ) -> None:
         if max_relevant_knowledge <= 0:
             raise ValueError("max_relevant_knowledge must be greater than zero")
@@ -143,6 +168,9 @@ class ClosedLoopMVPApplication:
         self.approval = approval
         self.project_manager = project_manager
         self.max_relevant_knowledge = max_relevant_knowledge
+        self.knowledge_ledger = knowledge_ledger or getattr(knowledge, "ledger", None)
+        self.project_settle_timeout = project_settle_timeout
+        self.project_settle_interval = project_settle_interval
 
     async def run_once(self, request: ClosedLoopRequest) -> ClosedLoopRunReport:
         """Observe, plan, delegate once through A2A, then record the outcome."""
@@ -153,7 +181,88 @@ class ClosedLoopMVPApplication:
         if len(observations) != 1:
             raise ValueError("a closed-loop pass accepts exactly one observation")
 
-        observation = observations[0]
+        return await self._run_observation_once(request, observations[0])
+
+    async def run_until_stable(
+        self,
+        request: ClosedLoopRequest,
+        *,
+        max_iterations: int = 3,
+    ) -> StableLoopRunReport:
+        """Run bounded closed-loop passes until the Knowledge World View settles."""
+
+        if max_iterations <= 0:
+            raise ValueError("max_iterations must be greater than zero")
+        if self.knowledge_ledger is None:
+            raise RuntimeError("run_until_stable requires a KnowledgeLedger")
+
+        before = self._world_view()
+        seen_states = {self._world_fingerprint(before)}
+        runs: list[ClosedLoopRunReport] = []
+        project_ids: list[str] = []
+        last_world_diff = WorldViewDiff()
+        next_observation: Observation | None = None
+
+        for iteration in range(1, max_iterations + 1):
+            report = (
+                await self.run_once(request)
+                if next_observation is None
+                else await self._run_observation_once(request, next_observation)
+            )
+            runs.append(report)
+            if report.project is not None:
+                project_ids.append(report.project.id)
+
+            stop_reason = self._immediate_stop_reason(report)
+            if stop_reason is not None:
+                return self._stable_report(
+                    stop_reason,
+                    runs,
+                    project_ids,
+                    last_world_diff,
+                )
+
+            self._apply_explicit_world_facts(report)
+            after = self._world_view()
+            last_world_diff = diff_world_views(before, after)
+            if not last_world_diff:
+                return self._stable_report(
+                    "stable_world",
+                    runs,
+                    project_ids,
+                    last_world_diff,
+                )
+
+            state_key = self._world_fingerprint(after)
+            if state_key in seen_states:
+                return self._stable_report(
+                    "repeated_state",
+                    runs,
+                    project_ids,
+                    last_world_diff,
+                )
+            seen_states.add(state_key)
+
+            if iteration == max_iterations:
+                return self._stable_report(
+                    "max_iterations",
+                    runs,
+                    project_ids,
+                    last_world_diff,
+                )
+
+            next_observation = self._world_diff_observation(report, last_world_diff, iteration)
+            before = after
+
+        raise AssertionError("bounded loop exited without a stop reason")
+
+    async def _run_observation_once(
+        self,
+        request: ClosedLoopRequest,
+        observation: Observation,
+    ) -> ClosedLoopRunReport:
+        """Run one pass for an already acquired or application-derived observation."""
+
         input_knowledge = to_knowledge_item(observation)
         self.knowledge.put(input_knowledge)
         planning_context = PlanningContext(
@@ -189,6 +298,14 @@ class ClosedLoopMVPApplication:
             proposal.goal,
             context=self._project_context(request, planning_context, proposal),
         )
+        if self.project_manager.is_working(project):
+            settled = await self.project_manager.settle(
+                project.id,
+                timeout=self.project_settle_timeout,
+                interval=self.project_settle_interval,
+            )
+            if settled is not None:
+                project = settled
         message = self._result_message(project)
         execution_result = self._execution_result(project, message)
         result_observation = self._result_observation(
@@ -209,16 +326,180 @@ class ClosedLoopMVPApplication:
             result_observation=result_observation,
         )
 
+    def _world_view(self) -> WorldView:
+        """Read the current Knowledge-derived World View."""
+
+        if self.knowledge_ledger is None:
+            raise RuntimeError("a KnowledgeLedger is required for World View access")
+        return WorldStateProjection(self.knowledge_ledger).view()
+
+    def _apply_explicit_world_facts(self, report: ClosedLoopRunReport) -> None:
+        """Project only valid, explicitly returned ``world_facts`` into Knowledge."""
+
+        if (
+            report.execution_result is None
+            or report.result_observation is None
+            or self.knowledge_ledger is None
+        ):
+            return
+        raw_facts = report.execution_result.payload.get("world_facts")
+        if not isinstance(raw_facts, list):
+            return
+
+        current_facts = dict(self._world_view().facts)
+        for raw_fact in raw_facts:
+            if not isinstance(raw_fact, dict):
+                continue
+            entity = raw_fact.get("entity")
+            attribute = raw_fact.get("attribute")
+            if (
+                not isinstance(entity, str)
+                or not entity.strip()
+                or not isinstance(attribute, str)
+                or not attribute.strip()
+                or "value" not in raw_fact
+            ):
+                continue
+            entity = entity.strip()
+            attribute = attribute.strip()
+            value = raw_fact["value"]
+            key = (entity, attribute)
+            current = current_facts.get(key)
+            if current is not None and current.value == value:
+                continue
+
+            knowledge_id = (
+                current.knowledge_id
+                if current is not None
+                else self._world_fact_knowledge_id(entity, attribute)
+            )
+            self.knowledge.put(
+                KnowledgeItem(
+                    id=knowledge_id,
+                    source="project_result_world_fact",
+                    created_at=report.result_observation.observed_at,
+                    content={
+                        "entity": entity,
+                        "attribute": attribute,
+                        "value": value,
+                    },
+                    metadata={
+                        "project_id": report.execution_result.project_id,
+                        "result_observation_id": report.result_observation.id,
+                    },
+                )
+            )
+            annotate_world_fact(
+                self.knowledge_ledger,
+                knowledge_id,
+                entity=entity,
+                attribute=attribute,
+                value=value,
+                created_by="nexus_seed_closed_loop",
+                recorded_at=report.result_observation.observed_at,
+            )
+            current_facts = dict(self._world_view().facts)
+
+    @staticmethod
+    def _world_fact_knowledge_id(entity: str, attribute: str) -> str:
+        identity = f"{entity}\0{attribute}".encode("utf-8")
+        return f"world-fact-{hashlib.sha256(identity).hexdigest()[:24]}"
+
+    @staticmethod
+    def _world_fingerprint(view: WorldView) -> str:
+        return json.dumps(
+            view.snapshot(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+
+    @staticmethod
+    def _world_diff_observation(
+        report: ClosedLoopRunReport,
+        world_diff: WorldViewDiff,
+        iteration: int,
+    ) -> Observation:
+        """Turn a meaningful World View change into the next planning input."""
+
+        project_id = report.project.id if report.project is not None else "unknown"
+        return Observation(
+            id=f"world-diff-{iteration}-{project_id}",
+            source="knowledge_world_diff",
+            content={
+                "world_changes": [
+                    {
+                        "entity": change.entity,
+                        "attribute": change.attribute,
+                        "old_value": change.old_value,
+                        "new_value": change.new_value,
+                        "change": change.change,
+                    }
+                    for change in world_diff.changes
+                ]
+            },
+            metadata={
+                "iteration": iteration + 1,
+                "previous_project_id": project_id,
+            },
+        )
+
+    @staticmethod
+    def _immediate_stop_reason(report: ClosedLoopRunReport) -> str | None:
+        if report.state == "NO_ACTION":
+            return "no_action"
+        if report.state == "NO_INPUT":
+            return "no_input"
+        if report.state == "REJECTED":
+            return "rejected"
+        if report.project is not None and report.project.status is ProjectStatus.BLOCKED:
+            return "blocked"
+        if report.state == "EXECUTION_STOPPED":
+            return "execution_stopped"
+        return None
+
+    @staticmethod
+    def _stable_report(
+        stop_reason: str,
+        runs: list[ClosedLoopRunReport],
+        project_ids: list[str],
+        last_world_diff: WorldViewDiff,
+    ) -> StableLoopRunReport:
+        if stop_reason in {"no_action", "stable_world"}:
+            status = "stable"
+        elif stop_reason == "blocked":
+            status = "blocked"
+        elif stop_reason == "max_iterations":
+            status = "limit_reached"
+        else:
+            status = "stopped"
+        return StableLoopRunReport(
+            status=status,
+            iterations=len(runs),
+            stop_reason=stop_reason,
+            project_ids=tuple(project_ids),
+            last_world_diff=last_world_diff,
+            runs=tuple(runs),
+        )
+
     def _relevant_knowledge(
         self, goal: str, input_knowledge: KnowledgeItem
     ) -> tuple[KnowledgeItem, ...]:
-        """Select bounded lexical context without giving the Planner a Ledger."""
+        """Select bounded Knowledge context without exposing a backend to Planner."""
 
         selected = {input_knowledge.id: input_knowledge}
-        for item in self.knowledge.search(goal):
-            selected.setdefault(item.id, item)
-            if len(selected) >= self.max_relevant_knowledge:
-                break
+        observation_query = json.dumps(
+            input_knowledge.content,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        for query in (goal, observation_query):
+            for item in self.knowledge.search(query):
+                selected.setdefault(item.id, item)
+                if len(selected) >= self.max_relevant_knowledge:
+                    return tuple(selected.values())
         return tuple(selected.values())
 
     @staticmethod
@@ -318,4 +599,5 @@ __all__ = [
     "ClosedLoopRequest",
     "ClosedLoopRunReport",
     "PlanningContext",
+    "StableLoopRunReport",
 ]

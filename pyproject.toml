@@ -3,10 +3,11 @@ name = "nexus-seed"
 version = "0.1.0"
 description = "A durable Project Orchestrator with a provenance-aware Knowledge Runtime."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 license = { text = "MIT" }
 dependencies = [
     "json-repair>=0.61.7,<1",
+    "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]
@@ -19,12 +20,16 @@ ingest = [
     "openpyxl>=3.1",
     "python-docx>=1.1",
 ]
+semantica = [
+    "semantica>=0.6.6,<0.7",
+]
 
 [project.scripts]
 nexus-seed = "nexus_seed.app:main"
 nexus-seed-mvp = "nexus_seed.mvp.cli:main"
 nexus-seed-knowledge-ingest-pptx = "nexus_seed.knowledge.ingest_pptx:main"
 nexus-seed-knowledge = "nexus_seed.knowledge_cli:main"
+nexus-seed-semantica = "nexus_seed.semantica_cli:main"
 
 [build-system]
 requires = ["hatchling"]

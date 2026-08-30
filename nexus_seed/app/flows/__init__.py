@@ -6,6 +6,7 @@ from .closed_loop import (
     ClosedLoopRequest,
     ClosedLoopRunReport,
     PlanningContext,
+    StableLoopRunReport,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "ClosedLoopRequest",
     "ClosedLoopRunReport",
     "PlanningContext",
+    "StableLoopRunReport",
 ]

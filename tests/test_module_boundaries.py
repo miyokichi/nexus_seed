@@ -55,7 +55,12 @@ def test_extracted_modules_do_not_import_nexus_seed_or_each_other() -> None:
     violations: list[str] = []
     for module_path, forbidden in module_rules.items():
         for source in (root / module_path).rglob("*.py"):
-            tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
+            if ".venv" in source.parts:
+                continue
+            tree = ast.parse(
+                source.read_text(encoding="utf-8-sig"),
+                filename=str(source),
+            )
             for node in ast.walk(tree):
                 imported = _imported_module(node)
                 if imported and any(
