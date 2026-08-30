@@ -6,15 +6,11 @@ from .continuation_store import ContinuationStore
 from .database import Database
 from .event_store import EventStore
 from .join_store import JoinRecord, JoinStore
-from .llm_invocation_store import LLMInvocationStore
-from .observation_store import ObservationStore
+from .knowledge_store import KnowledgeStore
+from .observation_source_store import ObservationSourceStore
 from .process_store import ProcessStore
-from .proposal_store import ProposalStore
-from .provider_store import ProviderStore
-from .state_delta_store import StateDeltaStore
 from .state_store import StateStore
 from .timer_store import TimerRecord, TimerStore
-from .work_requirement_store import WorkRequirementStore
 
 __all__ = [
     "ActivationStore",
@@ -25,14 +21,10 @@ __all__ = [
     "EventStore",
     "JoinRecord",
     "JoinStore",
-    "LLMInvocationStore",
-    "ObservationStore",
+    "KnowledgeStore",
+    "ObservationSourceStore",
     "ProcessStore",
-    "ProposalStore",
-    "ProviderStore",
-    "StateDeltaStore",
     "StateStore",
     "TimerRecord",
     "TimerStore",
-    "WorkRequirementStore",
 ]

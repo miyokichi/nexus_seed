@@ -72,42 +72,6 @@ async def test_a_crash_before_extraction_still_produces_one_representation(tmp_p
     runtime2.close()
 
 
-async def test_a_crash_before_interpretation_still_reaches_world_state(tmp_path):
-    """The representation existed; the fact it carried must still land."""
-    from nexus_seed.processes.semantic import bootstrap_semantic
-
-    db_path = tmp_path / "r.db"
-    root = watched_tree(tmp_path)
-
-    runtime = Runtime(db_path)
-    adapter = resource_runtime(runtime, root)
-    bootstrap_semantic(runtime)
-    write_file(root, "facts.txt", "D1_CD.target=45\n")
-
-    await adapter.poll_and_ingest(deliver=False)
-    for _ in range(2):  # index, then extract
-        runtime.dispatch_pending_events()
-        instance = runtime.scheduler.next_runnable()
-        if instance is None:
-            break
-        await runtime.executor.execute(instance)
-
-    created = runtime.event_store.by_type("representation_created")[0]
-    assert runtime.get_event_delivery(created.id).status.value == "PENDING"
-    assert runtime.state_store.get("D1_CD", "target") is None
-    runtime.close()
-
-    runtime2 = Runtime(db_path)
-    resource_runtime(runtime2, root)
-    bootstrap_semantic(runtime2)
-    await runtime2.run_pending()
-
-    assert runtime2.state_store.get("D1_CD", "target") == 45
-    assert len(runtime2.state_delta_store.all()) == 1
-    assert len(runtime2.get_state_history("D1_CD", "target")) == 1
-    runtime2.close()
-
-
 async def test_a_re_delivered_resource_event_adds_no_second_representation(tmp_path):
     """Delivery retry and representation dedup are independent, and both hold."""
     root = watched_tree(tmp_path)

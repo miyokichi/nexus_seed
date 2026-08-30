@@ -29,18 +29,12 @@ class ContextCompiler:
         process_store,
         event_store,
         state_store,
-        observation_store,
-        state_delta_store,
-        work_requirement_store,
         continuation_store,
         resource_store=None,
     ) -> None:
         self.process_store = process_store
         self.event_store = event_store
         self.state_store = state_store
-        self.observation_store = observation_store
-        self.state_delta_store = state_delta_store
-        self.work_requirement_store = work_requirement_store
         self.continuation_store = continuation_store
         self.resource_store = resource_store
 
@@ -66,12 +60,9 @@ class ContextCompiler:
 
         world_state = self._compile_world_state(reqs, process_instance)
         events = self._compile_events(reqs)
-        observations = self._compile_observations(reqs)
-        state_deltas = self._compile_state_deltas(reqs)
-        work_requirements = self._compile_work(reqs, process_instance, world_state)
         parent, children, child_results = self._compile_process_tree(reqs, process_instance)
         cont = self._compile_continuation(reqs, process_instance, continuation)
-        resources = self._compile_resources(reqs, process_instance, work_requirements)
+        resources = self._compile_resources(reqs, process_instance)
 
         return self._finalize(
             ProcessContextView(
@@ -79,9 +70,6 @@ class ContextCompiler:
                 trigger_event=trigger,
                 world_state=world_state,
                 recent_events=events,
-                observations=observations,
-                state_deltas=state_deltas,
-                work_requirements=work_requirements,
                 parent_process=parent,
                 child_processes=children,
                 child_results=child_results,
@@ -99,11 +87,6 @@ class ContextCompiler:
             return world_state
 
         entities = set(req.entities)
-        work_requirement_id = self._work_requirement_id(instance)
-        if req.include_work_entities and work_requirement_id is not None:
-            requirement = self.work_requirement_store.get(work_requirement_id)
-            if requirement is not None:
-                entities.update(requirement.related_entities)
 
         for entity in sorted(entities):
             entries = self.state_store.current_for_entity(entity)
@@ -131,76 +114,6 @@ class ContextCompiler:
             for event in self.event_store.referencing_entity(entity):
                 collected[event.id] = event
         return sorted(collected.values(), key=lambda e: (e.occurred_at, str(e.id)))
-
-    def _compile_observations(self, reqs):
-        req = reqs.observations
-        if req is None:
-            return []
-        collected: dict = {}
-        if req.recent:
-            for obs in self.observation_store.recent(req.recent):
-                collected[obs.id] = obs
-        for entity in req.related_entities:
-            for obs in self.observation_store.by_subject(entity):
-                collected[obs.id] = obs
-        return sorted(collected.values(), key=lambda o: (o.created_at, str(o.id)))
-
-    def _compile_state_deltas(self, reqs):
-        req = reqs.state_deltas
-        if req is None:
-            return []
-        collected: dict = {}
-        if req.recent:
-            for delta in self.state_delta_store.recent(req.recent):
-                collected[delta.id] = delta
-        for entity in req.related_entities:
-            for delta in self.state_delta_store.by_entity(entity):
-                collected[delta.id] = delta
-        return sorted(collected.values(), key=lambda d: (d.created_at, str(d.id)))
-
-    def _compile_work(self, reqs, instance, world_state):
-        req = reqs.work
-        if req is None:
-            return []
-        seen: set = set()
-        result = []
-        current = None
-        work_requirement_id = self._work_requirement_id(instance)
-        if req.current and work_requirement_id is not None:
-            current = self.work_requirement_store.get(work_requirement_id)
-            if current is not None:
-                result.append(current)
-                seen.add(current.id)
-        if req.related:
-            entities = set(current.related_entities) if current is not None else set()
-            entities.update(world_state.keys())
-            for requirement in self.work_requirement_store.all():
-                if requirement.id in seen:
-                    continue
-                if set(requirement.related_entities) & entities:
-                    result.append(requirement)
-                    seen.add(requirement.id)
-        return result
-
-    @staticmethod
-    def _work_requirement_id(instance) -> uuid.UUID | None:
-        """Resolve a work id carried either by the instance or its event input.
-
-        Event-triggered domain processes are intentionally ordinary routed
-        processes, so the Router does not know that a payload field is "work".
-        The Context compiler may still follow an explicitly declared WorkReq
-        by reading the conventional id from that input without adding domain
-        knowledge to Runtime routing.
-        """
-        value = instance.work_requirement_id
-        if value is None:
-            data = instance.input or {}
-            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
-            value = data.get("work_requirement_id") or payload.get("work_requirement_id")
-        try:
-            return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
-        except (TypeError, ValueError, AttributeError):
-            return None
 
     def _compile_process_tree(self, reqs, instance):
         req = reqs.process_tree
@@ -230,7 +143,7 @@ class ContextCompiler:
 
     # --- resources (Phase 3E) ---------------------------------------------
 
-    def _compile_resources(self, reqs, instance, work_requirements):
+    def _compile_resources(self, reqs, instance):
         """Attach the declared documents, at the version they are at *now*.
 
         Deterministic selection only.  Because this runs on every activation,
@@ -241,7 +154,7 @@ class ContextCompiler:
         if req is None or self.resource_store is None:
             return []
 
-        resources = self._select_resources(req, instance, work_requirements)
+        resources = self._select_resources(req, instance)
         pinned = self._pinned_versions(req, instance)
 
         items: list[ResourceContextItem] = []
@@ -269,7 +182,7 @@ class ContextCompiler:
             )
         return items
 
-    def _select_resources(self, req, instance, work_requirements):
+    def _select_resources(self, req, instance):
         """Resolve the declared ids/URIs to Resources, in a stable order."""
         ids: list[str] = list(req.ids)
         uris: list[str] = list(req.uris)
@@ -277,14 +190,6 @@ class ContextCompiler:
         if req.from_process_input:
             ids.extend(_as_str_list(instance.input.get("resource_ids")))
             uris.extend(_as_str_list(instance.input.get("resource_uris")))
-
-        if req.from_work_metadata:
-            target = instance.work_requirement_id
-            for requirement in work_requirements:
-                if target is not None and requirement.id != target:
-                    continue
-                ids.extend(_as_str_list(requirement.metadata.get("resource_ids")))
-                uris.extend(_as_str_list(requirement.metadata.get("resource_uris")))
 
         resolved: list = []
         seen: set = set()
@@ -359,9 +264,6 @@ class ContextCompiler:
         counts = {
             "world_state": sum(len(attrs) for attrs in view.world_state.values()),
             "recent_events": len(view.recent_events),
-            "observations": len(view.observations),
-            "state_deltas": len(view.state_deltas),
-            "work_requirements": len(view.work_requirements),
             "child_processes": len(view.child_processes),
             "resources": len(view.resources),
         }

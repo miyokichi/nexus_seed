@@ -39,6 +39,5 @@ async def test_minimal_context_has_no_full_world_state(tmp_path):
     assert view.trigger_event.id == trigger.id
     assert view.world_state == {}
     assert view.recent_events == []
-    assert view.work_requirements == []
     assert view.metadata.item_counts["world_state"] == 0
     runtime.close()

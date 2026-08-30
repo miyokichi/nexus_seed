@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from ..core.event import Event, utcnow
-from ..core.process import ProcessInstance, ProcessStatus
+from ..core.process import HandlerRegistry, ProcessInstance, ProcessStatus
 from ..storage.process_store import ProcessStore
 from .continuation_resolver import ContinuationResolver
 
@@ -26,10 +26,14 @@ class Router:
     """Routes events to new or resumed process instances."""
 
     def __init__(
-        self, process_store: ProcessStore, resolver: ContinuationResolver
+        self,
+        process_store: ProcessStore,
+        resolver: ContinuationResolver,
+        registry: HandlerRegistry,
     ) -> None:
         self.process_store = process_store
         self.resolver = resolver
+        self.registry = registry
 
     def route(self, event: Event) -> list[ProcessInstance]:
         """Route ``event``, returning the instances it made RUNNABLE."""
@@ -41,6 +45,16 @@ class Router:
     def _resume_matching(self, event: Event) -> list[ProcessInstance]:
         activated: list[ProcessInstance] = []
         for instance, continuation in self.resolver.resolve(event):
+            definition = self.process_store.get_definition(
+                instance.definition_name, instance.definition_version
+            )
+            if definition is None or definition.handler not in self.registry:
+                logger.info(
+                    "event %s matches retired process %s; leaving it suspended",
+                    event.id,
+                    instance.definition_name,
+                )
+                continue
             instance.status = ProcessStatus.RUNNABLE
             instance.pending_event_id = event.id
             instance.updated_at = utcnow()
@@ -58,6 +72,11 @@ class Router:
     def _trigger_new(self, event: Event) -> list[ProcessInstance]:
         activated: list[ProcessInstance] = []
         for definition in self.process_store.definitions_for_trigger(event.type):
+            if definition.handler not in self.registry:
+                logger.debug(
+                    "definition %s has no active handler; not routing", definition.name
+                )
+                continue
             # Routing idempotency (Phase 3F): a re-dispatched event must not
             # start the same process twice.  The atomic route+acknowledge
             # transaction should already prevent it; this makes the guarantee

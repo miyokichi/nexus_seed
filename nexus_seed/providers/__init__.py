@@ -1,39 +1,27 @@
-"""Capability execution-provider federation (Phase 5E)."""
+"""A2A transport used by external Project Agents."""
 
-from .adapters import (
-    FakeExternalAgentAdapter,
-    GenericExternalAgentAdapter,
-    ProviderAdapter,
-    ProviderUnavailableBeforeStart,
-    SkillProviderAdapter,
+from .a2a import (
+    AGENT_CARD_PATH,
+    A2AClient,
+    A2AEndpoint,
+    A2AProtocolError,
+    task_state,
 )
-from .models import (
-    DelegationRequest,
-    DelegationResult,
-    DelegationStatus,
-    ExecutionProvider,
-    ImportedSkill,
-    ProviderBinding,
-    ProviderHealth,
-    ProviderInvocation,
-    ProviderInvocationStatus,
-    ProviderKind,
-    ProviderSelection,
-    ProviderStatus,
-    SkillDescriptor,
+from .project_agent import (
+    PROJECT_AGENT_INSTRUCTION,
+    PROJECT_ASSIGNMENT,
+    REPLY_SCHEMA,
+    A2AProjectAgentTransport,
 )
-from .registry import ProviderRegistry, ProviderSelector, ProviderUnavailableError
-from .skills import DirectorySkillAdapter, SkillImporter, SkillValidationError
-from .trace import ProviderTrace
 
 __all__ = [
-    "DelegationRequest", "DelegationResult", "DelegationStatus",
-    "ExecutionProvider", "FakeExternalAgentAdapter", "GenericExternalAgentAdapter",
-    "ImportedSkill", "ProviderAdapter", "ProviderBinding", "ProviderHealth",
-    "ProviderInvocation", "ProviderInvocationStatus", "ProviderKind",
-    "ProviderSelection", "ProviderStatus", "ProviderUnavailableBeforeStart",
-    "SkillDescriptor", "SkillProviderAdapter",
-    "DirectorySkillAdapter", "ProviderRegistry", "ProviderSelector",
-    "ProviderTrace", "ProviderUnavailableError", "SkillImporter",
-    "SkillValidationError",
+    "AGENT_CARD_PATH",
+    "A2AClient",
+    "A2AEndpoint",
+    "A2AProtocolError",
+    "task_state",
+    "A2AProjectAgentTransport",
+    "PROJECT_AGENT_INSTRUCTION",
+    "PROJECT_ASSIGNMENT",
+    "REPLY_SCHEMA",
 ]

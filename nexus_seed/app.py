@@ -17,29 +17,33 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from .adapters.file_watch import LocalFileAdapter
 from .adapters.webhook import WebhookIngress, WebhookServer
-from .backends.action import LocalFileActionBackend
 from .backends.base import BackendRequest
+from .cockpit import CockpitService
+from .config_report import build_report, format_report
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
+from .knowledge import CONTEXT_DIR, KnowledgeLoop, ReasoningProjectAgent
 from .operations import (
     OperationalCommandError,
-    build_review_payload,
-    read_pending_reviews,
     read_status,
-    resolve_pending_review,
     submit_webhook_event,
-    submit_control_command,
 )
-from .control.models import HumanIdentity
-from .processes.autonomy import bootstrap_autonomy
-from .processes.control import bootstrap_control
-from .processes.extension import bootstrap_extension
-from .processes.planning import bootstrap_planning
+from .orchestrator import (
+    Agent,
+    AssignmentStatus,
+    Project,
+    ProjectOrchestrator,
+    RoutingDecision,
+    InProcessAgentRuntime,
+)
+from .orchestrator_config import ProjectAgentConfigurationError, build_orchestrator
+from .processes.project_orchestration import bootstrap_project_orchestration
 from .processes.resources import bootstrap_observer, bootstrap_resources
-from .processes.semantic import bootstrap_semantic
-from .processes.work_intelligence import bootstrap_work_intelligence
 from .resources.scope import ResourceScope
 from .runtime.runtime import Runtime
+
+logger = logging.getLogger(__name__)
 
 
 class ApplicationConfigurationError(ValueError):
@@ -56,8 +60,16 @@ class AppSettings:
     webhook_token: str | None = None
     tick_seconds: float = 1.0
     log_level: str = "INFO"
-    control_identity_id: str = "local-operator"
-    control_permissions: tuple[str, ...] = ("command.*",)
+    #: Who is at the keyboard.  Recorded as the actor on review decisions and
+    #: self-question answers; no longer authorized against anything, because
+    #: there is no longer a command surface to authorize.
+    operator_id: str = "local-operator"
+    #: Human Interface Layer; False removes every Cockpit HTTP route.
+    cockpit_enabled: bool = True
+    #: Close the Knowledge -> Project -> Agent -> Knowledge loop.  With no LLM
+    #: it still records evidence but proposes nothing.
+    knowledge_loop_enabled: bool = True
+    knowledge_poll_seconds: float = 60.0
 
     @classmethod
     def from_env(cls, env_file: str | Path = ".env") -> AppSettings:
@@ -84,59 +96,111 @@ class AppSettings:
             raise ApplicationConfigurationError(
                 "NEXUS_SEED_WEBHOOK_TOKEN is required when listening beyond localhost"
             )
-        identity_id = os.environ.get("NEXUS_SEED_CONTROL_IDENTITY", "local-operator").strip()
-        permissions = tuple(
-            value.strip()
-            for value in os.environ.get("NEXUS_SEED_CONTROL_PERMISSIONS", "command.*").split(",")
-            if value.strip()
+        operator_id = (
+            os.environ.get("NEXUS_SEED_OPERATOR_ID")
+            or os.environ.get("NEXUS_SEED_CONTROL_IDENTITY")
+            or "local-operator"
+        ).strip()
+        if not operator_id:
+            raise ApplicationConfigurationError("an operator id is required")
+        cockpit_enabled = _read_bool("NEXUS_SEED_COCKPIT_ENABLED", True)
+        knowledge_loop_enabled = _read_bool("NEXUS_SEED_KNOWLEDGE_LOOP_ENABLED", True)
+        knowledge_poll_seconds = _read_float(
+            "NEXUS_SEED_KNOWLEDGE_POLL_SECONDS", 60.0, minimum=0.05
         )
-        if not identity_id or not permissions:
-            raise ApplicationConfigurationError(
-                "control identity and at least one control permission are required"
-            )
-        return cls(data_dir, host, port, token, tick_seconds, log_level, identity_id, permissions)
+        return cls(
+            data_dir=data_dir,
+            host=host,
+            port=port,
+            webhook_token=token,
+            tick_seconds=tick_seconds,
+            log_level=log_level,
+            operator_id=operator_id,
+            cockpit_enabled=cockpit_enabled,
+            knowledge_loop_enabled=knowledge_loop_enabled,
+            knowledge_poll_seconds=knowledge_poll_seconds,
+        )
 
 
 def bootstrap_application(
     runtime: Runtime, settings: AppSettings, *, env_file: str | Path
 ) -> None:
-    """Register the complete Phase 1–5D process stack and bounded backends."""
+    """Register the Project-centered application stack."""
 
     resource_root = settings.data_dir / "resources"
-    action_root = settings.data_dir / "actions"
     resource_root.mkdir(parents=True, exist_ok=True)
-    action_root.mkdir(parents=True, exist_ok=True)
 
-    bootstrap_semantic(runtime)
-    bootstrap_work_intelligence(runtime)
-    bootstrap_planning(runtime)
+    # Resource indexing/extraction feeds the Knowledge Runtime.  The legacy
+    # World State interpreter is intentionally not part of this application.
     bootstrap_resources(runtime, scope=ResourceScope.for_root(resource_root))
     bootstrap_observer(runtime)
-    bootstrap_extension(runtime)
-    bootstrap_autonomy(runtime)
-    bootstrap_control(runtime)
-    runtime.control_store.save_identity(
-        HumanIdentity(
-            identity_id=settings.control_identity_id,
-            display_name="Configured control operator",
-            permissions=settings.control_permissions,
-            metadata={"source": "application configuration"},
-        )
-    )
-    runtime.register_backend("local_file", LocalFileActionBackend(action_root))
     configure_llm(runtime, env_file=env_file)
+    from .observation_sources import ObservationSourceService
+
+    runtime.observation_sources = ObservationSourceService(
+        runtime, data_root=settings.data_dir
+    )
+    orchestrator = _configure_project_orchestrator(runtime, settings, env_file=env_file)
+    _configure_knowledge_loop(runtime, settings, orchestrator, resource_root=resource_root)
+
+
+def _configure_project_orchestrator(
+    runtime: Runtime, settings: AppSettings, *, env_file: str | Path
+) -> ProjectOrchestrator:
+    """Give the runtime its single Project Orchestrator.
+
+    It shares the runtime's database, so Projects, Agents and the audited A2A
+    channel live beside everything else and are recovered the same way.
+    """
+    orchestrator = build_orchestrator(runtime.db, env_file=env_file)
+    if isinstance(orchestrator.agent_runtime, InProcessAgentRuntime):
+        # The local Agent is intentionally bounded to reasoning over the
+        # Project context.  A future A2A runtime replaces this interface.
+        orchestrator.agent_runtime.behaviour = ReasoningProjectAgent(
+            runtime.backends.get("llm")
+        )
+    bootstrap_project_orchestration(runtime, orchestrator)
+    return orchestrator
+
+
+def _configure_knowledge_loop(
+    runtime: Runtime,
+    settings: AppSettings,
+    orchestrator: ProjectOrchestrator,
+    *,
+    resource_root: Path,
+) -> KnowledgeLoop | None:
+    """Wire the autonomous Knowledge loop and its authorized local folder."""
+    if not settings.knowledge_loop_enabled:
+        return None
+    adapter = LocalFileAdapter(resource_root, adapter_id="knowledge_local_file")
+    runtime.register_adapter(adapter)
+    context_root = settings.data_dir / CONTEXT_DIR
+    loop = KnowledgeLoop(
+        runtime,
+        orchestrator,
+        backend=runtime.backends.get("llm"),
+        context_root=context_root,
+    )
+    # Created empty rather than waited for: a person needs somewhere to write
+    # what the words mean and what a good state looks like, and an existing
+    # file with a prompt in it is a better invitation than a missing one.
+    loop.context_documents.ensure()
+    runtime.knowledge_loop = loop
+    logger.info(
+        "knowledge loop enabled; observing %s, reading context from %s",
+        resource_root,
+        context_root,
+    )
+    return loop
 
 
 def build_runtime(settings: AppSettings, *, env_file: str | Path = ".env") -> Runtime:
-    """Create a durable Runtime in ``data_dir`` and bootstrap the full application."""
+    """Create a durable Runtime and bootstrap the Project application."""
 
     _validate_data_dir(settings.data_dir)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    runtime = Runtime(
-        settings.data_dir / "nexus_seed.db",
-        construction_root=settings.data_dir / "construction",
-        installation_root=settings.data_dir / "installed_extensions",
-    )
+    runtime = Runtime(settings.data_dir / "nexus_seed.db")
     try:
         bootstrap_application(runtime, settings, env_file=env_file)
     except Exception:
@@ -169,10 +233,34 @@ def build_parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve", help="run the webhook server (default)")
     _add_connection_arguments(serve, suppress_defaults=True)
 
-    task = commands.add_parser("task", help="submit a natural-language task")
+    task = commands.add_parser(
+        "task", help="submit a natural-language request to the Project Orchestrator"
+    )
     _add_connection_arguments(task, suppress_defaults=True)
     task.add_argument("text", help="task text sent as a human_message Event")
     task.add_argument("--source-key", default=None, help="stable external id for deduplication")
+
+    project = commands.add_parser(
+        "project", help="route a request through the Project Orchestrator"
+    )
+    _add_connection_arguments(project, suppress_defaults=True)
+    project.add_argument("text", help="what you want done, in your own words")
+    project.add_argument(
+        "--priority", type=int, default=0, help="how urgent this is (higher runs first)"
+    )
+    project.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help="report as soon as the agent has taken the work, without waiting it out",
+    )
+    project.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=1800.0,
+        help="how long to watch the project before reporting (default: 1800)",
+    )
+    project.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     event = commands.add_parser("event", help="submit an arbitrary Event")
     _add_connection_arguments(event, suppress_defaults=True)
@@ -180,26 +268,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_payload_arguments(event)
     event.add_argument("--source-key", default=None, help="stable external id for deduplication")
 
+    config = commands.add_parser(
+        "config", help="show the resolved configuration, grouped by what it is for"
+    )
+    config.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     status = commands.add_parser("status", help="show durable work and process status")
     _add_connection_arguments(status, suppress_defaults=True)
     status.add_argument("--limit", type=_positive_int, default=10, help="recent rows to show")
     status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
-    reviews = commands.add_parser("reviews", help="list pending human reviews")
-    _add_connection_arguments(reviews, suppress_defaults=True)
-    reviews.add_argument("--json", action="store_true", help="emit machine-readable JSON")
-
-    review = commands.add_parser("review", help="approve, reject, or modify a pending review")
-    _add_connection_arguments(review, suppress_defaults=True)
-    review.add_argument("review_id", help="id shown by 'nexus-seed reviews'")
-    review.add_argument("decision", help="usually approve, reject, or modify")
-    _add_payload_arguments(review, label="additional review payload")
-    review.add_argument("--source-key", default=None, help="stable external id for deduplication")
-
-    control = commands.add_parser("control", help="execute an explicit Phase 5G slash command")
-    _add_connection_arguments(control, suppress_defaults=True)
-    control.add_argument("text", help="for example: /status or /pause <work-id>")
-    control.add_argument("--idempotency-key", default=None, help="stable command delivery id")
     return parser
 
 
@@ -278,13 +356,18 @@ async def run(args: argparse.Namespace) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     database_path = settings.data_dir / "nexus_seed.db"
+    if command == "config":
+        report = build_report(args.env_file)
+        print(
+            json.dumps(report, ensure_ascii=False, indent=2)
+            if args.json
+            else format_report(report),
+            end="" if not args.json else "\n",
+        )
+        return 0
     if command == "status":
         report = read_status(database_path, limit=args.limit)
         _print_operational_status(report, as_json=args.json)
-        return 0
-    if command == "reviews":
-        reviews = read_pending_reviews(database_path)
-        _print_reviews(reviews, as_json=args.json)
         return 0
     if command == "task":
         result = await asyncio.to_thread(
@@ -298,6 +381,8 @@ async def run(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+    if command == "project":
+        return await _run_project(args, settings)
     if command == "event":
         payload = _read_payload(args)
         result = await asyncio.to_thread(
@@ -311,37 +396,24 @@ async def run(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    if command == "review":
-        review = resolve_pending_review(database_path, args.review_id)
-        payload = build_review_payload(review, args.decision, _read_payload(args))
-        result = await asyncio.to_thread(
-            submit_webhook_event,
-            host=settings.host,
-            port=settings.port,
-            token=settings.webhook_token,
-            event_type=review.event_type,
-            payload=payload,
-            source_event_key=args.source_key,
-        )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    if command == "control":
-        result = await asyncio.to_thread(
-            submit_control_command,
-            host=settings.host,
-            port=settings.port,
-            token=settings.webhook_token,
-            command=args.text,
-            idempotency_key=args.idempotency_key,
-        )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result.get("status") == "EXECUTED" else 1
-
     runtime = build_runtime(settings, env_file=args.env_file)
+    orchestrator = getattr(runtime, "project_orchestrator", None)
+    knowledge_loop = getattr(runtime, "knowledge_loop", None)
     server: WebhookServer | None = None
     try:
         await runtime.run_pending()
         await runtime.tick()
+        if orchestrator is not None:
+            # Recovery for Projects is the same loop that runs them: whatever an
+            # Agent did while NEXUS SEED was down is picked up here.
+            await orchestrator.reconcile()
+        if knowledge_loop is not None:
+            if runtime.observation_sources is not None:
+                await runtime.observation_sources.poll_due()
+            await knowledge_loop.start_file_observer(
+                poll_interval=settings.knowledge_poll_seconds
+            )
+            await knowledge_loop.reconcile()
         if args.check_llm:
             return await _check_llm(runtime)
         if args.once:
@@ -349,18 +421,31 @@ async def run(args: argparse.Namespace) -> int:
             return 0
 
         ingress = WebhookIngress(runtime.ingress, token=settings.webhook_token)
+        cockpit = (
+            CockpitService(
+                runtime,
+                master_id=settings.operator_id,
+            )
+            if settings.cockpit_enabled
+            else None
+        )
         server = await WebhookServer(
             ingress,
             host=settings.host,
             port=settings.port,
-            console=runtime.console,
-            control_identity_id=settings.control_identity_id,
+            cockpit=cockpit,
         ).start()
         _print_started(runtime, settings, server.bound_port)
 
         while True:
             await asyncio.sleep(settings.tick_seconds)
             await runtime.tick()
+            if orchestrator is not None:
+                await orchestrator.reconcile()
+            if knowledge_loop is not None:
+                if runtime.observation_sources is not None:
+                    await runtime.observation_sources.poll_due()
+                await knowledge_loop.reconcile()
     finally:
         if server is not None:
             await server.stop()
@@ -411,6 +496,82 @@ def _read_payload(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+async def _run_project(args: argparse.Namespace, settings: AppSettings) -> int:
+    """Route one request through the Project Orchestrator and report where it got.
+
+    The explicit door into the orchestrator, so by default it watches the
+    Project through rather than reporting "accepted" — pass ``--no-wait`` for
+    the same hand-off a resident NEXUS SEED does.  Either way the Project, its
+    Agent and the audited A2A channel are written to SQLite as they change, so
+    interrupting the wait loses the report, never the project.
+    """
+    _validate_data_dir(settings.data_dir)
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    orchestrator = build_orchestrator(
+        settings.data_dir / "nexus_seed.db", env_file=args.env_file
+    )
+    try:
+        decision, project = await orchestrator.submit(args.text, priority=args.priority)
+        if project is not None and args.wait:
+            project = await orchestrator.settle(project.id, timeout=args.wait_seconds)
+        agent = (
+            orchestrator.agents.for_project(project.id) if project is not None else None
+        )
+    finally:
+        orchestrator.close()
+    _print_project(decision, project, agent, as_json=args.json)
+    return 0
+
+
+def _print_project(
+    decision: RoutingDecision,
+    project: Project | None,
+    agent: Agent | None,
+    *,
+    as_json: bool,
+) -> None:
+    """Show what the orchestrator decided and where the project stands now."""
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "routing": decision.to_dict(),
+                    "project": project.to_dict() if project else None,
+                    "agent": agent.to_dict() if agent else None,
+                    "assignment": (
+                        agent.assignment.to_dict()
+                        if agent is not None and agent.assignment is not None
+                        else None
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    print(f"Routing: {decision.action.value}")
+    if project is None:
+        print(f"Reason:  {decision.reason or 'no project work was needed'}")
+        return
+    print(f"Project: {project.id}")
+    print(f"Agent:   {agent.agent_id if agent else '(none assigned)'}")
+    print(f"Status:  {project.status.value}")
+    print(f"Goal:    {project.goal}")
+    if project.summary:
+        print(f"Summary: {project.summary}")
+    for blocker in project.current_blockers:
+        print(f"Blocked: {blocker['kind']} - {blocker['reason']}")
+    assignment = agent.assignment if agent else None
+    if assignment is not None and assignment.status is AssignmentStatus.DISPATCHED:
+        print("Working:  the agent has the project and has not answered yet")
+    unavailable = (agent.metadata.get("unavailable") if agent else None) or {}
+    if unavailable and (assignment is None or assignment.is_open):
+        # The Project is untouched and still delegable; the runtime was not there.
+        print(f"Agent unavailable: {unavailable.get('reason', '')}")
+        print("The project keeps its state and the hand-over is retried.")
+
+
 def _print_operational_status(report: dict[str, Any], *, as_json: bool) -> None:
     """Print a status snapshot for people or shell tooling."""
 
@@ -427,54 +588,32 @@ def _print_operational_status(report: dict[str, Any], *, as_json: bool) -> None:
     print(f"  events: {counts['events']}")
     print(f"  continuations: {counts['continuations']}")
     print(f"  pending reviews: {counts['pending_reviews']}")
-    _print_count_line("work", report["work_by_status"])
-    _print_count_line("processes", report["processes_by_status"])
+    print(f"  projects: {counts['projects']}")
+    print(f"  agents: {counts['agents']}")
+    print(f"  knowledge revisions: {counts['knowledge_revisions']}")
+    _print_count_line("projects", report["projects_by_status"])
+    _print_count_line("agents", report["agents_by_status"])
     _print_count_line("deliveries", report["deliveries_by_status"])
-    _print_count_line("provider calls", report["provider_invocations_by_status"])
-    if report["recent_work"]:
-        print("Recent work:")
-        for work in report["recent_work"]:
+    _print_count_line("knowledge", report["knowledge_by_kind"])
+    if report["recent_projects"]:
+        print("Recent projects:")
+        for project in report["recent_projects"]:
             print(
-                f"  {work['id']}  {work['status']}  {work['work_type']}"
-                f"  priority={work['priority']}"
+                f"  {project['id']}  {project['status']}  {project['goal']}"
+                f"  priority={project['priority']}"
             )
-    if report["recent_processes"]:
-        print("Recent processes:")
-        for process in report["recent_processes"]:
-            error = f"  error={process['last_error']}" if process["last_error"] else ""
+    if report["recent_agents"]:
+        print("Recent agents:")
+        for agent in report["recent_agents"]:
             print(
-                f"  {process['id']}  {process['status']}  "
-                f"{process['definition_name']}@{process['definition_version']}{error}"
+                f"  {agent['agent_id']}  {agent['status']}  "
+                f"project={agent['project_id']} runtime={agent['runtime']}"
             )
 
 
 def _print_count_line(label: str, counts: dict[str, int]) -> None:
     rendered = ", ".join(f"{key}={value}" for key, value in counts.items()) or "none"
     print(f"  {label}: {rendered}")
-
-
-def _print_reviews(reviews: list, *, as_json: bool) -> None:
-    """Print durable review waiters without exposing unrelated state."""
-
-    if as_json:
-        print(
-            json.dumps(
-                {"count": len(reviews), "reviews": [item.to_dict() for item in reviews]},
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return
-    if not reviews:
-        print("No pending human reviews.")
-        return
-    print(f"Pending human reviews: {len(reviews)}")
-    for review in reviews:
-        print(
-            f"  {review.review_id}  {review.event_type}  "
-            f"process={review.process_definition}  since={review.created_at}"
-        )
-    print("Decide with: nexus-seed review <review-id> approve|reject")
 
 
 async def _check_llm(runtime: Runtime) -> int:
@@ -524,13 +663,20 @@ async def _check_llm(runtime: Runtime) -> int:
 
 
 def _status(runtime: Runtime, settings: AppSettings) -> dict:
+    orchestrator = runtime.project_orchestrator
+    knowledge_loop = runtime.knowledge_loop
+    projects = orchestrator.projects.all() if orchestrator is not None else []
+    agents = orchestrator.agent_store.all() if orchestrator is not None else []
+    knowledge = knowledge_loop.ledger.all_heads() if knowledge_loop is not None else []
     return {
         "status": "idle",
         "database": str(settings.data_dir / "nexus_seed.db"),
         "llm_enabled": "llm" in runtime.backends,
         "delivery": runtime.get_delivery_health(),
-        "work_requirements": len(runtime.get_work_requirements()),
-        "capability_gaps": len(runtime.get_open_capability_gaps()),
+        "projects": len(projects),
+        "agents": len(agents),
+        "knowledge_items": len(knowledge),
+        "pending_reviews": sum(item.status == "PENDING_REVIEW" for item in knowledge),
     }
 
 
@@ -545,9 +691,16 @@ def _print_started(runtime: Runtime, settings: AppSettings, bound_port: int) -> 
     print("NEXUS SEED is running")
     print(f"  webhook: http://{settings.host}:{bound_port}/ingress/webhook")
     print(f"  control: http://{settings.host}:{bound_port}/control")
+    if settings.cockpit_enabled:
+        print(f"  cockpit: http://{settings.host}:{bound_port}/cockpit")
     print(f"  token:   {token_state}")
     print(f"  database: {settings.data_dir / 'nexus_seed.db'}")
     print(f"  LLM:     {llm_state}")
+    orchestrator = runtime.project_orchestrator
+    print(
+        "  projects: nexus-seed task goes to the Project Orchestrator "
+        f"({orchestrator.agent_runtime.name} agents)"
+    )
     print("Press Ctrl+C to stop. Durable work resumes on the next start.")
 
 
@@ -591,9 +744,42 @@ def _read_float(name: str, default: float, *, minimum: float) -> float:
     return value
 
 
+def _read_bool(name: str, default: bool) -> bool:
+    """Read a strict boolean environment setting."""
+
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ApplicationConfigurationError(f"{name} must be true or false")
+
+
+def _tolerate_unprintable_characters() -> None:
+    """Never let a console codepage turn an Agent's own words into a crash.
+
+    Project summaries come from a Project Agent, so they can contain anything a
+    model wrote.  The encoding itself is left alone — only the failure mode
+    changes, from raising to substituting.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - unusual stream
+            logger.debug("could not relax encoding errors on %r", stream)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Console entry point for the runnable application."""
 
+    _tolerate_unprintable_characters()
     args = build_parser().parse_args(argv)
     try:
         return asyncio.run(run(args))
@@ -604,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
         ApplicationConfigurationError,
         LLMConfigurationError,
         OperationalCommandError,
+        ProjectAgentConfigurationError,
         OSError,
     ) as exc:
         print(f"configuration/startup error: {exc}", file=sys.stderr)

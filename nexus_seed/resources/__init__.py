@@ -13,13 +13,17 @@ from .extractors import (
     STRUCTURE,
     TEXT,
     CSVExtractor,
+    DocxExtractor,
     ExtractionError,
     Extractor,
     ExtractorRegistry,
     JSONExtractor,
     PlainTextExtractor,
+    PptxExtractor,
+    XlsxExtractor,
     default_registry,
     resource_type_for,
+    slide_texts,
 )
 from .models import (
     Resource,
@@ -39,6 +43,7 @@ from .trace import (
 
 __all__ = [
     "CSVExtractor",
+    "DocxExtractor",
     "ExtractionError",
     "Extractor",
     "ExtractorRegistry",
@@ -46,6 +51,7 @@ __all__ = [
     "JSONExtractor",
     "METADATA",
     "PlainTextExtractor",
+    "PptxExtractor",
     "RepresentationTrace",
     "Resource",
     "ResourceRepresentation",
@@ -56,11 +62,13 @@ __all__ = [
     "STRUCTURE",
     "ScopeViolation",
     "TEXT",
+    "XlsxExtractor",
     "content_hash",
     "default_registry",
     "file_uri",
     "get_representation_trace",
     "get_resource_trace",
     "resource_type_for",
+    "slide_texts",
     "text_hash",
 ]

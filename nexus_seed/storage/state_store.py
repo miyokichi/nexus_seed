@@ -234,6 +234,14 @@ class StateStore:
         )
         return self._row_to_history(row) if row else None
 
+    def all_history(self) -> list[StateHistoryEntry]:
+        """Return the append-only World State history in durable creation order."""
+
+        rows = self.db.query(
+            "SELECT * FROM world_state_history ORDER BY created_at ASC, id ASC"
+        )
+        return [self._row_to_history(row) for row in rows]
+
     # --- projection rebuild ------------------------------------------------
 
     def rebuild_current_state(self) -> int:

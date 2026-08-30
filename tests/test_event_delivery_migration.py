@@ -11,13 +11,53 @@ guarantee begins with the events Phase 3F itself persists.
 
 from __future__ import annotations
 
+import sqlite3
+
 from delivery_helpers import RECORDED, instances_named, ping, register_noter, status_of
 
 from nexus_seed.core.event import Event
+from nexus_seed.core.process import ProcessDefinition
 from nexus_seed.delivery.models import EventDeliveryStatus
 from nexus_seed.runtime.runtime import Runtime
 from nexus_seed.storage.database import Database
 from nexus_seed.storage.event_store import EventStore
+
+
+def _table_names(db: Database) -> set[str]:
+    return {
+        row["name"]
+        for row in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+
+
+def test_a_new_database_contains_only_the_active_runtime_schema(tmp_path):
+    db = Database(tmp_path / "new.db")
+
+    retired = {
+        "action_proposals",
+        "capabilities",
+        "execution_providers",
+        "process_plans",
+        "work_requirements",
+    }
+    assert _table_names(db).isdisjoint(retired)
+    db.close()
+
+
+def test_opening_an_old_database_preserves_retired_history(tmp_path):
+    """Cleanup stops using old tables but never destroys user history."""
+    path = tmp_path / "old-with-work.db"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE work_requirements (id TEXT PRIMARY KEY, payload TEXT)")
+    connection.execute("INSERT INTO work_requirements VALUES ('old-work', 'kept')")
+    connection.commit()
+    connection.close()
+
+    db = Database(path)
+    row = db.query_one("SELECT * FROM work_requirements WHERE id = 'old-work'")
+    assert row is not None
+    assert row["payload"] == "kept"
+    db.close()
 
 
 def legacy_database(tmp_path, name="legacy.db", count=3):
@@ -81,6 +121,31 @@ async def test_new_events_after_the_migration_are_fully_guaranteed(tmp_path):
     assert status_of(runtime2, fresh.id) == "DELIVERED"
     assert len(instances_named(runtime2, "noter")) == 1
     assert len(RECORDED) == 1
+    runtime2.close()
+
+
+async def test_a_persisted_definition_without_an_active_handler_is_historical(tmp_path):
+    """Removed processes remain auditable but cannot be started after upgrade."""
+    path = tmp_path / "retired-process.db"
+    runtime = Runtime(path)
+    runtime.process_store.upsert_definition(
+        ProcessDefinition(
+            name="retired_worker",
+            version="1",
+            handler="retired_worker",
+            trigger_event_types=("old_work_requested",),
+        )
+    )
+    runtime.close()
+
+    runtime2 = Runtime(path)
+    await runtime2.submit_event(Event("old_work_requested", "test", {}))
+
+    assert [
+        instance
+        for instance in runtime2.process_store.all_instances()
+        if instance.definition_name == "retired_worker"
+    ] == []
     runtime2.close()
 
 

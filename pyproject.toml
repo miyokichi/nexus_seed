@@ -1,22 +1,30 @@
 [project]
 name = "nexus-seed"
 version = "0.1.0"
-description = "A durable event-driven runtime with safe autonomous capability acquisition."
+description = "A durable Project Orchestrator with a provenance-aware Knowledge Runtime."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-dependencies = []
+dependencies = [
+    "json-repair>=0.61.7,<1",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+ingest = [
+    "python-pptx>=0.6.21",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+]
 
 [project.scripts]
 nexus-seed = "nexus_seed.app:main"
-nexus-seed-demo = "nexus_seed.demo:main"
-nexus-seed-ingress = "nexus_seed.ingress_cli:main"
+nexus-seed-mvp = "nexus_seed.mvp.cli:main"
+nexus-seed-knowledge-ingest-pptx = "nexus_seed.knowledge.ingest_pptx:main"
+nexus-seed-knowledge = "nexus_seed.knowledge_cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -28,3 +36,6 @@ packages = ["nexus_seed"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: needs an external Project Agent running (see tests/integration)",
+]

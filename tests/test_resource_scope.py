@@ -14,7 +14,6 @@ import pytest
 from resource_helpers import resource_runtime, watched_tree
 
 from nexus_seed.adapters.file_watch import LocalFileAdapter
-from nexus_seed.backends import LocalFileActionBackend
 from nexus_seed.resources.scope import ResourceScope, ScopeViolation
 from nexus_seed.runtime.runtime import Runtime
 
@@ -73,17 +72,6 @@ def test_an_empty_scope_permits_nothing(tmp_path):
     scope = ResourceScope()
     assert not scope.can_read(tmp_path / "anything")
     assert not scope.can_write(tmp_path / "anything")
-
-
-# --- the two boundaries now share it ---------------------------------------
-
-
-def test_the_action_backend_uses_the_shared_scope(tmp_path):
-    backend = LocalFileActionBackend(tmp_path / "out")
-    assert isinstance(backend.scope, ResourceScope)
-    assert backend.scope.can_write(tmp_path / "out" / "a.txt")
-    with pytest.raises(ScopeViolation):
-        backend.resolve("../escape.txt")
 
 
 def test_the_file_adapter_watches_read_only(tmp_path):

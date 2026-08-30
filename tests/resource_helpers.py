@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 from nexus_seed.adapters.file_watch import LocalFileAdapter
-from nexus_seed.backends import LocalFileActionBackend
 from nexus_seed.ingress.service import IngressService
-from nexus_seed.processes.actions import bootstrap_actions
 from nexus_seed.processes.resources import bootstrap_observer, bootstrap_resources
-from nexus_seed.processes.semantic import bootstrap_semantic
-from nexus_seed.processes.work_intelligence import bootstrap_work_intelligence
 from nexus_seed.resources.scope import ResourceScope
 
 #: A document whose text is directly readable as world facts.
@@ -31,23 +27,6 @@ def resource_runtime(runtime, watch_root, *, observer: bool = False):
     adapter = LocalFileAdapter(watch_root)
     runtime.register_adapter(adapter)
     return adapter
-
-
-def full_stack(runtime, watch_root, action_root=None, *, observer: bool = False):
-    """Resource pipeline + semantic + work + action, over one watched tree.
-
-    Returns ``(adapter, action_backend)``.
-    """
-    adapter = resource_runtime(runtime, watch_root, observer=observer)
-    bootstrap_semantic(runtime)
-    bootstrap_work_intelligence(runtime)
-    bootstrap_actions(runtime)
-    backend = None
-    if action_root is not None:
-        backend = LocalFileActionBackend(action_root)
-        runtime.register_backend("local_file_action", backend)
-        runtime.register_backend("local_file", backend)
-    return adapter, backend
 
 
 def ingress(runtime) -> IngressService:

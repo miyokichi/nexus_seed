@@ -22,9 +22,6 @@ from ..core.continuation import Continuation
 from ..core.event import Event, utcnow
 from ..core.process import ProcessInstance
 from ..core.state import StateEntry
-from ..world.observation import Observation
-from ..world.state_delta import StateDelta
-from ..work.work_requirement import WorkRequirement
 from ..resources.models import Resource, ResourceRepresentation, ResourceVersion
 
 
@@ -71,8 +68,7 @@ class ProcessContextView:
         process_instance: The activating instance (always present).
         trigger_event: The triggering/resuming event, if any.
         world_state: ``{entity: {attribute: StateEntry}}`` (only declared ones).
-        recent_events / observations / state_deltas: selected history items.
-        work_requirements: work relevant to this process.
+        recent_events: selected Event history.
         parent_process / child_processes / child_results: process-tree slices.
         continuation: the active continuation, if requested.
         metadata: item counts + approximate serialized size.
@@ -83,9 +79,6 @@ class ProcessContextView:
     trigger_event: Event | None = None
     world_state: dict[str, dict[str, StateEntry]] = field(default_factory=dict)
     recent_events: list[Event] = field(default_factory=list)
-    observations: list[Observation] = field(default_factory=list)
-    state_deltas: list[StateDelta] = field(default_factory=list)
-    work_requirements: list[WorkRequirement] = field(default_factory=list)
     parent_process: ProcessInstance | None = None
     child_processes: list[ProcessInstance] = field(default_factory=list)
     child_results: list[dict] = field(default_factory=list)
@@ -118,16 +111,6 @@ class ProcessContextView:
         """Return the :class:`StateEntry` for a fact present in this view."""
         return self.world_state.get(entity, {}).get(attribute)
 
-    @property
-    def current_work_requirement(self) -> WorkRequirement | None:
-        """Return the WorkRequirement this process fulfils, if present."""
-        target = self.process_instance.work_requirement_id
-        if target is not None:
-            for requirement in self.work_requirements:
-                if requirement.id == target:
-                    return requirement
-        return self.work_requirements[0] if self.work_requirements else None
-
     # --- serialization (for ContextSnapshot audit) ------------------------
 
     def to_snapshot_dict(self) -> dict:
@@ -149,19 +132,6 @@ class ProcessContextView:
             "recent_events": [
                 {"id": str(e.id), "type": e.type, "occurred_at": e.occurred_at.isoformat()}
                 for e in self.recent_events
-            ],
-            "observations": [
-                {"id": str(o.id), "subject": o.subject, "predicate": o.predicate}
-                for o in self.observations
-            ],
-            "state_deltas": [
-                {"id": str(d.id), "entity": d.entity, "attribute": d.attribute,
-                 "new_value": d.new_value}
-                for d in self.state_deltas
-            ],
-            "work_requirements": [
-                {"id": str(w.id), "work_key": w.work_key, "status": w.status.value}
-                for w in self.work_requirements
             ],
             "parent_process_id": str(self.parent_process.id) if self.parent_process else None,
             "child_process_ids": [str(c.id) for c in self.child_processes],

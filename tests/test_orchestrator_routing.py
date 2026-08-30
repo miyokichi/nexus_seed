@@ -1,0 +1,156 @@
+"""Cases 1 and 2: a new Goal becomes a Project; a follow-up joins an existing one."""
+
+from __future__ import annotations
+
+from nexus_seed.backends import FakeLLMBackend, proposal_response
+from nexus_seed.orchestrator import (
+    ROUTING_LIST_LIMIT,
+    ROUTING_TEXT_LIMIT,
+    InProcessAgentRuntime,
+    ProjectOrchestrator,
+    ProjectStatus,
+    RoutingAction,
+)
+
+
+def decision(action, **fields):
+    payload = {"action": action, "reason": "test", "confidence": 0.9, **fields}
+    return proposal_response(payload)
+
+
+async def test_case1_new_goal_creates_project_and_agent(tmp_path):
+    backend = FakeLLMBackend(
+        script=[decision("CREATE_PROJECT", proposed_goal="7月の売上低下原因を調べる")]
+    )
+    runtime = InProcessAgentRuntime()
+    orch = ProjectOrchestrator(tmp_path / "o.db", agent_runtime=runtime, backend=backend)
+
+    result = await orch.handle_request("7月の売上低下原因を調べて")
+
+    assert result.action is RoutingAction.CREATE_PROJECT
+    projects = orch.projects.all()
+    assert len(projects) == 1
+    project = projects[0]
+    assert project.goal == "7月の売上低下原因を調べる"
+    # An Agent was assigned and the whole Goal delegated to it.
+    assert project.assigned_agent_id is not None
+    assert project.status is ProjectStatus.ACTIVE
+    agent = orch.agents.for_project(project.id)
+    assert agent is not None and agent.agent_id == project.assigned_agent_id
+
+    delivered = [envelope for _, envelope in runtime.delivered]
+    assert delivered == [
+        {
+            "kind": "ASSIGN_GOAL",
+            "project_id": project.id,
+            "goal": project.goal,
+            "context": project.context,
+            "priority": 0,
+        }
+    ]
+    orch.close()
+
+
+async def test_case2_followup_joins_existing_project(tmp_path):
+    runtime = InProcessAgentRuntime()
+    backend = FakeLLMBackend()
+    orch = ProjectOrchestrator(tmp_path / "o.db", agent_runtime=runtime, backend=backend)
+
+    backend.script = [decision("CREATE_PROJECT", proposed_goal="7月の売上低下原因を調べる")]
+    await orch.handle_request("7月の売上低下原因を調べて")
+    project = orch.projects.all()[0]
+    agent_id = project.assigned_agent_id
+
+    # "地域別でも見て" is more work for the same goal, not a new project.
+    backend.script = [
+        decision(
+            "CREATE_PROJECT", proposed_goal="7月の売上低下原因を調べる"
+        ),
+        decision(
+            "ADD_TASK_TO_PROJECT",
+            target_project_id=project.id,
+            proposed_task="地域別でも分析する",
+        ),
+    ]
+    result, _ = await orch.submit(
+        "地域別でも見て",
+        project_context={
+            "knowledge_proposal_id": "proposal-1",
+            "evidence_ids": ["evidence-1"],
+        },
+    )
+
+    assert result.action is RoutingAction.ADD_TASK_TO_PROJECT
+    # No second project, and the same Agent keeps the work.
+    assert len(orch.projects.all()) == 1
+    updated = orch.projects.get(project.id)
+    assert [task["description"] for task in updated.tasks] == ["地域別でも分析する"]
+    assert updated.tasks[0]["context"] == {
+        "knowledge_proposal_id": "proposal-1",
+        "evidence_ids": ["evidence-1"],
+    }
+    assert updated.assigned_agent_id == agent_id
+
+    envelopes = [envelope for _, envelope in runtime.delivered]
+    kinds = [envelope["kind"] for envelope in envelopes]
+    assert kinds == ["ASSIGN_GOAL", "ADD_TASK"]
+    assert envelopes[-1]["task"]["context"]["evidence_ids"] == ["evidence-1"]
+    orch.close()
+
+
+async def test_unknown_target_project_falls_back_to_new_project(tmp_path):
+    backend = FakeLLMBackend(
+        default=decision("ADD_TASK_TO_PROJECT", target_project_id="project-does-not-exist")
+    )
+    orch = ProjectOrchestrator(
+        tmp_path / "o.db", agent_runtime=InProcessAgentRuntime(), backend=backend
+    )
+
+    result = await orch.handle_request("何かして")
+
+    # A decision naming a project that does not exist is not acted on as-is.
+    assert result.action is RoutingAction.CREATE_PROJECT
+    assert "unknown project" in result.reason
+    assert len(orch.projects.all()) == 1
+    orch.close()
+
+
+async def test_router_without_backend_creates_project(tmp_path):
+    orch = ProjectOrchestrator(tmp_path / "o.db", agent_runtime=InProcessAgentRuntime())
+
+    result = await orch.handle_request("調べておいて")
+
+    assert result.action is RoutingAction.CREATE_PROJECT
+    assert result.confidence == 0.0
+    assert orch.projects.all()[0].goal == "調べておいて"
+    orch.close()
+
+
+async def test_the_routing_context_is_compressed(tmp_path):
+    """An Agent's whole report must not become the routing prompt.
+
+    A summary grows with the work; the routing prompt must not, or the router
+    times out and the request is decided by its fallback instead of by meaning.
+    """
+    orch = ProjectOrchestrator(tmp_path / "o.db", agent_runtime=InProcessAgentRuntime())
+    project = orch.projects.create("g" * 900)
+    orch.projects.set_summary(project, "s" * 2000)
+    orch.projects.block(project, kind="NEED_RESOURCE", reason="r" * 2000)
+    for index in range(9):
+        orch.projects.add_task(project, f"task {index} " + "t" * 900)
+
+    [offered] = orch.context.build("次はどうする？").active_projects
+
+    assert len(offered["goal"]) <= ROUTING_TEXT_LIMIT
+    assert len(offered["summary"]) <= ROUTING_TEXT_LIMIT
+    assert offered["summary"].endswith("…")
+    assert len(offered["blockers"]) == 1
+    assert len(offered["blockers"][0]) <= ROUTING_TEXT_LIMIT
+    # Only the most recent few tasks, each clipped.
+    assert len(offered["open_tasks"]) == ROUTING_LIST_LIMIT
+    assert offered["open_tasks"][-1].startswith("task 8")
+    assert all(len(task) <= ROUTING_TEXT_LIMIT for task in offered["open_tasks"])
+
+    # The record itself keeps everything; only the prompt is shortened.
+    assert len(orch.projects.get(project.id).summary) == 2000
+    orch.close()

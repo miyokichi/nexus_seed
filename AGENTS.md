@@ -34,13 +34,15 @@ This file is guidance for any agent (human or AI) working on this repository.
   build results with `ctx.complete(...)`, `ctx.suspend(...)`, `ctx.fail(...)`.
 - Emit events via `ctx.new_event(...)` so `correlation_id` / `causation_id`
   chains stay intact.
-- Keep dependencies at zero for the library; test-only deps go in `[dev]`.
+- Keep runtime dependencies minimal. `json-repair` is the sole runtime
+  dependency and is used only after strict parsing of LLM JSON fails;
+  test-only deps go in `[dev]`.
 
 ## Testing
 
 ```bash
 pytest
-python -m nexus_seed.demo
+python -m nexus_seed.app --once
 ```
 
 Tests must be independent and use a temp SQLite database (`tmp_path`).
@@ -210,7 +212,7 @@ Python application.
 - Atomic: receipt + Event + checkpoint commit in one transaction. Delivery into
   the Runtime happens *after* that commit, so a handler blowing up leaves a
   durable, already-deduplicated event rather than a lost occurrence.
-- Three adapters: `ManualAdapter` (+ `python -m nexus_seed.ingress_cli`),
+- Three adapters: `ManualAdapter` (the retired standalone CLI is no longer shipped),
   `WebhookAdapter`/`WebhookIngress`/`WebhookServer` (stdlib asyncio HTTP, shared
   -secret auth, duplicate → 200 + `duplicate: true`), `LocalFileAdapter`
   (sha256 fingerprints, per-path checkpoints, `allowed_root` sandbox that
@@ -919,22 +921,1072 @@ compensation. It closes three things Phase 4B left unsafe to build on before
 - **152.** Pause/resume recompiles fresh Context.
 - **153.** Every control Command audits issuer, request, validation and result.
 
+## Done in Phase 6 (Persistent Being)
+
+- Phase 6 is a default-on, feature-gated composition of ordinary Processes and
+  existing stores; it adds no primitive, Runtime replacement, agent loop, or
+  parallel Memory. `NEXUS_SEED_PHASE6_ENABLED=false` performs no Phase 6
+  registration and appends no wake Event, preserving Phase 5G behavior.
+- Self and Master are World State projections. Self capabilities are projected
+  live from `CapabilityRegistry`, active Goals from the Phase 5G Goal store,
+  and Intentions from World State; none are copied into a competing self store.
+  Every Master claim retains `OBSERVED`, `INFERRED`, or `CONFIRMED`, confidence,
+  and source Event.
+- `attention_evaluation` is a finite ordinary Process. Its deterministic
+  result is `RELEVANT`, `IGNORE`, `INVESTIGATE`, or `RECONSIDER`; IGNORE is a
+  normal completion and creates no Work. Internal Phase 6 projection changes
+  are ignored so the loop cannot feed itself.
+- Intention is a long-lived `intention:<id>.record` World State schema beneath
+  the existing Goal. Its id is deterministic from Goal id and its lifecycle is
+  `ACTIVE / WAITING / SATISFIED / BLOCKED / ABANDONED`. Phase 5G still owns
+  Goal lifecycle and `evaluate_goal` remains the Goal-gap-to-Work boundary.
+- A Phase 6 Goal with no explicit success criteria is decomposed by the existing
+  `evaluate_goal` Process through a validated proposal Event before concrete
+  Work is created. `advance_human_goal` is a Phase 5G fallback label, never an
+  acquirable Capability. Only concrete missing competences reach Phase 5D.
+- Experience is an `experience_recorded` Event that links existing Event,
+  ContextSnapshot, Goal/Intention/Work, Action and result identities.
+  `get_experience_trace` reconstructs the joined view; there is no Experience
+  table or new Core type. Reflection is a normal Process and writes lessons
+  only through Observation -> StateDelta -> `apply_state_delta`.
+- `existence_wakeup` is appended during enabled application bootstrap only
+  when durable unresolved state exists. Self-initiated activity then uses the
+  existing Work Intelligence, Provider selection, AutonomyPolicy, Grant,
+  ActionProposal, Permission, Risk and Review boundaries. Every chain is
+  finite and returns to the Runtime's normal idle/event-wait state.
+- Phase 6 failures are ordinary isolated activation failures; Phase 5G Control
+  Plane remains usable. Explicit human Commands retain priority and authority
+  over Goal/Work pause, resume and cancellation.
+
+## Runtime invariants (added in Phase 6 — keep them)
+
+- **154.** Self, Master, Attention, Intention and Experience are not Core primitives.
+- **155.** Phase 6 OFF registers nothing and appends nothing; behavior is Phase 5G.
+- **156.** Self and Master are projections over existing durable state, not a new Memory.
+- **157.** Available capabilities are projected from CapabilityRegistry, never copied.
+- **158.** Every Master claim is OBSERVED, INFERRED, or CONFIRMED.
+- **159.** Attention is a finite Process and IGNORE may complete without Work.
+- **160.** Intention is durable World State beneath, and distinct from, an existing Goal.
+- **161.** Goal evaluation remains the only Goal-gap-to-Work path.
+- **162.** Experience is reconstructable from existing Events, State and traces.
+- **163.** Reflection changes state only through existing validation and StateDelta boundaries.
+- **164.** Self-initiated Work and Action never bypass AutonomyPolicy, Grant or Review.
+- **165.** Explicit Control Plane Commands retain priority over self-initiated activity.
+- **166.** The existence loop is event/timer/Continuation-driven and never a busy loop.
+- **167.** Phase 6 restart, retry and delivery reuse existing durability/idempotency guarantees.
+- **168.** A Phase 6 activation failure does not make the Phase 5G Runtime unavailable.
+
+## Done in Human Interface / Cockpit
+
+- Cockpit is an optional Human Interface Layer at `/cockpit`, not a Runtime,
+  primitive, Memory, Goal system, Work system, or Review system.
+- `CockpitService` compiles a read-only snapshot from existing stores, Phase 6
+  projections and trace links. Activity groups causal Event chains and reveals
+  Process names only in drill-down details.
+- Human-readable error text is a presentation paired with, never substituted
+  for, the raw error/audit facts.
+- Capability Assistance joins the existing Goal → Intention → Work → Gap →
+  AcquisitionSession trace. It suppresses human notification while automatic
+  acquisition can progress and aggregates actionable gaps without adding a
+  store or changing acquisition semantics.
+- Every mutation from the UI is an explicit command to the existing Phase 5G
+  `/control` endpoint. Self-question answers become an authorized Command,
+  durable Event, and ordinary Phase 6 StateDelta pipeline.
+- `NEXUS_SEED_COCKPIT_ENABLED=false` removes Cockpit routes. Webhook, Control,
+  Runtime and CLI remain available.
+
+## Human Interface invariants (keep them)
+
+- **169.** Cockpit is a projection/interface layer and adds no Core primitive.
+- **170.** Reading a Cockpit snapshot never writes SQLite or changes Runtime state.
+- **171.** Cockpit Activity groups existing causal records; it is not a new journal.
+- **172.** Human-readable summaries never replace raw trace or audit facts.
+- **173.** Every Cockpit mutation passes through the existing Control Plane.
+- **174.** Cockpit never writes Core or World State directly.
+- **175.** Cockpit failure or disablement does not disable Runtime, CLI, ingress, or Control.
+- **176.** Cockpit authentication reuses the configured HTTP shared-secret boundary.
+- **177.** A capability warning is human-facing only after automatic acquisition needs review or cannot continue.
+- **178.** Capability Assistance actions reuse Control Plane, Review and acquisition boundaries; the UI never resolves a gap directly.
+
+## Done in Project Situation Projection
+
+- `ProjectSituation` is reconstructed from existing Goal, Intention, Work,
+  Event, World State, Process and Continuation/Review records. It has no table,
+  store, Runtime or write path of its own.
+- Association reuses `WorkRequirement.project`, explicit `project_id` /
+  `project` metadata, durable identifiers and causal/provenance links. Unknown
+  ownership is left unknown; no LLM or text similarity assigns membership.
+- `ACTIVE / BLOCKED / NEEDS_ATTENTION / IDLE / COMPLETED` and the short summary
+  are deterministic presentation results over current durable facts.
+- `GET /projects` and `GET /projects/{project_id}/situation` reuse the Cockpit
+  bearer-token boundary. Process/LLM handlers read the same projection through
+  the read-only `RuntimeServices` facade.
+
+## Project Situation invariants (keep them)
+
+- **179.** Project and ProjectSituation are not Core primitives.
+- **180.** Project Situation is a read-only projection; it has no Project store or Runtime.
+- **181.** Project membership requires explicit metadata, an existing identifier, or provenance; LLM inference never establishes it.
+- **182.** Project status and deterministic summary are derived facts and never replace source audit records.
+- **183.** Project projection reads never mutate SQLite, Runtime, Goal, Work, World State or Review state.
+- **184.** Restart reconstructs Project Situation from the same durable source records.
+- **185.** Project HTTP reads reuse authentication and disappear with Cockpit without disabling Runtime.
+
+## Done in Project Chat
+
+- `POST /projects/{project_id}/chat` and `GET /projects/{project_id}/chat`
+  answer questions about one project. The pipeline is
+  `human message + project_id -> ProjectSituation -> chat context -> LLM ->
+  answer`; the LLM never queries SQLite, Runtime state or another project.
+- The context carries exactly the compacted Project Situation, this project's
+  recent chat turns and the question. Raw event payloads and unrelated projects
+  are left out.
+- Read-only means read-only in this phase: no Goal/Intention/Work change, no
+  Action, Replan, Capability Acquisition or Review decision, and no Core State
+  write. A change request is refused deterministically before the LLM sees it;
+  guidance is a later phase.
+- A thread is scoped to one `project_id`. Naming another existing project is
+  answered as out of scope instead of being resolved from that project.
+- Chat lives in `project_chat_threads` / `project_chat_messages`, an append-only
+  journal beside `llm_invocations`. It adds no Core primitive and is never read
+  as a confirmed fact about the world.
+- `ANSWERED`, `READ_ONLY_REFUSED`, `OUT_OF_SCOPE`, `LLM_UNAVAILABLE`,
+  `LLM_FAILED` and `LLM_INVALID` are reported to the interface. Without an LLM,
+  or after unusable output, the answer is a deterministic projection summary
+  labelled as such, and Runtime is unaffected.
+
+## Project Chat invariants (keep them)
+
+- **186.** Project Chat adds no Core primitive and no Runtime of its own.
+- **187.** Project Chat never writes Event, World State, Goal, Intention, Work, Process or Continuation records.
+- **188.** Project Chat executes no Action, Replan, Capability Acquisition or Review decision; state change belongs to the Control Plane.
+- **189.** A Project Chat answer is compiled only from the Project Situation projection, this project's thread and the question.
+- **190.** Project Situation remains the source; a chat answer never changes what it projects.
+- **191.** A thread is scoped to one `project_id` and never resolves another project's records.
+- **192.** Chat history is conversation, never a confirmed world fact.
+- **193.** Every question recompiles the current Project Situation; a thread never answers from a stale one.
+- **194.** LLM absence, failure or malformed output degrades to labelled deterministic facts and leaves Runtime untouched.
+- **195.** Project Chat reuses the Cockpit authentication boundary and disappears with Cockpit without disabling Runtime.
+
+## Done in Goal-Centric Project Lifecycle
+
+- A Project is one root Goal plus the Work that Goal generates. One Work is
+  already a Project; no Project store, Runtime or Core primitive exists.
+- `/goal create` creates the Project with the Goal. The only thing written is
+  the Goal's own `project_id`, derived from the Goal id, so creation, restart
+  and re-evaluation all converge on the same single Project. An explicitly
+  supplied `project_id` is still honoured, so the Goal API is unchanged.
+- `Project.title` / `objective` / lifecycle are read from the root Goal.
+  Nothing about the Goal is copied, so renaming, pausing, resuming or
+  cancelling it through the Control Plane needs no project-side update.
+- Work generated for a Goal carries that `project_id`, and Work reached through
+  its `goal_id` belongs to the same Project. Replanned, restarted and
+  later-discovered Work converge on it; no LLM inference moves Work.
+- `project_status` is a fixed ladder over existing facts:
+  `CANCELLED` > `PAUSED` > `BLOCKED` > `NEEDS_ATTENTION` > `ACTIVE` >
+  `PLANNING` > `COMPLETED` > `IDLE`. The root Goal's lifecycle outranks its
+  Work, and the same facts always give the same status.
+- `ProjectSituation` now leads with `project`, `goal` and `current_intention`,
+  and names its Work `remaining_tasks` / `blocked_tasks` / `completed_tasks`
+  beside the existing fields. Cockpit lists auto-created Projects and opens
+  Goal, Intention, remaining/blocked/completed Work, recent activity and the
+  read-only Project Chat.
+
+## Goal-Centric Project invariants (keep them)
+
+- **196.** A Project is a Goal-rooted projection, not a Core primitive and not a stored entity.
+- **197.** One Goal has exactly one Project, derived from the Goal id and idempotent across restart and re-evaluation.
+- **198.** A Project never copies a Goal, Intention or Work; it references them and reads them.
+- **199.** The root Goal is the source of a Project's title and objective.
+- **200.** A Project has no lifecycle of its own; Goal pause/resume/cancel through the Control Plane is the whole of it.
+- **201.** Project status is derived from existing Goal/Work/Review facts in a fixed priority order.
+- **202.** Work belongs to the Project of the Goal it was generated for; membership is never assigned by inference.
+- **203.** Goals created outside the Control Plane stay unassigned rather than being given a Project at read time.
+
+## Done in Goal-driven integration
+
+- `docs/architecture-inventory.md` places every module in exactly one area of
+  the loop — Goal/Project, World Model, Work Planning, Capability, Execution,
+  Evaluation — plus Runtime Infrastructure and Interface/Adapter, and records
+  what was decided about each unclassified item. Nothing was deleted.
+- The loop was already there and is now proved end to end: Goal creation makes
+  the Project, `evaluate_goal` turns criteria plus World State into Work,
+  `work_matcher` resolves Capability, blocked Work reaches Capability
+  Acquisition, execution goes through the Provider boundary, results become
+  StateDeltas through the ordinary pipeline, and `state_changed` /
+  `work_satisfied` re-evaluate the Goal until the Project completes.
+- Evaluation is not a module: it is `satisfy_work` criteria + `evaluate_goal` +
+  replanning/reconciliation + `project_status`. The inventory says so rather
+  than adding a fourth evaluator.
+- `orchestration/` is the only new code, and it is thin. `get_goal_loop` reads
+  where a Goal stands (`PLANNING`, `EXECUTING`, `ACQUIRING_CAPABILITY`,
+  `HUMAN_REQUIRED`, `BLOCKED`, `EVALUATING`, `ACHIEVED`, `PAUSED`,
+  `CANCELLED`) from the subsystems that own those facts.
+- `request_human_intervention` closes the one real gap: when automatic
+  acquisition stops, it states as `human_intervention_required` what is being
+  pursued, which Task stopped, what Capability is missing, what was tried and
+  what a person can supply. It emits an Event and changes nothing.
+- Agents remain non-primitive: an external Agent is an ExecutionProvider and an
+  internal role is a Process. Self-extension stays part of Capability
+  resolution rather than a second loop.
+
+## Goal-driven integration invariants (keep them)
+
+- **204.** Orchestration coordinates; it never re-implements Goal, World, Work, Capability, Execution or Evaluation logic.
+- **205.** The Goal loop is read from the subsystems that own each fact; it stores nothing of its own.
+- **206.** Reading the loop never writes SQLite or changes Runtime state.
+- **207.** A human-intervention request is an Event stating existing facts; it changes no Work, Goal, Capability or World State.
+- **208.** Event processing and Goal processing are one path: an Event changes the World, the World re-evaluates affected Goals, and Goals produce Work.
+- **209.** Self-extension is part of Capability resolution, not a separate loop, and a failed acquisition ends in a human request rather than unbounded retries.
+- **210.** Agents are Processes or ExecutionProviders; no Agent is a Core primitive.
+
+## Done in External Agent Runtime (A2A provider + Skill loading)
+
+- `A2AAgentAdapter` is a generic ProviderAdapter: it converts one
+  `DelegationRequest` into an A2A `message/send`, polls `tasks/get` to a
+  terminal state (`completed` / `failed` / `canceled`), and converts artifacts
+  back into a `DelegationResult`. It selects no skills, runs no tools and
+  imports nothing from any agent product. No product-specific provider class
+  exists; a different remote agent is a configuration change only.
+- Durability stays here and execution goes there. The adapter keeps no task
+  database: a lost remote task is re-run by the existing Continuation/retry
+  policy. Blocking + polling only — SSE and push notification are not built.
+- Transport failure before the task starts raises
+  `ProviderUnavailableBeforeStart` (so the existing failover rule applies); any
+  failure after it started is a journaled failed attempt. Timeout and
+  `input-required` send a best-effort `tasks/cancel` and then fail. Agent Card
+  problems are provider problems, never a CapabilityGap.
+- Structured output is never guessed. When a definition declares an
+  `output_schema`, it is sent, and a text-only answer fails instead of being
+  parsed or repaired into JSON. Untyped data takes the declared output type
+  only when exactly one is declared; otherwise the ambiguity is an error.
+- `SkillLoader` scans ordered roots and produces a `SkillCatalog`
+  (`get` / `list` / `find_by_capability`). It is not a second durable registry:
+  registration still goes through `SkillImporter` into the Capability registry,
+  a ProcessDefinition and a ProviderBinding. `skill.json` gained `enabled`,
+  `instruction`, `capabilities` shorthand and optional `input_schema` /
+  `output_schema`; unknown manifest fields are rejected rather than ignored.
+- Precedence is positional (project-local > user/global > built-in). A
+  duplicate inside one root is always an error; across roots the first wins and
+  records what it shadows, or `on_duplicate: error` refuses. One malformed
+  package is a reported failure, not a failed startup — unless `strict`.
+- `SkillImporter.import_descriptor` can bind a Skill to an
+  already-registered provider, which is how a cognitive Skill reaches an
+  external agent without ever naming an endpoint. A Skill whose permissions the
+  provider does not declare stays ineligible and says so.
+- `federation_config.py` is application wiring (like `llm_config.py`), reading
+  `NEXUS_SEED_A2A_ENABLED` / `NEXUS_SEED_A2A_CONFIG` / `NEXUS_SEED_SKILL_ROOTS`
+  plus a JSON file of providers, capability→provider bindings and skill roots.
+  URLs and token env-var names live in provider records only.
+- Five starter Skills ship in `skills/`. They state responsibilities, not large
+  prompts, and each one explicitly refuses to name a provider or commit state.
+
+## External Agent Runtime invariants (keep them)
+
+- **211.** Skill / Capability / Provider / Work stay four distinct things: how to think, what can be done, where it runs, what must be done.
+- **212.** A Skill never names an endpoint, model, or a remote runtime's own skills; a remote runtime's advertised skills never establish a Capability here.
+- **213.** NEXUS SEED owns durability; the remote agent owns execution. No second durable task store is added for external work.
+- **214.** External integration is the A2A protocol boundary only — no product-specific import, provider class, REST endpoint or submodule.
+- **215.** Typed output is required or refused, never inferred: a missing structure is a provider failure.
+- **216.** Skill precedence is deterministic and stated; identical names are never resolved arbitrarily.
+- **217.** Loading a Skill never bypasses the permission and installation boundaries that Phase 5E established for imported Skills.
+
+## Done in Project Orchestrator redesign
+
+NEXUS SEED is re-defined as a **Project Orchestrator**, not an execution agent:
+
+```text
+ContextManager -> ProjectRouter -> ProjectManager -> AgentManager -> A2AGateway
+```
+
+- `orchestrator/` is the new Core. `Project`, `Agent`, `ProjectAgentConfig`,
+  `RoutingDecision` and `A2AMessage` are **domain records, not primitives** —
+  the six Core primitives are untouched.
+- A durable `Project` record (`orchestrator_projects`) carries `goal`,
+  `context`, `status`, `priority`, `assigned_agent_id`, `parent_project_id`,
+  `summary`, `blockers`, plus the Tasks attached to it. Status ladder:
+  `CREATED / ACTIVE / BLOCKED / WAITING_HUMAN / COMPLETED / FAILED / CANCELLED`.
+- The pre-existing derived `projects/` projection is unchanged and still
+  answers "what is happening inside this Goal". See
+  `docs/orchestrator-redesign-inventory.md` for why both exist.
+- `InProcessAgentRuntime` keeps every orchestrator test network-free, exactly as
+  `FakeLLMBackend` does for the LLM boundary. `A2AAgentRuntime` is the seam for a
+  real external Agent Runtime and reuses `providers/a2a.py`.
+- Nothing was deleted. Modules that implement *how work gets done* are
+  classified `MOVE_TO_AGENT_RUNTIME` and are simply not called by the new Core.
+
+## Project Orchestrator invariants (keep them)
+
+1. **One Project = one Agent.** Never select an executor per unit of work.
+   `AgentManager.assign_or_spawn` reuses a live Agent before spawning.
+2. **Only NEXUS SEED creates Projects.** `DISCOVERED_NEW_PROJECT` is a report;
+   it goes through the ProjectRouter like any other request.
+3. **The Agent owns the task breakdown.** Do not re-add Goal decomposition,
+   per-work Capability search, or per-work Provider selection to the Core.
+4. **A2A is the only channel** between NEXUS SEED and a Project Agent, and both
+   directions are recorded.
+5. **The router only proposes.** Its decision is schema-checked and validated
+   against the real project list; an unknown `target_project_id` falls back to
+   creating a project rather than burying the request in an unrelated one.
+6. **No backend, no guessing.** Without a reasoning backend the router
+   deterministically creates a project — it never string-matches goals.
+7. **Project Agents are generic.** One `ProjectAgent` contract configured per
+   project; never per-project agent code.
+8. **Restart-safe.** Projects, Agents and A2A history rebuild from SQLite
+   alone.
+
+## Done in External Project Agent (A2A delegation of a whole Project)
+
+`nexus-seed project "<request>"` now runs the full path end to end against a
+real external agent:
+
+```text
+request -> ProjectRouter -> Project -> one Agent -> A2A -> external agent
+        -> PROJECT_STATUS / PROJECT_COMPLETED / NEED_* -> Project state
+```
+
+- `A2AAgentRuntime` is finished and takes a `ProjectAgentTransport`. The
+  orchestrator still knows nothing about HTTP or A2A framing; the wire side is
+  `providers/project_agent.py`, which reuses `A2AClient`, `A2AEndpoint` and the
+  shared `await_task` poll loop rather than adding a second protocol client.
+  `providers/a2a.py` gained `await_task` / `A2ATaskUnfinished` / `task_state`,
+  and `A2AAgentAdapter` now uses them, so there is exactly one poll loop.
+- One delegation is one `message/send` carrying a `PROJECT_ASSIGNMENT` derived
+  from `ProjectAgentConfig` (goal, context, constraints, workspace) plus the
+  reply schema. Nothing about a project is tracked a second time on the
+  transport side.
+- ~~The Skills in `skills/` are offered as contracts (`skill_contracts`).~~
+  Retired: a Project is delegated as a *goal*, not as a method, so the
+  assignment says nothing about how to meet it. The Agent's skills are the
+  Agent's own configuration; `skill_contracts`, `ProjectAgentConfig.
+  available_skills` and `A2AProjectAgentTransport(skills=...)` are gone.
+- `AgentRuntime` gained `attach(config)`: an Agent read back from the database
+  is re-adopted before anything is delegated, so a restart never spawns a second
+  Agent for the same Project. `AgentManager.assign_or_spawn` and
+  `resolve_block` both go through it.
+- Transport failure is separated from Project failure. An unreachable or
+  non-answering agent raises `AgentUnavailable`, which records
+  `metadata["unavailable"]` on the Agent and leaves the Project's status and
+  blockers untouched; only a *working* Agent's `NEED_*` blocks a Project.
+- `orchestrator_config.py` is application wiring (like `llm_config.py` /
+  `federation_config.py`): `NEXUS_SEED_PROJECT_AGENT_RUNTIME` / `_URL` /
+  `_TOKEN_ENV` / `_TIMEOUT_SECONDS` / `NEXUS_SEED_PROJECT_WORKSPACE`, reusing
+  the existing skill-root and token-by-env-var settings.
+- `ProjectOrchestrator.submit()` returns the settled Project next to the
+  decision, for callers (the CLI) that must show where the project ended up.
+  `handle_request()` is unchanged.
+- `nexus-seed task` is untouched. `nexus-seed project` is a separate entry point
+  to the orchestrator and blocks until the Agent answers; everything it changes
+  is written to SQLite as it happens.
+- Tests split by dependency: `InProcessAgentRuntime` for orchestration, a
+  scripted local HTTP server for the A2A boundary, and `tests/integration/`
+  (skipped unless `NEXUS_SEED_PROJECT_AGENT_URL` is set) for a real agent. A
+  plain `pytest` never needs an agent process.
+
+## External Project Agent invariants (keep them)
+
+- **218.** `orchestrator/` never sees HTTP, JSON-RPC or A2A framing; the wire
+  format lives in `providers/` behind `ProjectAgentTransport`.
+- **219.** One poll loop. Anything that sends an A2A message and waits uses
+  `await_task`; no second client, no second set of timeout rules.
+- **220.** Agent unavailability is never an escalation. A transport failure
+  leaves the Project's status and blockers untouched and is retryable; only a
+  working Agent's `NEED_*` blocks a Project.
+- **221.** An Agent's answer is required in contract, never repaired. An answer
+  carrying no known message type is a failed delegation, not a guess.
+- **222.** NEXUS SEED offers Skill contracts and never an order, a plan or a
+  per-work provider choice — the Project Agent decides what applies.
+- **223.** A runtime is always told about an Agent (`spawn` or `attach`) before
+  work is delegated to it, so a restart reuses the recorded Agent.
+- **224.** `pytest` never depends on an external agent process; tests needing
+  one live in `tests/integration/` and skip themselves.
+
+## Done in Project Orchestrator normal operation
+
+The orchestrator stopped being a separate command and became how NEXUS SEED
+handles requests:
+
+```text
+CLI / webhook / connector -> Ingress -> human_message -> route_request_to_project
+   -> ProjectRouter -> Project + Agent -> durable A2A hand-over
+   -> reconcile (tick, and on start) -> COMPLETED / BLOCKED / WAITING_HUMAN
+   -> human follow-up -> same Project, same Agent -> COMPLETED
+```
+
+- `processes/project_orchestration.py` is one ordinary Process behind
+  `NEXUS_SEED_PROJECT_ORCHESTRATOR_ENABLED`, registered exactly the way Phase 6
+  is. Off is a strict no-op. Ingress is untouched: deduplication stays at the
+  boundary (one `source_event_key` is one Event is one activation), so the
+  router holds no idempotency logic. The Process carries the request across and
+  creates nothing itself.
+- Handing over and getting the answer are two steps. `AgentRuntime.deliver`
+  returns a `Dispatch` (what the Agent said now, plus a `handle` to ask about
+  later) and `collect(handle)` asks once — never waits. A Project therefore
+  takes as long as it takes without holding anything open.
+- `AgentAssignment` lives on the Agent record (`metadata["assignment"]`): kind,
+  task id, status, remote handle, attempts, dispatched-at, next-attempt-at. No
+  new table, and no copy of the Project — the envelope is rebuilt from the
+  Project each time, so a re-send carries it as it stands now.
+- `ProjectOrchestrator.reconcile()` is the one loop that moves Projects outside
+  a request: re-adopt, collect, retry, re-hand-over. Recovery is not a separate
+  path — the application calls the same method on start and on every tick.
+- Retry is bounded and widening (5 attempts, doubling to 5 min) and then stops.
+  `UNAVAILABLE` is not retried by reconcile; the next thing a person sends
+  starts a fresh hand-over. A `RemoteWorkLost` answer (A2A `-32001`) is the one
+  case that re-dispatches, because it is proof nothing is still running.
+- Blockers are never deleted. Resolving stamps `resolved_at` / `resolved_by`,
+  `Project.current_blockers` is what is in the way now, and a terminal status
+  resolves rather than clears. A follow-up Task resolves what blocked the
+  Project and the envelope carries that blocker, marked resolved, so the
+  instruction reaches the Agent against what it was stuck on.
+- The router is given BLOCKED and WAITING_HUMAN projects too, and told that a
+  request answering one of them is `ADD_TASK_TO_PROJECT`. Without that, a
+  person's answer becomes a second project beside the one already waiting.
+- Cockpit gained a **Projects** view over `orchestrator_projects` plus a detail
+  route (`/cockpit/api/orchestrator/projects/<id>`) showing the Agent, the
+  blocker history, the audited A2A channel, and its own ask/instruct thread.
+- With the flag on, a `human_message` still goes through the existing
+  interpretation path into World State. The flag adds the Project route; it
+  does not remove perception.
+
+## Project Orchestrator operation invariants (keep them)
+
+- **225.** Requests reach Projects through the existing Ingress and one
+  ordinary Process. No second intake path, and no idempotency logic outside the
+  Ingress boundary.
+- **226.** Accepting a request and finishing it are separate. Nothing waits on
+  an Agent inside a request; what is outstanding is durable.
+- **227.** Recovery is the steady-state loop. `reconcile()` is called on start
+  and on every tick; there is no separate restart path to keep in step.
+- **228.** A hand-over is re-sent only on proof the Agent lost it
+  (`RemoteWorkLost`), never on silence — anything vaguer could run the same
+  work twice.
+- **229.** Retries are bounded and stop. Transport trouble never sets a Project
+  to BLOCKED or FAILED.
+- **230.** Blockers are history, not just control state: resolved, never
+  deleted, and always attributable.
+- **231.** A person's answer goes back to the Project that is waiting for it,
+  with the same Agent — never to a new Project.
+- **232.** ~~Orchestrator Projects and Goal-derived projects are shown apart.~~
+  Retired: Goal is gone, so there is one kind of project and it is shown once. Two
+  different things sharing a word must not share a list.
+## Done in Project Instructions
+
+Each project's chat can now *act*, without weakening the read-only guarantee:
+
+- `POST /projects/{id}/chat` is unchanged and still read-only.
+- `POST /projects/{id}/instruct` (`chat/instruct.py`) executes one instruction.
+- The LLM only ever **proposes one explicit command**; it never executes.
+- `ALLOWED_COMMANDS` allow-lists the verbs, and `project_scope()` restricts
+  every target id to the project the instruction came from. `/task` is bound to
+  that project. Both checks are deterministic and run before execution.
+- Execution is `ConsoleService.execute` — the same authorized, audited path as
+  `/control`. Nothing in the chat layer writes Goal/Work/Event/World State.
+- An explicit `/command` works with no LLM configured.
+- Instruction and outcome are appended to the same durable project thread with
+  `INSTRUCTION_EXECUTED` / `INSTRUCTION_REFUSED` / `INSTRUCTION_FAILED`.
+
+## Project Instruction invariants (keep them)
+
+233. **Asking never changes anything.** Keep `chat/service.py` free of write paths.
+234. **The model proposes, the guard decides.** Never execute a command because
+   the LLM said it was fine; the allow-list and scope check are the guarantee.
+235. **A project's instruction box may only touch that project.** Widening scope
+   needs a new, explicit decision — not a prompt change.
+236. **Change still belongs to the Control Plane.** Route new verbs by adding
+   them to `ALLOWED_COMMANDS`, never by writing records from the chat layer.
+237. **No LLM must not mean no control.** Explicit `/commands` keep working.
+
+## Done in Orchestrator Project instructions
+
+- `POST /cockpit/api/orchestrator/projects/<id>/instruct` routes one instruction
+  through `ProjectOrchestrator.submit(..., origin_project_id=<id>)`.
+- `POST /cockpit/api/orchestrator/projects/<id>/unblock` calls `resolve_block`.
+- Deliberately **no** allow-list or scope guard here, unlike the Control Plane
+  box: the router is the mapping, and the only outcomes are "add a task to this
+  Project" or "create a child Project". Nothing executes work in NEXUS SEED, so
+  there is no command surface to constrain.
+- Cockpit shows the Project's Tasks as the instruction history, and offers
+  ブロック解除 only while a Project has unresolved blockers.
+
+## Done in orchestrator idempotency + Control Plane wind-down
+
+- `ProjectOrchestrator.submit(..., request_id=...)` is exactly-once, backed by
+  the durable `orchestrator_instructions` ledger (`InstructionLedger`). A
+  resend replays the recorded decision: no second routing call, no second task,
+  no second delegation. The guarantee lives in `submit`, so every caller gets
+  it, not only the Cockpit. Without a `request_id` behaviour is unchanged.
+- `Runtime(..., control_enabled=False)` (env `NEXUS_SEED_CONTROL_PLANE_ENABLED`)
+  makes `runtime.console` `None`, which removes `/control`, the Cockpit control
+  actions and the Control Plane instruction box. Stores, Goal records and the
+  whole orchestrator path keep working.
+
+## Wind-down invariants (keep them)
+
+238. **Delegation is not free.** Anything that can hand an Agent a task must be
+     idempotent under retry; add the key, do not rely on the client.
+239. **Turning the Control Plane off removes the command surface, never data.**
+     Guard on `console is None`; never make a store conditional.
+240. **Do not grow the Control Plane.** New human actions belong on the
+     orchestrator side. `chat/instruct.py` is maintained, not extended.
+
+## Done in Goal decoupling (executor)
+
+- The executor no longer writes Goals. `Runtime.register_result_applier(name, fn)`
+  lets a domain commit its own records inside the activation's transaction, and
+  `bootstrap_control` registers `control.goals`. The executor does not receive
+  `control_store` at all any more.
+- `ProcessResult.goals` / `goal_updates` and `ctx.record_goal` / `ctx.update_goal`
+  are unchanged: this moves *who applies*, not the handler API (effects §77), and
+  adds no generic `Effect(type, payload)` (effects §75).
+- Removing the Control Plane is now deleting its module plus its bootstrap call;
+  `runtime/executor.py` and `core/process.py` need no edit.
+- The applier list is held **by reference**, not copied: domains register during
+  bootstrap, which happens after the Executor is built.
+
+## Effect applier invariants (keep them)
+
+241. **The Runtime commits, the domain decides what.** An applier may write only
+     its own records, and only from fields already on `ProcessResult`.
+242. **Appliers run inside the activation transaction.** A rollback must take the
+     domain's records with it.
+243. **Registering the same name twice replaces, never duplicates.** A
+     re-bootstrapped runtime must not apply the same effects twice.
+244. **Do not add a generic effect bag** to satisfy a new domain; give it typed
+     fields and an applier, as Goal has.
+
+## Done in Goal decoupling (Phase 6 reads)
+
+- Phase 6 no longer reads Goals. `Runtime.register_pursuit_source(name, fn)` lets
+  a domain say what is currently being pursued, and `runtime.active_pursuits()`
+  is what `project_self` and the Phase 6 startup wake ask. `bootstrap_control`
+  registers `control.goals` (ACTIVE Goals), so behaviour is unchanged today.
+- `presence/projections.py` and `processes/persistent_being.py` contain no
+  reference to `control_store` at all — a test asserts that, because the whole
+  value of the seam is that it stays unbroken.
+- Switching the answer from Goals to Orchestrator Projects is one registration
+  change (stage 2), not a Phase 6 change. `SelfProjection.active_goal_ids` keeps
+  its name for now so stored projections stay readable; renaming it is part of
+  stage 2 along with `IntentionRecord.goal_id`.
+
+## Pursuit source invariants (keep them)
+
+245. **Phase 6 asks the Runtime, never a domain store.** New "what are we working
+     on?" reads go through `active_pursuits()`.
+246. **No source means pursuing nothing.** An empty list is a legitimate answer,
+     not a missing dependency — a Control-Plane-off runtime must stay quiet.
+247. **One broken source must not blind the rest.** `active_pursuits()` logs and
+     continues; it never propagates a domain's failure into Phase 6.
+248. **The Runtime does not interpret the identifiers.** It relays them; only the
+     registering domain knows whether they are Goals or Projects.
+
+## Done: the command surface is deleted
+
+- `control/parser.py`, `control/service.py`, `control/adapters.py`,
+  `chat/instruct.py`, the `/control` route, `runtime.console`, the `nexus-seed
+  control` CLI verb and `submit_control_command` are gone. `control/models.py`
+  keeps only the Goal domain; `ControlStore` keeps only Goals.
+- What the commands gated moved to paths of its own: `nexus_seed/reviews.py`
+  (approve/reject), `nexus_seed/questions.py` (self-question answers),
+  `nexus_seed/goals.py` (create/end a Goal), and the Project Orchestrator for
+  everything that starts or extends work.
+- `AppSettings.control_identity_id`/`control_permissions` became `operator_id`
+  — who is at the keyboard, recorded as the actor, authorized against nothing.
+  `NEXUS_SEED_OPERATOR_ID` is the new variable; `NEXUS_SEED_CONTROL_IDENTITY`
+  still works.
+- `chat/models.py` keeps its `INSTRUCTION_*` statuses even though nothing
+  writes them: an existing chat journal must stay readable.
+
+## Command-surface invariants (keep them)
+
+249. **Do not reintroduce a verb vocabulary.** A new human action is a path
+     (like reviews and questions), or it goes to the Project Orchestrator.
+250. **A human decision is an Event.** Never a command record, never a
+     permission check — the channel is the gate.
+251. **Deciding twice must change nothing.** Every human-decision path finds
+     nothing waiting on the second call and returns None.
+252. **`nexus_seed/goals.py` is scaffolding.** It exists only while Goals do;
+     do not grow it into a Goal service.
+
+## Done: Phase 6 holds Intentions about pursuits, not Goals
+
+- `nexus_seed/pursuit.py` names the four things Phase 6 needs about what is
+  being pursued: an id, an objective, whether it is live, and what should make
+  it reconsider. `PursuitSource` supplies them — `live()` lists, `get()`
+  resolves one whether or not it is still live, because an Intention must keep
+  describing a pursuit that has just finished.
+- `processes/control.GoalPursuits` is today's source. Swapping it for an
+  orchestrator-Project source is the whole of the remaining switch.
+- `IntentionRecord.goal_id` became `pursuit_id: str` (ids are text now: a Goal
+  id is a UUID, a Project id is `project-<uuid>`). `for_goal` → `for_pursuit`,
+  `intention_id_for_goal` → `intention_id_for_pursuit`,
+  `SelfProjection.active_goal_ids` → `active_pursuit_ids`.
+- Compatibility is one-directional and deliberate: `to_dict` still **writes**
+  `goal_id` and `from_dict` still **reads** it, so a journal written before the
+  rename stays loadable. Event payloads still carry `goal_id` for the same
+  reason, with `pursuit_id` alongside.
+- Phase 6 with no registered pursuit source now maintains no Intentions. That
+  is the intended reading of invariant 246, and a test that wants Intentions
+  must register a source.
+
+## Pursuit invariants (keep them)
+
+253. **Phase 6 must not name Goal.** It asks `ctx.services.get_pursuit` /
+     `get_active_pursuits`; only the registered source knows what a pursuit is.
+254. **A pursuit id is text.** Do not parse it as a UUID above the source.
+255. **`get()` must resolve finished pursuits.** An Intention outlives the
+     thing it is about; resolving only live ones silently drops it.
+256. **Keep reading `goal_id`** in stored records and event payloads for as
+     long as journals written before the rename may be loaded.
+
+## Done: Goal is gone
+
+- Deleted: `nexus_seed/control/`, `storage/control_store.py`,
+  `processes/control.py` (`evaluate_goal` and the LLM goal decomposition),
+  `nexus_seed/orchestration/` (the Goal loop), `projects/lifecycle.py`,
+  `nexus_seed/goals.py`, the Goal-derived half of `projects/projections.py`,
+  `ProcessResult.goals`/`goal_updates`, `ctx.record_goal`/`update_goal`,
+  `ctx.services.get_goal`/`get_active_goals`/`get_control_store`/
+  `get_work_for_goal`, and the `goals`, `commands`, `command_results` and
+  `human_identities` tables.
+- Kept: `review_human_work`, moved to `processes/work_review.py`. Approving
+  constrained Work was never a Goal concern — it is a Continuation waiting on
+  an event, settled through `nexus_seed/reviews.py` like any other review.
+- `projects/projections.py` is now a thin, stable name over
+  `orchestrator/situation.py`; `projects/models.py` keeps ProjectSituation
+  because its JSON shape is a public surface.
+- `WorkRequirement.goal_id` is now `str | None` and unset by anything in-tree.
+  The column and the A2A correlation key keep the name because those are wire
+  shapes; treat the value as a pursuit id.
+- The Cockpit shows Projects once. `snapshot["projects"]` and the **Goal
+  Projects** tab are gone; `GET /projects` still answers, over the same records.
+- The result-applier seam (invariants 241–244) has no registered applier left.
+  It stays: it is what let this deletion be a deletion.
+
+## Goal-removal invariants (keep them)
+
+257. **Do not reintroduce a goal object.** A Project is the goal. Work that
+     needs a parent references a pursuit id.
+258. **NEXUS SEED does not decompose.** The Agent breaks a Project into tasks;
+     nothing in-tree generates Work from an objective.
+259. **`projects/projections.py` stays a name, not a second implementation.**
+     Compilation belongs beside the records it reads.
+
+## Done: one box per project
+
+- `POST /projects/<id>/message` is the project thread's single input.
+  `chat/message.py` routes it: `RoutingAction.IGNORE` means the message needs
+  no project work, which is what a question is, so it is answered read-only;
+  anything else is applied and handed to the Agent. Both are appended to the
+  same chat journal, so a project has one history.
+- `ProjectChatService.ask` gained `refuse_state_changes=False` for that one
+  caller. Judging the same message twice by two different rules could only
+  produce a contradiction; it opens no write path, because that module has
+  none.
+- `{"act": true}` overrules the judgement — the person's word wins, because
+  overruling them would leave no way to act at all. It skips the router (which
+  already read this message and was overruled), adds the Task to the project it
+  came from, and is idempotent through the instruction ledger under a distinct
+  `project_message.act` source.
+- `ProjectRouter._fallback` now returns `ADD_TASK_TO_PROJECT` when
+  `origin_project_id` is set. An unroutable in-project request used to become a
+  *second* project, splitting one goal across two Agents.
+- The Cockpit's two panels became one; `/cockpit/api/orchestrator/.../instruct`
+  stays as the API for a caller that has already decided.
+
+## One-box invariants (keep them)
+
+260. **The person never classifies their own message.** New input paths decide,
+     or they go through `/message`.
+261. **One message, one judge.** Do not stack the keyword guard on top of a
+     routing decision, in either direction.
+262. **Explaining is the safe default.** When meaning cannot be judged, answer;
+     never delegate on a guess.
+263. **`act` is one bit, not a vocabulary.** Do not grow it into prefixes,
+     verbs, or modes.
+
+## Done: configuration says which model is which
+
+- Two models, one of them not configured here at all. `NEXUS_SEED_LLM_*` is the
+  model NEXUS SEED *thinks* with; the Project Agent's model lives in the
+  Agent's own configuration, and `NEXUS_SEED_PROJECT_AGENT_*` says only where
+  the Agent is. `in_process` calls no model whatsoever.
+- `skills_config.py` owns Skill discovery. It used to be reachable only through
+  the A2A federation settings, which made it look like a property of provider
+  federation; a Skill is a procedure offered to whoever executes.
+  `federation_config` re-exports `DEFAULT_SKILL_ROOTS` and reads
+  `read_roots()`, so nothing that imported it broke.
+- `NEXUS_SEED_SKILLS_STRICT` and `NEXUS_SEED_SKILLS_ON_DUPLICATE` were only
+  settable through `a2a.json`; they are env settings now too.
+- `nexus-seed config` (`config_report.py`) prints the resolved settings grouped
+  by purpose, with the Skills actually found and the roots searched. It reads
+  only: no database, no connection.
+- `.env.example` is laid out in the same groups, with the two-model distinction
+  at the top.
+
+## Configuration invariants (keep them)
+
+264. **Never print a secret.** A key is named by the variable holding it; the
+     report says `set` or `EMPTY`, never the value.
+265. **`nexus-seed config` starts nothing.** No database is created, no
+     endpoint contacted. It must stay safe to run against production settings.
+266. **One owner per setting.** A group that needs another group's value reads
+     that group's module; do not re-read the variable.
+267. **Do not add a setting for the delegated model.** It belongs to the Agent.
+     If NEXUS SEED ever needs to know, it asks the Agent — it does not
+     configure it.
+
+## Done: two agents, two skill sets, two config files
+
+- `NEXUS_SEED_SKILL_ROOTS` is **NEXUS SEED's own** Skills: imported as
+  Processes, routed to an A2A provider when one is configured. It no longer
+  reaches a Project Agent in any form.
+- Removed from the delegation path: `skill_contracts`,
+  `ProjectAgentConfig.available_skills`, the `available_skills` key in the
+  `PROJECT_ASSIGNMENT` wire object, `A2AProjectAgentTransport(skills=...)`,
+  `orchestrator_config.load_skills`, and `ProjectAgentSettings.skills`.
+- The Project Agent instruction no longer speaks of "available skills": it says
+  the Agent chooses from *its own* skills and that NEXUS SEED does not know
+  what they are.
+- This is a wire change. An external Agent Runtime that was reading
+  `available_skills` from the assignment must read its own configuration
+  instead — which is the point.
+
+## Skill-ownership invariants (keep them)
+
+268. **A Project is delegated as a goal, never as a method.** The assignment
+     carries goal, context, constraints and workspace. Nothing about how.
+269. **NEXUS SEED does not read the Agent's skills.** Not to validate, not to
+     log, not to show. If it needs to know, it asks the Agent.
+270. **`NEXUS_SEED_SKILL_ROOTS` is NEXUS SEED's own.** Do not route it into
+     `orchestrator_config` or the A2A transport again.
+
+## Done in Phases K1–K6 (Knowledge Runtime)
+
+A new layer, `nexus_seed/knowledge/`, sits above the Project Orchestrator:
+Knowledge Runtime (perceives) -> Project Orchestrator (decides) -> Agent
+Runtime (executes). Like `Observation`/`StateDelta`, it is domain data, not a
+seventh Core primitive — one new append-only store, `knowledge_revisions`.
+
+- **K1 — Knowledge Ledger.** `KnowledgeRevision`: `content`, `source`,
+  `recorded_at`, `parents` (its own revision chain) are the only required
+  fields; `valid_from`/`valid_to`, `relations`, `annotations` are optional.
+  `subject`/`predicate`/`confidence`/`scope`/… are never Core fields — an
+  Agent derives them later as a Typed View, attached as an `Annotation`
+  without rewriting `content` ("Structure on Read"). Nothing is ever UPDATEd
+  or DELETEd; a correction is always a new revision. `KnowledgeLedger`:
+  `record`/`revise`/`annotate`/`relate`/`mark_conflict`, `head`/`history`,
+  `as_known_at` (transaction time) / `valid_at` (valid time, handles
+  late-arriving evidence correctly), `by_kind`/`by_status`/`by_source`/
+  `referencing`.
+- **K2 — World Projection.** `WorldStateProjection` reads only revisions
+  carrying a `world_fact` Annotation and projects `{entity: {attribute:
+  value}}` — same shape as `StateStore.snapshot()`, existing `world_state_*`
+  tables/API untouched. Conflicting claims are kept in `WorldView.conflicts`,
+  never silently collapsed. `diff_world_views(...).to_events()` renders a
+  diff as ordinary `state_changed` Events for `runtime.submit_event(...)`,
+  same payload shape `apply_state_delta` already emits.
+- **K3 — Memory Consolidation.** `select_candidates` (bounded, no embeddings
+  required, no whole-Ledger scan) + `Consolidator.consolidate(...)` ->
+  `kind=consolidated_memory` with `derived_from` (sources never deleted).
+  Contradictions are described, not resolved; a missing/unusable backend
+  falls back to an unsynthesized listing rather than inventing a conclusion.
+  Idempotent on unchanged sources (`metadata["last_consolidated_at"]`);
+  `metadata["generation"]` bounds recursive consolidation-of-consolidations.
+- **K4 — Principle Extraction.** `PrincipleExtractor` generalises >=2 cases
+  into `kind=principle`, `status=candidate`. `CounterexampleSearcher` (never
+  fabricates without a backend) + `refine_principle(...)` narrows scope and
+  demotes maturity on a real counterexample; `record_support(...)` promotes
+  `candidate/refined -> supported -> validated`. `PredictionEngine.predict(
+  principle, view, subject=...)` + `evaluate_prediction(...)` (mechanical
+  once `predicted_state` is structured) + `apply_prediction_feedback(...)`
+  close the predict/score/revise loop — a principle is evaluated as a
+  predictor, never trusted as truth from the moment it is proposed.
+- **K5 — Goal integration.** `GapRiskOpportunityDetector.detect(view,
+  principles)` -> `Signal` (gap/risk/opportunity/conflict) ->
+  `GoalBridge.submit(...)` calls `ProjectOrchestrator.submit(request,
+  source="knowledge_runtime")` — the same public entry point a human message
+  uses. Nothing in `orchestrator/` was touched; the outcome is written back
+  to the Ledger as `kind="signal"`, linked to the principle that raised it.
+- **K6 — Self-learning (light).** `record_agent_experience(...)` writes
+  `kind=experience` (already eligible for K3's `select_candidates`, so the
+  same Consolidator/PrincipleExtractor apply unchanged).
+  `advisories_for(principles, subject=...)` surfaces only mature principles
+  as plain `DecisionAdvisory` objects — deliberately not shaped like
+  `decision.models.DecisionPreference`, since per-work strategy selection is
+  Agent Runtime territory (see `docs/orchestrator-redesign-inventory.md`); a
+  caller maps the advisory onto whatever selection mechanism it uses.
+
+## Knowledge Runtime invariants (keep them)
+
+271. **Never require Structure on Write.** `KnowledgeRevision` gains no new
+     required field beyond `content`/`source`/`recorded_at`/`parents`. A
+     Typed View is always an optional `Annotation`, generated by whichever
+     Agent needs it, never forced onto every Knowledge object.
+272. **Knowledge is never overwritten or deleted.** A correction, an
+     annotation and a relation are each a new revision; `history()` stays a
+     complete log. Consolidating or extracting a principle from Knowledge
+     never deletes the sources it was derived from.
+273. **A contradiction is held, not resolved.** Two disagreeing Knowledge
+     objects, or two claims in one `WorldView`, both survive; nothing in
+     `knowledge/` silently picks a side. Resolution, if any, is a Work item
+     handed to the existing Project Orchestrator, not an automatic merge.
+274. **Knowledge Runtime does not queue work directly.** It only ever reaches
+     the Project Orchestrator through `ProjectOrchestrator.submit()`/
+     `.handle_request()` — the same entry point a human message uses. It
+     never writes to `orchestrator_projects` or any other orchestrator table.
+275. **No LLM fallback fabricates a conclusion.** Consolidation, principle
+     extraction, counterexample search and gap/risk/opportunity detection all
+     degrade to "say less" (list raw items, find nothing, propose nothing)
+     rather than invent a synthesis, a counterexample or a business risk when
+     no backend is configured or a call fails.
+276. **Knowledge Ledger is the one primary store.** A consolidated memory, a
+     principle and a prediction are `knowledge_revisions` rows distinguished
+     by `kind` — never a separate Memory/WorldModel/Principle DB. A
+     materialized cache is allowed later; it is never the source of truth.
+
+## Done: a Task is given what it needs, and nothing more
+
+A Project Agent used to get a workspace directory and nothing else, so a task
+needing a file outside it could only escalate `NEED_RESOURCE` and stop. It can
+now be *given* that file — deliberately, one resource at a time:
+
+```text
+Task -> declares what it needs -> NEXUS SEED decides -> workspace is filled -> Agent runs
+```
+
+- `workspace/` is a new package with three small pieces and no dependency on
+  the orchestrator: `models.py` (`AccessMode`, `ResourceGrant`, `GrantRequest`,
+  `GrantDecision`, `WorkspaceManifest`, and `grants_in`/`with_grant` for
+  reading and writing grants in a Project's `context`), `policy.py`
+  (`GrantPolicy` — the decision), `provisioner.py` (`WorkspaceProvisioner` —
+  materialising it).
+- The decision is deterministic policy code and never a model. `GrantPolicy`
+  reuses the existing `ResourceScope` for the path boundary, which resolves
+  symlinks before deciding, and keeps read and write roots apart. Everything
+  else is closed: an unknown scheme, a path outside every root, a write into a
+  read-only root, a writable `resource:` (versions are immutable) or a writable
+  `knowledge:` (the ledger is append-only) are all refused with a reason.
+- Nothing about the Agent changed, and nothing needed to. The grant travels as
+  A2A `metadata` under `https://nexus-seed.dev/a2a/ext/provisioned-workspace/v1`
+  — an extension key an Agent that does not read it simply ignores — plus a
+  `RESOURCES.md` and `.nexus-seed/manifest.json` written into the workspace it
+  already had. No Hermes, OpenCode or other Agent body is modified, and no
+  bridge process was added.
+- The request-and-continue loop reuses the existing escalation path rather than
+  adding a second one. `NEED_RESOURCE` already blocks a Project with its
+  reason, so `grant_requests()` reads the Project's own open blockers instead
+  of a parallel journal, and `grant_resource()` re-delegates the *same* Project
+  to the *same* Agent. Nothing restarts: the workspace is rebuilt from
+  `project.context` on every `build_config`, so a Project granted more gets it
+  on the very next delegation.
+- What a read grant guarantees is a *copy* the original never sees again:
+  `collect()` carries back only writable grants. The read-only file mode
+  (`0o444`) is a signal on top of that, not the boundary — a process running as
+  root, or as the file's owner, can write its own copy anyway, which is why the
+  boundary is "never collected back" and not the mode.
+- Provisioning failure never costs a Project its Agent. `AgentManager.provision`
+  degrades to "granted nothing extra" and the task proceeds; the Agent asks for
+  what is missing exactly as it would have.
+- Authorized roots are configuration, empty by default:
+  `NEXUS_SEED_PROJECT_RESOURCE_READ_ROOTS` / `_WRITE_ROOTS` in
+  `orchestrator_config.build_grant_policy()`, which returns `None` when nothing
+  is authorized — so an unconfigured system behaves exactly as it did before
+  grants existed. `nexus-seed config` reports both and says so when neither is
+  set.
+- Two ways in for a person, one decision underneath: `nexus-seed-knowledge
+  grants` / `grant` / `collect`, and the Cockpit, which raises a
+  `resource_request` attention item (distinct from `project_blocked` — "it
+  wants this file" and "it is stuck" need different actions) and posts to
+  `POST /cockpit/api/orchestrator/projects/<id>/grant`.
+
+## Resource-grant invariants (keep them)
+
+277. **The host is never handed over wholesale.** A Project reaches exactly
+     what it was granted, one resource at a time, inside an authorized root.
+     With no root configured there is no `GrantPolicy` and nothing outside a
+     task's own workspace is grantable — that is the default, not a setting.
+278. **No model decides access.** `GrantPolicy` is deterministic code. An LLM
+     may *ask* (that is what `NEED_RESOURCE` is), and a person or the policy
+     answers; nothing an Agent says widens what it can reach.
+279. **A grant is re-checked when it is used, not only when it is made.**
+     `permitted()` runs at provisioning time, so narrowing a root retroactively
+     narrows every stored grant. A grant never outlives its permission.
+280. **Nothing a task did reaches a real file except through `collect`.** It
+     carries the writable copies and nothing else; a read grant was never
+     copied, so there is nothing of it to carry. A read grant points at the
+     original on purpose and must not be described as if it protected it.
+281. **Granting continues a Task, it never restarts one.** The same Project and
+     the same Agent carry on with more in the workspace; a grant creates no new
+     Project, and a refusal leaves the Project blocked rather than retrying.
+282. **The A2A contract is not extended, only used.** Everything a workspace
+     grant adds rides in `metadata` under one extension URI. NEXUS SEED never
+     adds a message type, a field outside `metadata`, or a requirement that the
+     Agent understand any of it — and never modifies the Agent to make it work.
+
+## Done: the context a person writes, read against the world
+
+NEXUS SEED could observe files and machines but had no way to be *told* what
+the words mean or what a good state looks like.  Three prose files now say so,
+and are read against the live world:
+
+```text
+context/{terms,goals,situation}.md
+  + World Projection + live/blocked/waiting Projects + related Knowledge
+    -> SituationAssessment -> TaskCandidate -> a person -> submit()
+```
+
+- `knowledge/bootstrap_context.py` reads `NEXUS_SEED_DATA_DIR/context/` and
+  keeps the Ledger's copy current.  A document is an ordinary Knowledge object
+  whose revisions accumulate, so an edit appends rather than replaces and what
+  a person used to believe stays on the record.  Syncing is content-addressed:
+  an unchanged file writes nothing.
+- `knowledge/context_assessment.py` holds the reading and what follows from it.
+  Five lists — `terminology_issues`, `contradictions`, `goal_gaps`, `unknowns`,
+  `task_candidates` — each item carrying description / evidence / confidence.
+  Empty lists are the expected answer, not a failure.
+- **Goals stay prose.** Nothing converts "BLOCKED Projectを放置しない" into a
+  metric, a threshold or a desired-state record, and the instruction says so
+  explicitly.  What comes back is a sentence about what is missing.
+- **Nothing is executed.**  A `TaskCandidate` is filed `PENDING_REVIEW` and
+  waits.  Approval calls `ProjectOrchestrator.submit()` — the same door a human
+  message uses, so the router owns the CREATE_PROJECT / ADD_TASK_TO_PROJECT
+  choice.  This module never creates a Project or writes an orchestrator table.
+- Three answers, not two: approve, reject, and **amend**.  An amendment
+  replaces the wording and leaves the candidate waiting, keeping the machine's
+  original in the object's history — the clearest evidence available of how the
+  system's suggestions differ from what a person wanted, and deliberately kept
+  for a later Principle Extraction.
+- Re-reading is skipped *before* the model is called, keyed on the context
+  revisions **and** each live Project's status — so a quiet tick costs nothing,
+  while a Project going BLOCKED is a new situation even though no file changed.
+- Candidate identity is the normalised description, so two readings that
+  suggest the same thing land on one object rather than re-asking a person
+  something they already refused.
+- Wired everywhere behind one optional argument: `KnowledgeLoop(...,
+  context_root=)`.  Without it `context_documents` and `context_assessor` are
+  `None` and every step is a strict no-op — the loop behaves exactly as before.
+  The application passes `data_dir/context` and creates the files empty.
+
+## Bootstrap-context invariants (keep them)
+
+283. **The prose is the source of truth.** A context document is stored as
+     written and never replaced by a parse of itself.  Any structure derived
+     from it is a separate, later, optional read — Structure on Read, as
+     everywhere else in the Knowledge Runtime.
+284. **A Goal is never quantified on the system's own initiative.** Nothing
+     converts a written goal into a metric, threshold or numeric desired
+     state.  A gap is reported as a sentence.
+285. **A TaskCandidate is a suggestion until a person answers.** v0.1 has no
+     auto-approval path for one, and approval is the only thing that reaches
+     the orchestrator.
+286. **Approval goes through the ordinary door.** Routing is
+     `ProjectOrchestrator.submit()`; whether that becomes a new Project or a
+     Task on an existing one is the router's decision, never the assessor's.
+287. **A human correction is kept as evidence.** Rejecting keeps the reason and
+     amending keeps the original wording as a prior revision; neither deletes
+     anything, because how a person changed a suggestion is exactly what a
+     later Principle Extraction needs.
+288. **No context, no behaviour change.** Without a configured context root the
+     loop's context steps are strict no-ops, and without a reasoning backend
+     the assessor records nothing rather than reporting that it found nothing.
+
+## Done: a Project says which files its Agent may reach
+
+Grants existed but had exactly one shape — copy it into the workspace — which
+is wrong for reading and only half right for writing. A grant now follows one
+rule, and the rule is not a setting:
+
+```text
+NEXUS SEED Project              little_agent
+  workspace              ->       workspace
+  readable_resources     ->       readable_paths     the originals
+  writable_resources     ->       writable_paths     the task's own copies
+```
+
+**Read is a link. Write is a copy.**
+
+- Reading does not need a duplicate. One would cost a copy, go stale the moment
+  the file changed, and could not represent a directory at all — so reading
+  makes none. The Agent gets the resolved host path.
+- Writing does. The Agent edits its own copy under `resources/`, the original
+  is untouched while the work is in progress, and `collect()` is the single
+  moment the edits arrive — so an abandoned, refused or broken task leaves
+  nothing behind in the real file.
+- `Delivery` survives as a *derived* label, `delivery_for(access)`, not a
+  field and not a parameter. `ResourceGrant.delivery` is a property;
+  `from_dict` does not read a stored one. A grant therefore cannot describe a
+  combination that does not exist, and an old record cannot mean something the
+  current rule does not.
+- `readable_resources` / `writable_resources` are likewise derived from the one
+  grant list by access. Two lists that can disagree about what a Project may
+  read is one list too many.
+- A manifest entry says what *happened*, not what was asked: a `knowledge:` or
+  `resource:` read has no host path to link to, so it is written into the
+  workspace and the entry records `copy`. `authorized_paths` resolves an entry
+  either way, which is why both path lists are absolute.
+- What this costs: **a writable directory cannot be granted.** Refused at
+  decide time with a reason naming the alternative, rather than discovered when
+  a tree of unknown size is already being copied.
+- A Task narrows, never widens. `task["context"]["resources"]` filters the
+  Project's grants for one delegation; a uri the Project never had is not added
+  by asking for it, and the narrowing reaches the A2A metadata as well as the
+  assignment.
+- The A2A surface gained two metadata keys under the extension URI it already
+  had, and nothing else: no message type, no field outside `metadata`, no
+  change to any Agent.
+
+## Resource-delivery invariants (keep them)
+
+289. **Delivery follows access and is never stored.** Read links, write copies.
+     It is derived at every read, so no record, parameter or UI can express a
+     combination the rule does not have.
+290. **A read is never copied, and a write always is.** No caller chooses, and
+     no code path may add a way to choose without changing this rule first.
+291. **A writable directory is refused.** Say so when the decision is made,
+     naming what to do instead — never begin copying a tree because nobody
+     objected.
+292. **`readable_paths` / `writable_paths` are absolute and complete.** They are
+     exactly what an Agent runtime is authorized with: the originals to read,
+     the copies to write.
+293. **A Task may only narrow.** Per-Task resources filter what the Project was
+     granted; nothing a Task says can add a resource, and the narrowing must
+     reach the A2A metadata as well as the assignment.
+294. **A read grant is not a protection and is never sold as one.** It is a
+     link. What it guarantees is that the file is reachable and that no edit of
+     it is ever collected. Something that must be safe from the Agent is
+     granted for writing, so it is copied.
+
 ## Later-phase candidates (do not build yet)
 
-- Phase 6+ is intentionally not started. Plugin/package discovery and install,
+- Left out of the bootstrap context on purpose (v0.1 is one path, end to end):
+  an ontology; automatic structuring of a written Goal into a desired state;
+  auto-approving a TaskCandidate; richer Human assignment than
+  AGENT/HUMAN/UNKNOWN; predicting what the context implies will happen next.
+- Phase 7+ is intentionally not started. Plugin/package discovery and install,
   production source-tree patching, permission escalation, Runtime/Core/Policy
   self-update, learning/RL policy changes, long-horizon compensation,
   multi-machine coordination, role/team ontologies and richer dynamic
   organization remain unbuilt.
+- Guidance Thread: turning a Project Chat request into an authorized Control
+  Plane change (Work cancellation, prioritisation, direction) is deliberately
+  unbuilt. Project Chat explains; it never acts.
+- Manual project creation (a Project without a Goal) is deliberately unbuilt.
+  Goal creation is the one path that starts a Project.
 - Capability `description` becomes usable for LLM planning; `tags` for search.
   Both are stored already and deliberately unused by matching.
 - Compensating actions (undoing a completed node's side effects) remain
   unbuilt; Phase 4C replanning deliberately does not compensate.
 - Event replay (deliberately *not* durable delivery); per-subscriber delivery
   targets (`event_delivery_targets`); a real DLQ with a UI.
-- Office / PDF / OCR extractors (the registry is ready for them); further
+- PDF and OCR extractors (the registry is ready for them; `.pptx`, `.xlsx`
+  and `.docx` are registered since the Office extractors landed); further
   adapters (mail, Slack, GitHub, browser); further ExecutionBackends (Shell /
   Claude Code / OpenClaw / MCP); `resource_links`.
+- A2A streaming/SSE and push notification; automatic propagation of a Work
+  cancellation into `tasks/cancel` (the hook exists as
+  `Runtime.cancel_provider_invocation`, the Control Plane does not call it
+  yet); Skill self-modification or generation.
 - Carried over, still open: hierarchical permissions; compensating actions;
   external action exactly-once; OS-level daemonisation of `watch_files`;
   `adapter_errors` journal; large-file streaming hash; production webhook

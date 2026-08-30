@@ -11,9 +11,49 @@ from __future__ import annotations
 import uuid
 
 from nexus_seed.core.event import Event
-from nexus_seed.core.process import ProcessStatus
-from nexus_seed.processes.demo_resistance import bootstrap
+from nexus_seed.core.process import ProcessContext, ProcessDefinition, ProcessResult, ProcessStatus
 from nexus_seed.runtime.runtime import Runtime
+
+
+DEFINITION = ProcessDefinition(
+    name="restart_safe_process",
+    version="1",
+    handler="restart_safe_process",
+    trigger_event_types=("process_parameter_changed",),
+)
+
+
+async def restart_safe_process(ctx: ProcessContext) -> ProcessResult:
+    """A minimal state -> suspend -> resume Process using only core primitives."""
+    assert ctx.event is not None
+    if ctx.resume_point is None:
+        payload = ctx.event.payload
+        ctx.state.set(payload["parameter"], "target", payload["new"], source_event=ctx.event.id)
+        return ctx.suspend(
+            resume_point="compare_resistance",
+            waiting_for={"event_type": "measurement_completed", "wafer": payload["wafer"]},
+            saved_process_state={
+                "parameter": payload["parameter"],
+                "target": payload["new"],
+                "wafer": payload["wafer"],
+            },
+        )
+    wafer = ctx.saved_process_state["wafer"]
+    resistance = ctx.event.payload["resistance"]
+    ctx.state.set(f"measurement_{wafer}", "resistance", resistance, source_event=ctx.event.id)
+    return ctx.complete(
+        output={"wafer": wafer, "resistance": resistance},
+        emitted_events=[
+            ctx.new_event(
+                "resistance_analysis_completed",
+                {"wafer": wafer, "resistance": resistance},
+            )
+        ],
+    )
+
+
+def bootstrap(runtime: Runtime) -> None:
+    runtime.register_process(DEFINITION, restart_safe_process)
 
 
 async def test_suspend_resume_across_runtime_restart(tmp_path):

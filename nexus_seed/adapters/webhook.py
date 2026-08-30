@@ -7,8 +7,8 @@ Three layers, deliberately separable:
   no transport, so the whole contract is testable without a socket.
 * :class:`WebhookServer` — a minimal asyncio HTTP/1.1 endpoint over it.
 
-The server is stdlib-only on purpose: the library has zero dependencies, and a
-web framework would be a large amount of machinery for one POST route.  It is
+The server transport is stdlib-only on purpose: a web framework would be a
+large amount of machinery for these small HTTP routes.  It is
 an acceptance-grade endpoint, not a production deployment (spec §77).
 
 **A webhook never waits for the work it causes** (spec §29).  The HTTP request
@@ -25,6 +25,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
+from urllib.parse import unquote
 
 from ..core.event import utcnow
 from ..ingress.models import IngressEnvelope, IngressStatus
@@ -82,7 +84,9 @@ class WebhookResponse:
     """What the endpoint answers, independent of HTTP plumbing."""
 
     status_code: int
-    body: dict = field(default_factory=dict)
+    body: Any = field(default_factory=dict)
+    content_type: str = "application/json; charset=utf-8"
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class WebhookIngress:
@@ -213,14 +217,12 @@ class WebhookServer:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
-        console=None,
-        control_identity_id: str = "local-operator",
+        cockpit=None,
     ) -> None:
         self.ingress = ingress
         self.host = host
         self.port = port
-        self.console = console
-        self.control_identity_id = control_identity_id
+        self.cockpit = cockpit
         self._server: asyncio.AbstractServer | None = None
 
     @property
@@ -278,30 +280,23 @@ class WebhookServer:
         length = int(headers.get("content-length") or 0)
         raw_body = await reader.readexactly(length) if length else b""
 
+        clean_path = path.split("?", 1)[0]
+        if method.upper() == "GET" and clean_path.startswith("/cockpit"):
+            return self._cockpit_response(clean_path, headers)
+        if method.upper() == "GET" and (
+            clean_path == "/projects" or clean_path.startswith("/projects/")
+        ):
+            return self._project_response(clean_path, headers)
+        if method.upper() == "POST" and clean_path.startswith(
+            "/cockpit/api/orchestrator/projects/"
+        ):
+            return await self._orchestrator_action_response(clean_path, headers, raw_body)
+        if method.upper() == "POST" and clean_path.startswith("/cockpit/api/knowledge"):
+            return await self._knowledge_action_response(clean_path, headers, raw_body)
+        if method.upper() == "POST" and clean_path.startswith("/projects/"):
+            return await self._project_chat_response(clean_path, headers, raw_body)
         if method.upper() != "POST":
-            return WebhookResponse(405, {"error": "only POST is supported"})
-        if path.split("?", 1)[0] == "/control":
-            if self.console is None:
-                return WebhookResponse(404, {"error": "control endpoint is disabled"})
-            if not self.ingress.authorize(_token_from(headers)):
-                return WebhookResponse(401, {"error": "unauthorized"})
-            try:
-                body = json.loads(raw_body or b"{}")
-            except ValueError:
-                return WebhookResponse(400, {"error": "body is not valid JSON"})
-            if not isinstance(body, dict) or not isinstance(body.get("command"), str):
-                return WebhookResponse(400, {"error": "command must be a string"})
-            try:
-                result = self.console.execute_text(
-                    body["command"],
-                    issuer_identity_id=self.control_identity_id,
-                    source_channel=str(body.get("source_channel") or "http-control"),
-                    source_message_id=str(body.get("source_message_id") or "") or None,
-                    idempotency_key=str(body.get("idempotency_key") or "") or None,
-                )
-            except ValueError as exc:
-                return WebhookResponse(400, {"error": str(exc)})
-            return WebhookResponse(200, result.to_dict())
+            return WebhookResponse(405, {"error": "only POST is supported outside Cockpit"})
         adapter_id = _adapter_id_from_path(path)
         if adapter_id is None:
             return WebhookResponse(404, {"error": "unknown path"})
@@ -312,6 +307,380 @@ class WebhookServer:
             return WebhookResponse(400, {"error": "body is not valid JSON"})
 
         return await self.ingress.handle(adapter_id, body, token=_token_from(headers))
+
+    def _cockpit_response(
+        self, path: str, headers: dict[str, str]
+    ) -> WebhookResponse:
+        """Serve the optional Human Interface without changing Runtime state."""
+
+        if self.cockpit is None:
+            return WebhookResponse(404, {"error": "cockpit is disabled"})
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": (
+                "default-src 'self'; connect-src 'self'; img-src 'self' data:; "
+                "style-src 'self'; script-src 'self'; frame-ancestors 'none'"
+            ),
+        }
+        if path in {"/cockpit", "/cockpit/", "/cockpit/index.html"}:
+            from ..cockpit.assets import INDEX_HTML
+
+            return WebhookResponse(
+                200, INDEX_HTML, "text/html; charset=utf-8", security_headers
+            )
+        if path == "/cockpit/styles.css":
+            from ..cockpit.assets import STYLES_CSS
+
+            return WebhookResponse(
+                200, STYLES_CSS, "text/css; charset=utf-8", security_headers
+            )
+        if path == "/cockpit/app.js":
+            from ..cockpit.assets import APP_JS
+
+            return WebhookResponse(
+                200, APP_JS, "text/javascript; charset=utf-8", security_headers
+            )
+        if path == "/cockpit/api/snapshot":
+            if not self.ingress.authorize(_token_from(headers)):
+                return WebhookResponse(401, {"error": "unauthorized"})
+            return WebhookResponse(200, self.cockpit.snapshot(), headers=security_headers)
+        if path.startswith("/cockpit/api/orchestrator/projects/"):
+            if not self.ingress.authorize(_token_from(headers)):
+                return WebhookResponse(401, {"error": "unauthorized"})
+            project_id = unquote(path.rsplit("/", 1)[-1])
+            detail = self.cockpit.orchestrator_project(project_id)
+            if detail is None:
+                return WebhookResponse(
+                    404, {"error": "project not found"}, headers=security_headers
+                )
+            return WebhookResponse(200, detail, headers=security_headers)
+        return WebhookResponse(404, {"error": "unknown cockpit path"})
+
+    def _project_response(
+        self, path: str, headers: dict[str, str]
+    ) -> WebhookResponse:
+        """Serve authenticated read-only Project Situation projections."""
+
+        if self.cockpit is None:
+            return WebhookResponse(404, {"error": "cockpit is disabled"})
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        if path == "/projects":
+            return WebhookResponse(
+                200, {"projects": self.cockpit.projects()}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        if len(parts) == 3 and parts[0] == "projects" and parts[2] == "situation":
+            project_id = unquote(parts[1])
+            situation = self.cockpit.project_situation(project_id)
+            if situation is None:
+                return WebhookResponse(
+                    404, {"error": "project not found"}, headers=security_headers
+                )
+            return WebhookResponse(200, situation, headers=security_headers)
+        if len(parts) == 3 and parts[0] == "projects" and parts[2] == "chat":
+            history = self.cockpit.project_chat_history(unquote(parts[1]))
+            if history is None:
+                return WebhookResponse(
+                    404, {"error": "project not found"}, headers=security_headers
+                )
+            return WebhookResponse(200, history, headers=security_headers)
+        return WebhookResponse(
+            404, {"error": "unknown project path"}, headers=security_headers
+        )
+
+    async def _orchestrator_action_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Instruct an orchestrator Project, or clear what is blocking it.
+
+        Both actions only reach the Project Orchestrator: an instruction adds
+        work to a Project (or becomes one), unblocking hands the Project back
+        to its Agent, and granting gives it one more resource and continues
+        the same Task.  None of them runs the work here.
+        """
+
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if self.cockpit is None:
+            return WebhookResponse(
+                404, {"error": "cockpit is disabled"}, headers=security_headers
+            )
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        # cockpit/api/orchestrator/projects/<id>/<action>
+        if len(parts) != 6 or parts[5] not in {"instruct", "unblock", "grant"}:
+            return WebhookResponse(
+                404, {"error": "unknown orchestrator path"}, headers=security_headers
+            )
+        project_id, action = unquote(parts[4]), parts[5]
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        if not isinstance(body, dict):
+            return WebhookResponse(
+                400, {"error": "body must be a JSON object"}, headers=security_headers
+            )
+
+        try:
+            if action == "instruct":
+                message = body.get("message")
+                if not isinstance(message, str) or not message.strip():
+                    return WebhookResponse(
+                        400,
+                        {"error": "message must be a non-empty string"},
+                        headers=security_headers,
+                    )
+                request_id = body.get("request_id")
+                result = await self.cockpit.orchestrator_instruct(
+                    project_id,
+                    message,
+                    request_id=str(request_id) if request_id else None,
+                )
+            elif action == "grant":
+                uri = body.get("uri")
+                if not isinstance(uri, str) or not uri.strip():
+                    return WebhookResponse(
+                        400,
+                        {"error": "uri must be a non-empty string"},
+                        headers=security_headers,
+                    )
+                access = body.get("access")
+                reason = body.get("reason")
+                result = await self.cockpit.orchestrator_grant(
+                    project_id,
+                    uri,
+                    access=access if isinstance(access, str) and access else "read",
+                    reason=reason if isinstance(reason, str) else "",
+                )
+            else:
+                note = body.get("note")
+                result = await self.cockpit.orchestrator_unblock(
+                    project_id, note if isinstance(note, str) else ""
+                )
+        except ValueError as exc:
+            return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
+        if result is None:
+            return WebhookResponse(
+                404,
+                {"error": "project not found or orchestrator is disabled"},
+                headers=security_headers,
+            )
+        return WebhookResponse(200, result, headers=security_headers)
+
+    async def _knowledge_action_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Record evidence or settle a Knowledge-loop human decision."""
+
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if self.cockpit is None:
+            return WebhookResponse(
+                404, {"error": "cockpit is disabled"}, headers=security_headers
+            )
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        if not isinstance(body, dict):
+            return WebhookResponse(
+                400, {"error": "body must be a JSON object"}, headers=security_headers
+            )
+
+        parts = path.strip("/").split("/")
+        try:
+            if parts == ["cockpit", "api", "knowledge", "sources"]:
+                name = body.get("name")
+                fields = body.get("fields")
+                interval = body.get("poll_interval_seconds", 60)
+                kind = body.get("kind", "system_snapshot")
+                path_value = body.get("path")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("name must be a non-empty string")
+                if not isinstance(fields, list) or not all(
+                    isinstance(item, str) for item in fields
+                ):
+                    raise ValueError("fields must be an array of strings")
+                if not isinstance(kind, str) or not kind.strip():
+                    raise ValueError("kind must be a non-empty string")
+                if path_value is not None and not isinstance(path_value, str):
+                    raise ValueError("path must be a string")
+                try:
+                    poll_interval = float(interval)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("poll_interval_seconds must be a number") from exc
+                result = await self.cockpit.create_observation_source(
+                    name=name,
+                    fields=fields,
+                    poll_interval_seconds=poll_interval,
+                    kind=kind.strip(),
+                    path=path_value,
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "sources"
+            ]:
+                source_id, action = unquote(parts[4]), parts[5]
+                if action == "poll":
+                    result = await self.cockpit.poll_observation_source(source_id)
+                elif action in {"enable", "disable"}:
+                    result = self.cockpit.set_observation_source_enabled(
+                        source_id, action == "enable"
+                    )
+                else:
+                    raise ValueError("source action must be poll, enable, or disable")
+            elif parts == ["cockpit", "api", "knowledge"]:
+                text = body.get("text")
+                source_key = body.get("source_event_key")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("text must be a non-empty string")
+                if not isinstance(source_key, str) or not source_key.strip():
+                    raise ValueError("source_event_key must be a non-empty string")
+                result = await self.cockpit.record_knowledge(
+                    text, source_event_key=source_key
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "proposals"
+            ]:
+                result = await self.cockpit.decide_knowledge_proposal(
+                    unquote(parts[4]), parts[5], note=str(body.get("note") or "")
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "task-candidates"
+            ]:
+                description = body.get("description")
+                result = await self.cockpit.decide_task_candidate(
+                    unquote(parts[4]),
+                    parts[5],
+                    note=str(body.get("note") or ""),
+                    description=(
+                        str(description) if isinstance(description, str) else None
+                    ),
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "questions"
+            ] and parts[5] == "answer":
+                answer = body.get("answer")
+                if not isinstance(answer, str) or not answer.strip():
+                    raise ValueError("answer must be a non-empty string")
+                result = await self.cockpit.answer_knowledge_question(
+                    unquote(parts[4]), answer
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "artifacts"
+            ]:
+                result = await self.cockpit.decide_knowledge_artifact(
+                    unquote(parts[4]),
+                    parts[5],
+                    note=str(body.get("note") or ""),
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "completion-reviews"
+            ]:
+                result = await self.cockpit.decide_knowledge_completion(
+                    unquote(parts[4]),
+                    parts[5],
+                    note=str(body.get("note") or ""),
+                )
+            elif len(parts) == 6 and parts[:4] == [
+                "cockpit", "api", "knowledge", "entities"
+            ]:
+                canonical = body.get("canonical_id")
+                result = self.cockpit.decide_knowledge_entity(
+                    unquote(parts[4]),
+                    parts[5],
+                    canonical_id=str(canonical) if canonical else None,
+                )
+            else:
+                return WebhookResponse(
+                    404, {"error": "unknown knowledge path"}, headers=security_headers
+                )
+        except ValueError as exc:
+            return WebhookResponse(400, {"error": str(exc)}, headers=security_headers)
+        if result is None:
+            return WebhookResponse(
+                404, {"error": "knowledge item not found or loop disabled"},
+                headers=security_headers,
+            )
+        return WebhookResponse(200, result, headers=security_headers)
+
+    async def _project_chat_response(
+        self, path: str, headers: dict[str, str], raw_body: bytes
+    ) -> WebhookResponse:
+        """Handle one message on a project's thread.
+
+        ``/chat`` is the read-only half on its own — asking, and only asking.
+        ``/message`` is the thread's single box: NEXUS SEED decides whether the
+        message asks or tells, and routes it accordingly.
+        """
+
+        if self.cockpit is None:
+            return WebhookResponse(404, {"error": "cockpit is disabled"})
+        security_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if not self.ingress.authorize(_token_from(headers)):
+            return WebhookResponse(
+                401, {"error": "unauthorized"}, headers=security_headers
+            )
+        parts = path.strip("/").split("/")
+        if len(parts) != 3 or parts[0] != "projects" or parts[2] not in {"chat", "message"}:
+            return WebhookResponse(
+                404, {"error": "unknown project path"}, headers=security_headers
+            )
+        try:
+            body = json.loads(raw_body or b"{}")
+        except ValueError:
+            return WebhookResponse(
+                400, {"error": "body is not valid JSON"}, headers=security_headers
+            )
+        message = body.get("message") if isinstance(body, dict) else None
+        if not isinstance(message, str) or not message.strip():
+            return WebhookResponse(
+                400,
+                {"error": "message must be a non-empty string"},
+                headers=security_headers,
+            )
+        project_id = unquote(parts[1])
+        if parts[2] == "message":
+            request_id = body.get("request_id")
+            answer = await self.cockpit.project_message(
+                project_id,
+                message,
+                request_id=str(request_id) if request_id else None,
+                act=body.get("act") is True,
+            )
+        else:
+            answer = await self.cockpit.project_chat_ask(project_id, message)
+        if answer is None:
+            return WebhookResponse(
+                404, {"error": "project not found"}, headers=security_headers
+            )
+        return WebhookResponse(200, answer, headers=security_headers)
 
 
 def _adapter_id_from_path(path: str) -> str | None:
@@ -332,7 +701,14 @@ def _token_from(headers: dict[str, str]) -> str | None:
 
 
 def _http_response(response: WebhookResponse) -> bytes:
-    body = json.dumps(response.body).encode("utf-8")
+    if isinstance(response.body, bytes):
+        body = response.body
+    elif isinstance(response.body, str) and not response.content_type.startswith(
+        "application/json"
+    ):
+        body = response.body.encode("utf-8")
+    else:
+        body = json.dumps(response.body, ensure_ascii=False).encode("utf-8")
     reason = {
         200: "OK",
         202: "Accepted",
@@ -345,8 +721,9 @@ def _http_response(response: WebhookResponse) -> bytes:
     }.get(response.status_code, "OK")
     head = (
         f"HTTP/1.1 {response.status_code} {reason}\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n\r\n"
+        f"Content-Type: {response.content_type}\r\n"
+        + "".join(f"{name}: {value}\r\n" for name, value in response.headers.items())
+        + f"Content-Length: {len(body)}\r\n"
+        + "Connection: close\r\n\r\n"
     )
     return head.encode("latin-1") + body
