@@ -4,17 +4,17 @@
 	branch = main
 [submodule "modules/knowledge"]
 	path = modules/knowledge
-	url = C:/Users/minmi/Documents/PythonAI/nexus_knowledge
+	url = https://github.com/miyokichi/nexus_knowledge.git
 	branch = main
 [submodule "modules/observer"]
 	path = modules/observer
-	url = C:/Users/minmi/Documents/PythonAI/nexus_observer
+	url = https://github.com/miyokichi/nexus_observer.git
 	branch = main
 [submodule "modules/planner"]
 	path = modules/planner
-	url = C:/Users/minmi/Documents/PythonAI/nexus_planner
+	url = https://github.com/miyokichi/nexus_planner.git
 	branch = main
 [submodule "modules/project_manager"]
 	path = modules/project_manager
-	url = C:/Users/minmi/Documents/PythonAI/nexus_project_manager
+	url = https://github.com/miyokichi/nexus_project_manager.git
 	branch = main
