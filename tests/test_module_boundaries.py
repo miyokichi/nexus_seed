@@ -1,5 +1,10 @@
 """Physical module ownership keeps the pre-restructure imports compatible."""
 
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
 from nexus_seed.adapters.manual import ManualAdapter as LegacyManualAdapter
 from nexus_seed.ingress.service import IngressService as LegacyIngressService
 from nexus_seed.knowledge.ledger import KnowledgeLedger as LegacyKnowledgeLedger
@@ -32,3 +37,40 @@ def test_little_agent_is_not_a_nexus_python_dependency() -> None:
     import nexus_seed.integrations.project_agent as integration
 
     assert "little_agent" not in integration.__dict__
+
+
+def test_extracted_modules_do_not_import_nexus_seed_or_each_other() -> None:
+    """Capability modules stay behind the NEXUS SEED composition root."""
+    root = Path(__file__).resolve().parents[1]
+    module_rules = {
+        "modules/knowledge": ("nexus_seed",),
+        "modules/observer": ("nexus_seed",),
+        "modules/planner": (
+            "nexus_seed",
+            "nexus_knowledge",
+            "nexus_project_manager",
+        ),
+        "modules/project_manager": ("nexus_seed", "nexus_knowledge"),
+    }
+    violations: list[str] = []
+    for module_path, forbidden in module_rules.items():
+        for source in (root / module_path).rglob("*.py"):
+            tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
+            for node in ast.walk(tree):
+                imported = _imported_module(node)
+                if imported and any(
+                    imported == name or imported.startswith(f"{name}.")
+                    for name in forbidden
+                ):
+                    violations.append(
+                        f"{source.relative_to(root)} imports forbidden {imported}"
+                    )
+    assert violations == []
+
+
+def _imported_module(node: ast.AST) -> str | None:
+    if isinstance(node, ast.ImportFrom):
+        return node.module
+    if isinstance(node, ast.Import):
+        return node.names[0].name if node.names else None
+    return None
