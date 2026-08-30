@@ -354,6 +354,12 @@ def test_the_manifest_travels_as_a_namespaced_a2a_extension(tmp_path):
     assert metadata[f"{WORKSPACE_EXTENSION}/writable_paths"] == [
         "/w/project-1/resources/sap.csv"
     ]
+    # little_agent's public WorkGrant is message-level.  Its workspace is
+    # writable already; only the external readonly reference is added.
+    message_metadata = params["message"]["metadata"]
+    assert message_metadata["littleAgent/workspace"] == "/w/project-1"
+    assert message_metadata["littleAgent/allowedPaths"] == ["/srv/shared/spec.md"]
+    assert "/w/project-1/resources/sap.csv" not in str(message_metadata)
     # Still an ordinary A2A message/send: the extension only adds metadata keys.
     assert params["message"]["kind"] == "message"
     assert params["message"]["parts"][0]["kind"] == "data"

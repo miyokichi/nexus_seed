@@ -750,10 +750,12 @@ writable_paths   its own copies, the files it may change
 resources        every grant, with its path, access and delivery
 ```
 
-A Bridge starting `little_agent` passes those three straight through as its
-`workspace` / `readable_paths` / `writable_paths`. Over A2A they ride in
-`metadata` under one extension URI, so an agent that does not know the
-extension sees an ordinary, valid message. The workspace also holds a
+A wire-only Bridge maps `workspace` and external read-only references to
+little_agent's public message metadata keys (`littleAgent/workspace` and
+`littleAgent/allowedPaths`). Writable resource copies need no extra grant:
+they already live inside the writable workspace. NEXUS's generic extension
+metadata remains on the A2A request, so an agent that does not know either
+extension still sees an ordinary, valid message. The workspace also holds a
 `RESOURCES.md` and a `.nexus-seed/manifest.json` saying the same thing, for an
 agent that reads files rather than metadata.
 

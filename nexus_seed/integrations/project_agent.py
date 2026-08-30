@@ -37,6 +37,7 @@ from typing import Any
 from ..modules.project_manager.agent_runtime import AgentUnavailable, Dispatch, RemoteWorkLost
 from ..modules.project_manager.models import A2AMessage, A2AMessageType, ProjectAgentConfig
 from ..modules.project_manager.workspace.models import authorized_paths, narrow_resources
+from .agent_runtime import little_agent_message_metadata
 from .a2a import (
     TERMINAL_STATES,
     UNSUPPORTED_STATES,
@@ -209,10 +210,22 @@ class A2AProjectAgentTransport:
         """
         assignment = self.assignment(config, envelope)
         params = _send_params(assignment, config)
+        logger.info(
+            "project %s: sending A2A message/send to %s",
+            config.project_id,
+            self.endpoint.url,
+        )
         try:
             result = await asyncio.to_thread(self.client.call, "message/send", params)
         except A2AProtocolError as exc:
             raise AgentUnavailable(f"project agent unreachable: {exc}") from exc
+        logger.info(
+            "project %s: A2A response received from %s (kind=%s, state=%s)",
+            config.project_id,
+            self.endpoint.url,
+            result.get("kind") or "unknown",
+            task_state(result) or "none",
+        )
 
         if str(result.get("kind") or "") == "message":
             # Answered without ever becoming a task; nothing to ask about later.
@@ -339,11 +352,24 @@ class A2AProjectAgentTransport:
 
 def _send_params(assignment: dict[str, Any], config: ProjectAgentConfig) -> dict[str, Any]:  # noqa: D401
     """Wrap a Project Assignment in one A2A ``message/send`` request."""
+    message_metadata = {
+        "nexus_seed/project_id": config.project_id,
+        "nexus_seed/agent_id": config.agent_id,
+        **little_agent_message_metadata(
+            workspace=config.workspace,
+            readable_paths=assignment.get("readable_paths") or [],
+        ),
+    }
     return {
         "message": {
             "kind": "message",
             "role": "user",
             "messageId": f"{config.project_id}:{config.agent_id}",
+            # little_agent's public A2A WorkGrant lives at message level.  The
+            # generic NEXUS extension remains below at params level for other
+            # A2A runtimes; this is a compatibility translation, not a new
+            # Project contract.
+            "metadata": message_metadata,
             "parts": [
                 {
                     "kind": "data",

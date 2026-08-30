@@ -47,6 +47,45 @@ Project Manager -> integrations/A2A -> little_agent A2A server
 little_agentは1仕事の実行、Skill選択、Tool/LLM利用、Execution Result生成を所有し、
 NEXUS SEED側はProject、長期状態、監査記録、Workspace grantを所有します。
 
+### A2A契約差分（E2E実装前調査）
+
+| 項目 | NEXUS送信 | little_agent `main`期待 | 対応 |
+|---|---|---|---|
+| instruction | DataPart `data.instruction` | 同左 | 変換なし |
+| context | DataPart `data.context` | 同左 | 変換なし |
+| output_schema | DataPart `data.output_schema` | 同左 | 変換なし |
+| workspace | `params.metadata`のNEXUS extension URI | `message.metadata["littleAgent/workspace"]` | Bridgeでキーと配置を変換 |
+| readable_paths | `params.metadata`のNEXUS extension URI | `message.metadata["littleAgent/allowedPaths"]` | Bridgeでreadonly pathだけ変換 |
+| writable_paths | NEXUS extension URI | workspace自体がread/write | little_agent向け追加grantなし（copyはworkspace内） |
+| A2A metadata key | URI名前空間、params level | `littleAgent/*`、message level | 汎用metadataを維持しつつmessage metadataを追加 |
+| result format | `messages[]`を含むDataPart | output schemaに適合したDataPart | 変換なし |
+
+BridgeはA2A表現だけを変換します。Project判断、Skill/Tool選択、結果の意味解釈、
+Project lifecycle更新は行わず、little_agent packageもimportしません。
+
+### 実E2Eの起動
+
+little_agentは独立プロセスとして起動します（submodule内の環境変数でLLMを設定）。
+
+```bash
+LITTLE_AGENT_WORKSPACE=/path/to/project-workspaces \
+uv run --project modules/little_agent python -m little_agent.a2a.serve \
+  --agent default --port 8801 --auto-approve \
+  --readable-path /path/to/original
+```
+
+別ターミナルからNEXUSをA2A runtimeへ向けます。
+
+```bash
+NEXUS_SEED_PROJECT_AGENT_RUNTIME=a2a \
+NEXUS_SEED_PROJECT_AGENT_URL=http://127.0.0.1:8801 \
+NEXUS_SEED_PROJECT_WORKSPACE=/path/to/project-workspaces \
+python -m nexus_seed.app
+```
+
+自己完結する実プロセス試験（little_agent serverの起動・停止もテスト管理）は
+`RUN_LITTLE_AGENT_E2E=1 pytest tests/integration/test_little_agent_e2e.py`で実行できます。
+
 ## MVP互換
 
 `nexus_seed/mvp/`に実装は残していません。各fileは新しい正本へのcompatibility

@@ -630,6 +630,11 @@ class ProjectOrchestrator:
             )
         else:
             self.projects.complete(project, summary=summary)
+            logger.info(
+                "project %s result stored; status=%s",
+                project.id,
+                ProjectStatus.COMPLETED.value,
+            )
         agent = self.agents.for_project(project.id)
         if agent is not None:
             await self.agents.idle(agent)
