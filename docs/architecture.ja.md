@@ -174,21 +174,29 @@ ResourceVersionとRepresentationを記録します。
 
 ```text
 nexus_seed/
-├── core/           # 6 primitivesのpure data model
-├── runtime/        # router, scheduler, executor, dispatcher
-├── storage/        # sqlite3 store
-├── context/        # activationごとのContext compiler
-├── delivery/       # durable EventDelivery
-├── ingress/        # external observation boundary
-├── adapters/       # manual, webhook, local file
-├── resources/      # Resource / Version / Representation
-├── processes/      # 現行の通常Process handler
-├── knowledge/      # append-only ledgerとWorld Projection
-├── orchestrator/   # Project / Agent / A2A lifecycle
-├── providers/      # A2A transport client
-├── chat/           # Project-scoped conversation
-└── cockpit/        # human review UI/API
+├── app/                     # composition rootとmodule横断flow
+├── modules/
+│   ├── observer/            # source、ingress、adapter
+│   ├── knowledge/           # append-only ledgerとprojection
+│   ├── planner/             # assessmentとproposal
+│   └── project_manager/     # Project、Agent、Workspace、A2A domain
+├── integrations/            # 外部transport/provider
+├── policy/                  # approval policy
+├── platform/                # 公開contract/mechanism facade
+├── core/                    # 6 primitivesの安定実装path
+├── runtime/                 # durable Runtimeの安定実装path
+├── storage/                 # Runtime共通storeと互換import
+├── resources/               # Resource / Version / Representation
+├── processes/               # module横断Resource Process pipeline
+├── chat/                    # Project-scoped conversation
+└── cockpit/                 # human review UI/API
+
+modules/
+└── little_agent/            # 独立Git submodule、接続はA2Aのみ
 ```
+
+旧package pathはimport互換facadeとして維持しています。物理的な所有関係と
+移行表は `docs/module-layout.ja.md` に記載しています。
 
 ## 検証
 

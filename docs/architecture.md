@@ -180,21 +180,29 @@ New databases create only these areas:
 
 ```text
 nexus_seed/
-├── core/           # pure models for the six primitives
-├── runtime/        # router, scheduler, executor, dispatcher
-├── storage/        # sqlite3 stores
-├── context/        # per-activation Context compiler
-├── delivery/       # durable EventDelivery
-├── ingress/        # external observation boundary
-├── adapters/       # manual, webhook, local file
-├── resources/      # Resource / Version / Representation
-├── processes/      # active ordinary Process handlers
-├── knowledge/      # append-only ledger and World Projection
-├── orchestrator/   # Project / Agent / A2A lifecycle
-├── providers/      # A2A transport client
-├── chat/           # project-scoped conversation
-└── cockpit/        # human review UI and API
+├── app/                     # composition root and cross-module flows
+├── modules/
+│   ├── observer/            # sources, ingress, adapter ownership
+│   ├── knowledge/           # append-only ledger and projections
+│   ├── planner/             # assessments and proposals
+│   └── project_manager/     # Project, Agent, Workspace, A2A domain
+├── integrations/            # external transports and providers
+├── policy/                  # approval policy
+├── platform/                # public contract/mechanism facades
+├── core/                    # stable implementation of six primitives
+├── runtime/                 # stable durable Runtime implementation
+├── storage/                 # Runtime-wide stores and compatibility imports
+├── resources/               # Resource / Version / Representation
+├── processes/               # cross-domain Resource Process pipeline
+├── chat/                    # project-scoped conversation
+└── cockpit/                 # human review UI and API
+
+modules/
+└── little_agent/            # independent Git submodule; A2A only
 ```
+
+Legacy package paths remain as import-only compatibility facades. The physical
+ownership map is documented in `docs/module-layout.ja.md`.
 
 ## Verification
 

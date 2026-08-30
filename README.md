@@ -1008,16 +1008,25 @@ Agent returns only management-level status and escalation messages over A2A.
 ## Repository layout
 
 ```text
-nexus_seed/knowledge/     Knowledge Ledger, World Projection, Consolidation, Principles
-nexus_seed/orchestrator/  Project routing, lifecycle, Agent assignment, A2A
-nexus_seed/storage/       SQLite stores, including orchestrator records
-nexus_seed/core/          the six fixed data models
-nexus_seed/runtime/       durable event and continuation runtime
-nexus_seed/processes/     Project routing and Resource observation handlers
-nexus_seed/providers/     A2A client and Project Agent transport
-nexus_seed/cockpit/       Project/Knowledge-centered dependency-free Web UI
-tests/                    unit, acceptance, and restart-convergence tests
+nexus_seed/app/                      composition root and application flows
+nexus_seed/modules/observer/         sources, ingress, and observation adapters
+nexus_seed/modules/knowledge/        Knowledge ledger, search, and projections
+nexus_seed/modules/planner/          Knowledge/Observation assessment and proposals
+nexus_seed/modules/project_manager/  lifecycle, assignment, workspace, and A2A domain
+nexus_seed/integrations/             webhook, LLM, and external A2A transports
+nexus_seed/policy/                   approval policy
+nexus_seed/platform/                 stable contract and mechanism facades
+nexus_seed/core/                     six fixed primitives (stable implementation path)
+nexus_seed/runtime/                  durable Runtime (stable implementation path)
+modules/little_agent/                independent Git submodule; connected only over A2A
+tests/                               unit, acceptance, and restart-convergence tests
 ```
+
+The former `knowledge/`, `orchestrator/`, `adapters/`, `providers/`,
+`workspace/`, and module-owned `storage/` paths are compatibility facades. New
+code should import the owning module path. See
+[Module boundaries](docs/module-layout.ja.md) for the migration map and the
+directories deliberately retained at platform level.
 
 ## Development
 
@@ -1041,4 +1050,5 @@ pytest tests/integration
 
 - [Architecture](docs/architecture.md)
 - [アーキテクチャ詳細（日本語）](docs/architecture.ja.md)
+- [モジュール境界と互換パス](docs/module-layout.ja.md)
 - [Contributor invariants and working agreement](AGENTS.md)

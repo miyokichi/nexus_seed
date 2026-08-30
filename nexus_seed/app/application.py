@@ -17,19 +17,23 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from .adapters.file_watch import LocalFileAdapter
-from .adapters.webhook import WebhookIngress, WebhookServer
-from .backends.base import BackendRequest
-from .cockpit import CockpitService
-from .config_report import build_report, format_report
-from .llm_config import LLMConfigurationError, configure_llm, load_env_file
-from .knowledge import CONTEXT_DIR, KnowledgeLoop, ReasoningProjectAgent
-from .operations import (
+from ..backends.base import BackendRequest
+from ..cockpit import CockpitService
+from ..config_report import build_report, format_report
+from ..llm_config import LLMConfigurationError, configure_llm, load_env_file
+from ..integrations.project_agent_config import (
+    ProjectAgentConfigurationError,
+    build_orchestrator,
+)
+from ..integrations.webhook import WebhookIngress, WebhookServer
+from ..modules.knowledge import CONTEXT_DIR
+from ..modules.observer.adapters.file_watch import LocalFileAdapter
+from ..operations import (
     OperationalCommandError,
     read_status,
     submit_webhook_event,
 )
-from .orchestrator import (
+from ..modules.project_manager import (
     Agent,
     AssignmentStatus,
     Project,
@@ -37,11 +41,11 @@ from .orchestrator import (
     RoutingDecision,
     InProcessAgentRuntime,
 )
-from .orchestrator_config import ProjectAgentConfigurationError, build_orchestrator
-from .processes.project_orchestration import bootstrap_project_orchestration
-from .processes.resources import bootstrap_observer, bootstrap_resources
-from .resources.scope import ResourceScope
-from .runtime.runtime import Runtime
+from ..processes.resources import bootstrap_observer, bootstrap_resources
+from ..resources.scope import ResourceScope
+from ..runtime.runtime import Runtime
+from .flows.knowledge_loop import KnowledgeLoop, ReasoningProjectAgent
+from .flows.project_orchestration import bootstrap_project_orchestration
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +139,7 @@ def bootstrap_application(
     bootstrap_resources(runtime, scope=ResourceScope.for_root(resource_root))
     bootstrap_observer(runtime)
     configure_llm(runtime, env_file=env_file)
-    from .observation_sources import ObservationSourceService
+    from ..modules.observer.sources import ObservationSourceService
 
     runtime.observation_sources = ObservationSourceService(
         runtime, data_root=settings.data_dir

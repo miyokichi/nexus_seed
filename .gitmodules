@@ -1,0 +1,4 @@
+[submodule "modules/little_agent"]
+	path = modules/little_agent
+	url = https://github.com/miyokichi/little_agent.git
+	branch = main

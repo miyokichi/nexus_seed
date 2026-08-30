@@ -7,7 +7,10 @@ External/Human input -> Observer -> Knowledge -> Planner -> Human approval
                      -> Project Manager -> Executor -> Result -> Knowledge
 ```
 
-各境界は `nexus_seed.mvp.interfaces` の Protocol で交換できます。MVP Runtime は呼び出し順だけを持ち、Project を提案するか、どう実行するか、承認するかを判断しません。
+各境界の正本は `nexus_seed.platform.contracts.interfaces` にあり、凍結済みの
+`nexus_seed.mvp.interfaces` は互換importです。MVP Runtimeの正本は
+`nexus_seed.app.flows.mvp` にあり、呼び出し順だけを持ちます。Projectを提案するか、
+どう実行するか、承認するかは判断しません。
 
 ## 既存コードの調査分類
 
