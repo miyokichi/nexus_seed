@@ -1,0 +1,98 @@
+{
+  "tools": [
+    {
+      "name": "get_screen_info",
+      "description": "Return the real screen resolution and current mouse cursor position. Call this before clicking so you know the coordinate space.",
+      "script": "scripts/computer_use.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "move_mouse",
+      "description": "Move the mouse cursor to a screen position (real screen pixels). If the coordinate came from a downscaled screenshot, also pass image_size so the tool converts it.",
+      "script": "scripts/computer_use.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer", "description": "X coordinate." },
+          "y": { "type": "integer", "description": "Y coordinate." },
+          "duration": { "type": "number", "description": "Optional seconds to glide the cursor (default 0 = instant)." },
+          "image_size": {
+            "type": "array",
+            "description": "Optional [width, height] of the screenshot the coordinate was read from. The tool converts to real pixels.",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": ["x", "y"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "click",
+      "description": "Click the mouse. Clicks at (x, y) if given, otherwise at the current cursor position. Supports left/right/middle and multiple clicks.",
+      "script": "scripts/computer_use.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "integer", "description": "Optional X coordinate." },
+          "y": { "type": "integer", "description": "Optional Y coordinate." },
+          "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button (default left)." },
+          "clicks": { "type": "integer", "description": "Number of clicks, e.g. 2 for a double click (default 1)." },
+          "image_size": {
+            "type": "array",
+            "description": "Optional [width, height] of the screenshot the coordinate was read from. The tool converts to real pixels.",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "type_text",
+      "description": "Type a string of text at the current focus (as keyboard input). For ASCII text the tool first switches the Windows IME to direct/alphanumeric input so a kana IME does not garble letters. Non-ASCII/IME text may still not enter correctly.",
+      "script": "scripts/computer_use.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "description": "Text to type." },
+          "interval": { "type": "number", "description": "Optional seconds between keystrokes (default 0)." },
+          "force_english": { "type": "boolean", "description": "Force the IME to direct/alphanumeric input before typing. Defaults to true when the text is plain ASCII; set false to keep the current IME mode." },
+          "restore_ime": { "type": "boolean", "description": "Restore the previous IME mode (e.g. kana) after typing. Default false (leave it in direct input)." }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "press_keys",
+      "description": "Press a key or a hotkey combo. Use 'enter', 'tab', 'esc' for single keys, or 'ctrl+c', 'alt+tab' for combos. An array of key names also works.",
+      "script": "scripts/computer_use.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "description": "A single key name, a '+'-joined combo like 'ctrl+c', or an array of key names.",
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          }
+        },
+        "required": ["keys"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

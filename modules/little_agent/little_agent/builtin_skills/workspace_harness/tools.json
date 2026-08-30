@@ -1,0 +1,146 @@
+{
+  "tools": [
+    {
+      "name": "harness_overview",
+      "description": "Map the filesystem task harness: top-level areas (human-controlled), how many tasks each holds and their statuses, any pending area proposals, and the shared materials folder. Call this first to orient before creating or updating tasks.",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_task_folders",
+      "description": "List task folders as 'area/slug [status] (assignee) title', optionally filtered by area and/or status. Each task is a folder with its own task.md. (Filesystem harness; distinct from project_manager's JSON list_tasks.)",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "area": { "type": "string", "description": "Limit to this top-level area name." },
+          "status": { "type": "string", "enum": ["todo", "doing", "review", "blocked", "done", "cancelled", "proposed"], "description": "Filter by task status." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_task_folder",
+      "description": "Read one task's task.md (front matter + notes) and list the files in its folder (outputs/, notes/).",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string", "description": "Task reference: 'area/slug' (preferred) or a bare 'slug' if unique." }
+        },
+        "required": ["task"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_task_folder",
+      "description": "Create a new task folder inside an EXISTING top-level area (with task.md, outputs/, notes/). Fails if the area does not exist, because top-level areas are human-controlled — use propose_area for a new area. Set status=proposed to file the task as an AI suggestion awaiting the user's OK.",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "area": { "type": "string", "description": "Existing top-level area to place the task under." },
+          "title": { "type": "string", "description": "Task title; the folder slug is derived from it." },
+          "description": { "type": "string", "description": "What the task is about (goes into task.md)." },
+          "assignee": { "type": "string", "enum": ["ai", "human"], "description": "Who performs it. Defaults to ai." },
+          "assignee_name": { "type": "string", "description": "Person's name for a human task, e.g. 山田さん." },
+          "priority": { "type": "string", "enum": ["low", "normal", "high"], "description": "Defaults to normal." },
+          "due": { "type": "string", "description": "Optional due date or due text." },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional tags." },
+          "status": { "type": "string", "enum": ["todo", "doing", "review", "blocked", "done", "cancelled", "proposed"], "description": "Initial status. Defaults to todo. Use 'proposed' to suggest the task for the user's approval." }
+        },
+        "required": ["area", "title"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_task_folder",
+      "description": "Update a task folder's front matter: status, assignee, assignee_name, priority, due, tags (replaces), and materials_add (links a shared file). Bumps the updated timestamp. (Filesystem harness; distinct from project_manager's JSON update_task.)",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string", "description": "Task reference: 'area/slug' or bare 'slug'." },
+          "status": { "type": "string", "enum": ["todo", "doing", "review", "blocked", "done", "cancelled", "proposed"], "description": "New status." },
+          "assignee": { "type": "string", "enum": ["ai", "human"], "description": "New assignee. Setting ai clears assignee_name." },
+          "assignee_name": { "type": "string", "description": "Person's name for a human task. Empty string clears it." },
+          "priority": { "type": "string", "enum": ["low", "normal", "high"], "description": "New priority." },
+          "due": { "type": "string", "description": "New due date/text. Empty string clears it." },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "New full list of tags (replaces existing)." },
+          "materials_add": { "type": "string", "description": "Path of a shared material to link to this task (e.g. shared/templates/invoice.xlsx)." }
+        },
+        "required": ["task"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_task_note",
+      "description": "Append a timestamped progress note to a task's 進捗ログ section. Use it at milestones to record what was done and what's next; humans can read/edit the same file.",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string", "description": "Task reference: 'area/slug' or bare 'slug'." },
+          "text": { "type": "string", "description": "Progress note text." },
+          "via": { "type": "string", "description": "Who wrote it: 'agent' (default) or 'human'." }
+        },
+        "required": ["task", "text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "propose_area",
+      "description": "Record a suggestion for a NEW top-level area in tasks/PROPOSALS.md WITHOUT creating the folder. Top-level structure is human-controlled; use this instead of creating an area when the existing ones don't fit, then tell the user.",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Proposed area folder name." },
+          "reason": { "type": "string", "description": "Why this area is worth adding." }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "search_shared",
+      "description": "Autonomously search the shared materials folder for files relevant to a task, matching both filenames and text-file contents. Returns ranked paths with snippets. Use this to find common templates, references, and past materials before asking the user.",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Keyword(s) to look for in filenames and text contents." },
+          "limit": { "type": "integer", "description": "Maximum number of hits to return (default 20)." }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_shared",
+      "description": "Read a UTF-8 text file from the shared materials folder by its path relative to the shared root. For .xlsx/.pptx/.docx use the dedicated Office skills instead.",
+      "script": "scripts/harness_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "File path relative to the shared materials root." }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

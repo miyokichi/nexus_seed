@@ -1,0 +1,128 @@
+{
+  "tools": [
+    {
+      "name": "create_agent",
+      "description": "Create a new agent profile under agents/<name>/ by copying the chosen skill folders from the skill library. Sets an optional core-tool allowlist.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Agent name. Normalized to lowercase letters, digits, hyphens, and underscores."
+          },
+          "description": {
+            "type": "string",
+            "description": "Short description of what the agent is for."
+          },
+          "skills": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Skill folder names from the library (skills/) to copy into the agent."
+          },
+          "core_tools": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional allowlist of built-in core tool names (e.g. read_file, write_file). Omit to enable all core tools."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Replace an existing agent of the same name.",
+            "default": false
+          }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_agents",
+      "description": "List all agent profiles with their description and skill count.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "show_agent",
+      "description": "Show one agent profile: description, model, core tools, and enabled skills.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Agent name."}
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_agent_skill",
+      "description": "Copy one skill folder from the library into an existing agent.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Agent name."},
+          "skill": {"type": "string", "description": "Skill folder name from the library to add."}
+        },
+        "required": ["name", "skill"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "remove_agent_skill",
+      "description": "Remove one copied skill folder from an agent.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Agent name."},
+          "skill": {"type": "string", "description": "Skill folder name to remove from the agent."}
+        },
+        "required": ["name", "skill"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_agent_core_tools",
+      "description": "Set an agent's core-tool allowlist. Omit core_tools to enable all core tools.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Agent name."},
+          "core_tools": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Allowlist of core tool names, or empty/omitted for all."
+          }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_agent",
+      "description": "Delete an agent profile and its copied skills. Cannot be undone.",
+      "script": "scripts/agent_manager.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Agent name."}
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

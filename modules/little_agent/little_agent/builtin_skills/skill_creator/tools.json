@@ -1,0 +1,67 @@
+{
+  "tools": [
+    {
+      "name": "create_skill",
+      "description": "Create a portable Little Agent skill folder under the workspace skills directory.",
+      "script": "scripts/skill_creator.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Skill name. It will be normalized to lowercase letters, digits, hyphens, and underscores."
+          },
+          "description": {
+            "type": "string",
+            "description": "Short description of what the skill does."
+          },
+          "include_scripts": {
+            "type": "boolean",
+            "description": "Create a scripts directory and a sample Python script.",
+            "default": false
+          },
+          "include_references": {
+            "type": "boolean",
+            "description": "Create a references directory.",
+            "default": false
+          },
+          "include_assets": {
+            "type": "boolean",
+            "description": "Create an assets directory.",
+            "default": false
+          },
+          "include_tools_manifest": {
+            "type": "boolean",
+            "description": "Create tools.json for script-backed tools.",
+            "default": false
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Allow overwriting existing generated files.",
+            "default": false
+          }
+        },
+        "required": ["name", "description"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "validate_skill",
+      "description": "Validate a Little Agent skill folder structure.",
+      "script": "scripts/skill_creator.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Skill folder name under skills/."
+          }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

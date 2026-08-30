@@ -21,15 +21,17 @@ NEXUS SEED自身はProjectの存在、状態、永続化、承認、Agentとの�
 
 ## 最短の起動手順
 
-### 1. repositoryとsubmoduleを準備する
+### 1. repositoryを確認する
 
-repository rootで実行します。
+4つのNEXUS moduleと`little_agent`はrepositoryに含まれています。clone後の
+submodule初期化は不要です。repository rootで次を確認します。
 
 ```powershell
-git submodule update --init --recursive
+Test-Path modules/knowledge/pyproject.toml
+Test-Path modules/little_agent/pyproject.toml
 ```
 
-`modules/knowledge`などが空の場合は、submoduleがまだ初期化されていません。上のcommandを再実行してください。
+どちらも`True`になれば準備できています。
 
 ### 2. Python環境を作る
 

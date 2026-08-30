@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.test-*.json
+.test-*/
+logs/
+agents/
+
+*.png
+
+# Runtime state written by the agent and its skills, not source.
+data/
+memory.md
+profile.md

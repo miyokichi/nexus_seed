@@ -1,0 +1,27 @@
+{
+  "tools": [
+    {
+      "name": "take_screenshot",
+      "description": "Capture the PC screen and return the image to the model so it can see what is on screen. Optionally also saves a PNG in the workspace.",
+      "script": "scripts/screen_capture.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "save_path": {
+            "type": "string",
+            "description": "Optional workspace-relative path to also save the captured PNG."
+          },
+          "region": {
+            "type": "array",
+            "description": "Optional capture region as [x, y, width, height]. Captures the full screen if omitted.",
+            "items": { "type": "integer" },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

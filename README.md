@@ -27,13 +27,14 @@ the first request, Cockpit, resources, A2A little_agent, and troubleshooting.
 
 - Python 3.12 or 3.13 (the project defaults to 3.13)
 - [uv](https://docs.astral.sh/uv/) (recommended)
-- Git submodules initialized for the four NEXUS modules and `little_agent`
+
+All NEXUS modules and `little_agent` are included in this repository under
+`modules/`; no submodule initialization is required.
 
 Python 3.14 is intentionally excluded because Semantica's current `gensim`
 dependency does not publish a compatible Windows wheel.
 
 ```bash
-git submodule update --init --recursive
 uv sync --extra dev --extra semantica
 cp .env.example .env
 ```
@@ -41,7 +42,6 @@ cp .env.example .env
 PowerShell equivalent:
 
 ```powershell
-git submodule update --init --recursive
 uv sync --extra dev --extra semantica
 Copy-Item .env.example .env
 ```
@@ -279,7 +279,7 @@ nexus_seed/core/            the six fixed data primitives
 nexus_seed/runtime/         durable routing, execution, resume, and delivery
 nexus_seed/platform/        cross-module contracts
 nexus_seed/resources/       Resource/Version/Representation infrastructure
-modules/                    independently owned capability repositories
+modules/                    in-repository capability modules and little_agent
 tests/                      unit, boundary, restart, and E2E tests
 ```
 

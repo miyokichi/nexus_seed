@@ -1,0 +1,208 @@
+{
+  "tools": [
+    {
+      "name": "create_project",
+      "description": "Create a project in data/projects.json, optionally registering its whole task DAG (AI and human tasks with dependencies) in one call.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "description": "Project title." },
+          "goal": { "type": "string", "description": "Optional goal or deadline context." },
+          "tasks": {
+            "type": "array",
+            "description": "Optional initial tasks. Reference other tasks in this call by their temporary 'key'.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": { "type": "string", "description": "Temporary key used only inside this call to reference dependencies. Example: t1" },
+                "title": { "type": "string", "description": "Task title." },
+                "description": { "type": "string", "description": "Optional details about what to do." },
+                "assignee": { "type": "string", "enum": ["ai", "human"], "description": "Who performs the task: the agent (ai) or a person (human)." },
+                "assignee_name": { "type": "string", "description": "Optional person's name for a human task, e.g. 山田さん. Display only; the task still behaves as a human task." },
+                "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Keys of tasks that must finish first." },
+                "due": { "type": "string", "description": "Optional due date or due text." },
+                "priority": { "type": "string", "description": "Optional priority such as low, normal, high." }
+              },
+              "required": ["key", "title", "assignee"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_task",
+      "description": "Add one task. Without project_id the task goes to the Inbox project (single standalone TODOs). depends_on must use real task ids from the same project.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Target project id. Omit for a standalone TODO (goes to Inbox)." },
+          "title": { "type": "string", "description": "Task title." },
+          "description": { "type": "string", "description": "Optional details about what to do." },
+          "assignee": { "type": "string", "enum": ["ai", "human"], "description": "Who performs the task. Defaults to human." },
+          "assignee_name": { "type": "string", "description": "Optional person's name for a human task, e.g. 山田さん." },
+          "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Existing task ids that must finish first." },
+          "due": { "type": "string", "description": "Optional due date or due text." },
+          "priority": { "type": "string", "description": "Optional priority such as low, normal, high." }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_task",
+      "description": "Edit a task's fields: title, description, assignee, due, priority, and/or depends_on (validated against cycles).",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Project id. Optional; the task is searched across projects when omitted." },
+          "task_id": { "type": "string", "description": "Task id to edit." },
+          "title": { "type": "string", "description": "New title." },
+          "description": { "type": "string", "description": "New description." },
+          "assignee": { "type": "string", "enum": ["ai", "human"], "description": "New assignee. Setting it to ai clears assignee_name." },
+          "assignee_name": { "type": "string", "description": "New person's name for a human task, e.g. 山田さん. Empty string to clear." },
+          "due": { "type": "string", "description": "New due date or due text." },
+          "priority": { "type": "string", "description": "New priority." },
+          "depends_on": { "type": "array", "items": { "type": "string" }, "description": "New full list of dependency task ids." }
+        },
+        "required": ["task_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_task_status",
+      "description": "Record a task's status transition (pending/running/done/failed/skipped) and an optional result summary.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Project id. Optional; the task is searched across projects when omitted." },
+          "task_id": { "type": "string", "description": "Task id to update." },
+          "status": { "type": "string", "enum": ["pending", "running", "done", "failed", "skipped"], "description": "New status." },
+          "result": { "type": "string", "description": "Short outcome summary recorded with done/failed." }
+        },
+        "required": ["task_id", "status"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_task_comment",
+      "description": "Append a timestamped progress comment to a task. Use while working on a task to record progress notes.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Project id. Optional; the task is searched across projects when omitted." },
+          "task_id": { "type": "string", "description": "Task id to comment on." },
+          "text": { "type": "string", "description": "Progress comment text." }
+        },
+        "required": ["task_id", "text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "show_project",
+      "description": "Show one project with all tasks, dependencies, and which tasks are READY to start.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Project id. Defaults to the only active project (or the Inbox)." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_projects",
+      "description": "List projects with progress (done/total tasks and ready count). Can filter by status.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Filter status: active, done, or all.",
+            "enum": ["active", "done", "all"],
+            "default": "active"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_tasks",
+      "description": "List tasks across all projects (or one project). status=open shows pending/running tasks.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Filter status: open, done, or all.",
+            "enum": ["open", "done", "all"],
+            "default": "open"
+          },
+          "project_id": { "type": "string", "description": "Limit to this project." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_task",
+      "description": "Delete a task by task id. Other tasks' dependencies on it are removed as well.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Project id. Optional; the task is searched across projects when omitted." },
+          "task_id": { "type": "string", "description": "Task id to delete." }
+        },
+        "required": ["task_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_project",
+      "description": "Delete a project and all of its tasks by project id.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "description": "Project id to delete." }
+        },
+        "required": ["project_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "open_project_viewer",
+      "description": "Start the local project viewer (http://127.0.0.1:8765/) if needed and open it in the browser. Humans can create/edit projects and tasks there.",
+      "script": "scripts/project_tool.py",
+      "requires_confirmation": false,
+      "timeout_seconds": 20,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "port": { "type": "integer", "description": "Viewer port. Defaults to LITTLE_AGENT_VIEWER_PORT or 8765." },
+          "project_id": { "type": "string", "description": "Open the viewer focused on this project." }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

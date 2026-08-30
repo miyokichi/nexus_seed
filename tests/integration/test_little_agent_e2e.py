@@ -1,4 +1,4 @@
-"""Real-process E2E between NEXUS SEED and the little_agent submodule.
+"""Real-process E2E between NEXUS SEED and the in-repository little_agent.
 
 The Agent Runtime and A2A transport are real.  A small local OpenAI-compatible
 service makes the model choices deterministic while still exercising

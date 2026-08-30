@@ -1,0 +1,64 @@
+schema_version: "0.1"
+
+document:
+  id: "assumption-001"
+  source:
+    file: "assumptions.xlsx"
+    location: "Sheet1"
+
+content:
+  text: |
+    GenX uses WL Width.
+    WL Width has a typical value of 50 nm and a variation of 10 nm.
+    A performance evaluation report is required and is currently missing.
+
+entities:
+  - id: "gen_x"
+    name: "GenX"
+    type: "Generation"
+    aliases: []
+    properties: {}
+    source:
+      document_id: "assumption-001"
+      location: "Sheet1!A2"
+
+  - id: "wl_width"
+    name: "WL Width"
+    type: "Parameter"
+    aliases:
+      - "WL width"
+    properties:
+      typical: 50
+      variation: 10
+      unit: "nm"
+    source:
+      document_id: "assumption-001"
+      location: "Sheet1!B2:E2"
+
+  - id: "performance_report"
+    name: "Performance Evaluation Report"
+    type: "Deliverable"
+    aliases:
+      - "performance report"
+    properties:
+      required: true
+      status: "missing"
+    source:
+      document_id: "assumption-001"
+      location: "Sheet1!F2:G2"
+
+relations:
+  explicit:
+    - subject: "gen_x"
+      predicate: "uses_parameter"
+      object: "wl_width"
+      source:
+        document_id: "assumption-001"
+        location: "Sheet1!A2:E2"
+
+    - subject: "gen_x"
+      predicate: "requires"
+      object: "performance_report"
+      source:
+        document_id: "assumption-001"
+        location: "Sheet1!F2:G2"

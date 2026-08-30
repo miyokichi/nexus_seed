@@ -1,0 +1,51 @@
+{
+  "tools": [
+    {
+      "name": "extract_emails",
+      "script": "scripts/extract_emails.py",
+      "description": "Extract Outlook emails filtered by subject and sender, then save the result as CSV or JSON.",
+      "requires_confirmation": true,
+      "timeout_seconds": 120,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "description": "Email source: live Outlook profile or pst file.",
+            "enum": ["live", "pst"],
+            "default": "live"
+          },
+          "pst_path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .pst path. Required when source_type is pst."
+          },
+          "subject_filter": {
+            "type": "string",
+            "description": "Case-insensitive substring filter for email subject."
+          },
+          "sender_filter": {
+            "type": "string",
+            "description": "Case-insensitive substring filter for sender name or sender address."
+          },
+          "output_path": {
+            "type": "string",
+            "description": "Workspace-relative output file path.",
+            "default": "output_emails.csv"
+          },
+          "output_format": {
+            "type": "string",
+            "description": "Output format.",
+            "enum": ["csv", "json"],
+            "default": "csv"
+          },
+          "include_body": {
+            "type": "boolean",
+            "description": "Include the first 500 characters of the email body.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+[project]
+name = "little-agent"
+version = "0.1.0"
+description = "A small stateless agent runtime: skills, tools, and an A2A interface."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "python-dotenv>=1.0.1",
+  "json-repair>=0.30.0",
+  # Core safety feature: the emergency-stop hotkey (control.py) is armed on
+  # every agent turn. Degrades gracefully if the backend is unavailable.
+  "pynput>=1.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+screen = [
+  "mss>=9.0",
+  "Pillow>=10.0",
+]
+control = [
+  "pyautogui>=0.9.54",
+]
+
+[project.scripts]
+little-agent = "little_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["little_agent*"]
+exclude = ["tests*"]
+
+# The built-in skill library ships with the code: skills are a runtime resource,
+# so a normal `pip install` must carry them, not just an editable checkout.
+# Skill folders are data, not Python packages, so they are declared here rather
+# than found by packages.find.
+[tool.setuptools.package-data]
+little_agent = [
+  "builtin_skills/*/SKILL.md",
+  "builtin_skills/*/tools.json",
+  "builtin_skills/*/scripts/*",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

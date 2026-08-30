@@ -1,0 +1,15 @@
+{
+  "tools": [
+    {
+      "name": "get_datetime",
+      "description": "Return the current date, time, weekday, week number, and timezone.",
+      "script": "scripts/datetime_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}

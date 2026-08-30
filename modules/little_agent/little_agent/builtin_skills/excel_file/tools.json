@@ -1,0 +1,44 @@
+{
+  "tools": [
+    {
+      "name": "read_excel",
+      "description": "Read text values from a .xlsx workbook inside the workspace.",
+      "script": "scripts/excel_file.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Workspace-relative .xlsx path." },
+          "sheet": { "type": "string", "description": "Optional sheet name to read." },
+          "max_rows": { "type": "integer", "description": "Maximum rows per sheet.", "default": 100 }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_excel",
+      "description": "Create a simple single-sheet .xlsx workbook inside the workspace.",
+      "script": "scripts/excel_file.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Workspace-relative .xlsx output path." },
+          "sheet_name": { "type": "string", "description": "Worksheet name.", "default": "Sheet1" },
+          "rows": {
+            "type": "array",
+            "description": "Rows as arrays of cell values.",
+            "items": { "type": "array", "items": {} }
+          },
+          "csv_text": {
+            "type": "string",
+            "description": "Optional CSV text. Used when rows is omitted."
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

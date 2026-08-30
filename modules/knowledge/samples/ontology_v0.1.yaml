@@ -1,0 +1,10 @@
+version: "0.1"
+
+entity_types:
+  - "Generation"
+  - "Parameter"
+  - "Deliverable"
+
+relation_types:
+  - "uses_parameter"
+  - "requires"

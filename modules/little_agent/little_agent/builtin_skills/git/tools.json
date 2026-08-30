@@ -1,0 +1,87 @@
+{
+  "tools": [
+    {
+      "name": "git_status",
+      "description": "Show the working tree status (modified, staged, untracked files).",
+      "script": "scripts/git_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "git_diff",
+      "description": "Show unstaged changes. Use staged=true to show staged changes. Optionally limit to a path.",
+      "script": "scripts/git_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "staged": {
+            "type": "boolean",
+            "description": "If true, show staged (cached) diff instead of unstaged.",
+            "default": false
+          },
+          "path": {
+            "type": "string",
+            "description": "Limit diff to this workspace-relative path."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "git_log",
+      "description": "Show recent commit history as one-line summaries.",
+      "script": "scripts/git_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Number of commits to show.",
+            "default": 10
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "git_add",
+      "description": "Stage files for commit. Use path='.' to stage all changes.",
+      "script": "scripts/git_tool.py",
+      "requires_confirmation": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative path to stage. Use '.' for all changes."
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "git_commit",
+      "description": "Commit staged changes with a message.",
+      "script": "scripts/git_tool.py",
+      "requires_confirmation": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Commit message."
+          }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

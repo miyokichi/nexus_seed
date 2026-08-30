@@ -38,13 +38,14 @@ Projectの識別子、ライフサイクル、永続化、review、監査可能�
 
 - Python 3.12または3.13（project既定は3.13）
 - [uv](https://docs.astral.sh/uv/)（推奨）
-- 4つのNEXUS moduleと`little_agent` submodule
+
+4つのNEXUS moduleと`little_agent`は`modules/`以下に含まれ、親repositoryが
+通常fileとして管理します。submoduleの初期化は不要です。
 
 Semanticaの現在の依存先`gensim`にはWindows CPython 3.14向けwheelがないため、
 Python 3.14は対象外です。
 
 ```powershell
-git submodule update --init --recursive
 uv sync --extra dev --extra semantica
 Copy-Item .env.example .env
 ```
@@ -310,7 +311,7 @@ nexus_seed/core/            固定された6 primitive
 nexus_seed/runtime/         durable routing、execution、resume、delivery
 nexus_seed/platform/        module間contract
 nexus_seed/resources/       Resource/Version/Representation基盤
-modules/                    独立module repository
+modules/                    repository内のcapability moduleとlittle_agent
 tests/                      unit、boundary、restart、E2E test
 ```
 

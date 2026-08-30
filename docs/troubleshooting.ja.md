@@ -32,14 +32,17 @@ Semanticaの現在の依存packageにはWindows CPython 3.14向けwheelがあり
 
 ## `modules/...`が空
 
-submoduleが未初期化です。
+`modules/`は親repositoryが直接管理しているため、通常のcloneで取得されます。
+まずcheckoutの状態を確認します。
 
 ```powershell
-git submodule update --init --recursive
-git submodule status
+Test-Path modules/knowledge/pyproject.toml
+Test-Path modules/little_agent/pyproject.toml
+git status --short
 ```
 
-行頭が`-`のsubmoduleは未初期化です。
+fileが存在しない場合はcloneまたはcheckoutが不完全です。作業中の変更を退避してから、
+親repositoryを再取得してください。`git submodule` commandは使用しません。
 
 ## Cockpitへ接続できない
 
@@ -159,4 +162,3 @@ NEXUS_SEED_DATA_DIR=~/.nexus_seed
 uv run --extra dev --extra semantica pytest
 git diff --check
 ```
-
