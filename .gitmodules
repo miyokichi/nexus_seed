@@ -2,3 +2,19 @@
 	path = modules/little_agent
 	url = https://github.com/miyokichi/little_agent.git
 	branch = main
+[submodule "modules/knowledge"]
+	path = modules/knowledge
+	url = C:/Users/minmi/Documents/PythonAI/nexus_knowledge
+	branch = main
+[submodule "modules/observer"]
+	path = modules/observer
+	url = C:/Users/minmi/Documents/PythonAI/nexus_observer
+	branch = main
+[submodule "modules/planner"]
+	path = modules/planner
+	url = C:/Users/minmi/Documents/PythonAI/nexus_planner
+	branch = main
+[submodule "modules/project_manager"]
+	path = modules/project_manager
+	url = C:/Users/minmi/Documents/PythonAI/nexus_project_manager
+	branch = main

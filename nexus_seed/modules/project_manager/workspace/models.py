@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ....core.event import utcnow
@@ -344,7 +344,11 @@ def _resolve_entry(workspace: str, entry: dict[str, Any]) -> str:
     path = str(entry.get("path") or "")
     if entry.get("delivery") == Delivery.REFERENCE.value:
         return path
-    return str(PurePosixPath(workspace) / path) if workspace else path
+    if not workspace:
+        return path
+    if "\\" in workspace or Path(workspace).drive:
+        return str(Path(workspace) / path)
+    return str(PurePosixPath(workspace) / path)
 
 
 def authorized_paths(

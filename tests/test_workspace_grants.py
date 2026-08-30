@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
 from nexus_seed.knowledge.ledger import KnowledgeLedger
 from nexus_seed.resources.scope import ResourceScope
@@ -76,7 +77,10 @@ def test_with_no_authorized_root_no_host_file_is_grantable(tmp_path):
 
 def test_a_symlink_pointing_out_of_the_root_is_refused(tmp_path):
     shared, outside = shared_tree(tmp_path)
-    (shared / "sneaky.txt").symlink_to(outside / "keys.txt")
+    try:
+        (shared / "sneaky.txt").symlink_to(outside / "keys.txt")
+    except OSError:
+        pytest.skip("symlinks are not available in this environment")
 
     decision = policy_for(shared).decide(request_for("file:sneaky.txt"))
 
@@ -433,7 +437,10 @@ def test_a_directory_can_be_read_but_not_written(tmp_path):
 
 def test_a_read_path_still_cannot_escape_the_authorized_root(tmp_path):
     shared, outside = shared_tree(tmp_path)
-    (shared / "sneaky.txt").symlink_to(outside / "keys.txt")
+    try:
+        (shared / "sneaky.txt").symlink_to(outside / "keys.txt")
+    except OSError:
+        pytest.skip("symlinks are not available in this environment")
     provisioner = WorkspaceProvisioner(policy_for(shared))
 
     manifest = provisioner.provision(

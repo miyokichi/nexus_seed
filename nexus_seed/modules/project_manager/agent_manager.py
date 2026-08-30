@@ -9,6 +9,7 @@ Agent is reused.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from ...core.event import utcnow
@@ -109,7 +110,11 @@ class AgentManager:
         """
         workspace = None
         if self.workspace_root is not None:
-            workspace = f"{self.workspace_root.rstrip('/')}/{project.id}"
+            root = Path(self.workspace_root)
+            if root.is_absolute() or root.drive or "\\" in self.workspace_root:
+                workspace = str(root / project.id)
+            else:
+                workspace = f"{self.workspace_root.rstrip('/')}/{project.id}"
         return ProjectAgentConfig(
             agent_id=agent.agent_id,
             project_id=project.id,

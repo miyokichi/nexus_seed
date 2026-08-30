@@ -241,7 +241,9 @@ class WorkspaceProvisioner:
         """The file name one grant appears under, before uniquifying."""
         if grant.name:
             return Path(grant.name).name
-        tail = grant.target.rstrip("/").rsplit("/", 1)[-1]
+        tail = Path(grant.target).name
+        if not tail:
+            tail = grant.target.rstrip("/").rsplit("/", 1)[-1]
         return tail or grant.target.replace(":", "_") or "resource"
 
     def _unique_name(self, grant: ResourceGrant, used: set[str]) -> str:
