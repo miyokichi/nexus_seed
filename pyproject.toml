@@ -30,6 +30,7 @@ nexus-seed-mvp = "nexus_seed.mvp.cli:main"
 nexus-seed-knowledge-ingest-pptx = "nexus_seed.knowledge.ingest_pptx:main"
 nexus-seed-knowledge = "nexus_seed.knowledge_cli:main"
 nexus-seed-semantica = "nexus_seed.semantica_cli:main"
+nexus-seed-source = "nexus_seed.source_cli:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -67,6 +67,7 @@ from ...policy.project_proposal import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ...modules.knowledge.semantica import SemanticQueryBackend
     from ...modules.project_manager.orchestrator import ProjectOrchestrator
 
 logger = logging.getLogger("nexus_seed.knowledge.loop")
@@ -105,7 +106,12 @@ ASSESSMENT_INSTRUCTION = (
     "`principles` are patterns already earned from past cases: use them to "
     "judge what this evidence is likely to lead to. They are predictions, not "
     "truth, and are never evidence on their own — a proposal still has to cite "
-    "the evidence it came from. Return JSON only."
+    "the evidence it came from. `semantic_knowledge`, when it is present, is "
+    "what Knowledge already holds about the entities this evidence mentions: "
+    "their properties, the relations asserted about them, and where each came "
+    "from. Use it to judge whether the evidence is already known and what it "
+    "affects; it is context, not evidence, so keep citing knowledge ids. "
+    "Return JSON only."
 )
 
 ASSESSMENT_SCHEMA = {
@@ -177,10 +183,14 @@ class KnowledgeLoop:
         consolidations_per_pass: int = 1,
         principle_threshold: int = 3,
         context_root: str | Path | None = None,
+        semantic_backend: "SemanticQueryBackend | None" = None,
     ) -> None:
         self.runtime = runtime
         self.orchestrator = orchestrator
         self.backend = backend
+        #: An optional meaning-model backend behind the Knowledge boundary.
+        #: ``None`` — the default — leaves every pass exactly as it was.
+        self.semantic_backend = semantic_backend
         self.policy = policy or ProjectProposalPolicy()
         self.assessment_batch_size = max(1, assessment_batch_size)
         #: How many un-consolidated observations about one subject are worth a
@@ -1118,6 +1128,29 @@ class KnowledgeLoop:
             return item.status != ENTITY_UNRESOLVED
         return True
 
+    def _semantic_knowledge(
+        self, candidates: list[KnowledgeRevision]
+    ) -> dict[str, Any] | None:
+        """Retrieve normalized semantic context for the evidence being assessed.
+
+        The backend is reached through the Knowledge module's query contract,
+        so the evaluator receives entities, properties, relations and sources —
+        never a backend-specific shape, and never a reason to know which
+        backend produced them.
+        """
+        if self.semantic_backend is None or not candidates:
+            return None
+        query = "\n".join(
+            json.dumps(item.content.value, ensure_ascii=False, default=str)
+            for item in candidates
+        )
+        try:
+            context = self.semantic_backend.query(query)
+        except Exception as exc:  # noqa: BLE001 - retrieval must never stop a pass
+            logger.warning("semantic knowledge retrieval failed: %s", exc)
+            return None
+        return context.to_dict() if context is not None else None
+
     async def _assess_new_knowledge(self) -> int:
         if self.backend is None:
             return 0
@@ -1142,14 +1175,18 @@ class KnowledgeLoop:
             return 0
 
         active_projects = [item.to_routing_dict() for item in self.orchestrator.projects.live()]
+        context: dict[str, Any] = {
+            "world_view": self.world_view(),
+            "new_evidence": [_evidence_dict(item) for item in candidates],
+            "active_projects": active_projects,
+            "principles": [_principle_dict(item) for item in self.mature_principles()],
+        }
+        semantic = self._semantic_knowledge(candidates)
+        if semantic is not None:
+            context["semantic_knowledge"] = semantic
         request = BackendRequest(
             instruction=ASSESSMENT_INSTRUCTION,
-            context={
-                "world_view": self.world_view(),
-                "new_evidence": [_evidence_dict(item) for item in candidates],
-                "active_projects": active_projects,
-                "principles": [_principle_dict(item) for item in self.mature_principles()],
-            },
+            context=context,
             output_schema=ASSESSMENT_SCHEMA,
             metadata={"kind": "situation_assessment"},
         )

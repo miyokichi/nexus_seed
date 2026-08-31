@@ -1,0 +1,53 @@
+# Column -> Canonical field mapping for one tabular sheet.
+#
+#   nexus-seed-source excel tests/fixtures/assumption.xlsx \
+#       --mapping samples/excel_assumption_mapping.yaml --out assumption.yaml
+#
+# Every field is either {column: "<header>"} or a literal.  A row produces one
+# entity per block whose id column is filled, so optional columns simply leave
+# an entity out.  Nothing here is Excel-specific once it is converted: the
+# output is Canonical YAML v0.1.
+version: "0.1"
+
+document:
+  id: "assumption-001"
+
+sheet: "GenX"
+header_row: 1
+
+entities:
+  - key: generation
+    id: {column: "Generation ID"}
+    name: {column: "Generation"}
+    type: "Generation"
+
+  - key: parameter
+    id: {column: "Parameter ID"}
+    name: {column: "Parameter"}
+    type: "Parameter"
+    aliases: {column: "Parameter Aliases"}
+    properties:
+      # A value column plus its unit column becomes {value: ..., unit: ...}.
+      typical:
+        column: "Typical"
+        unit: {column: "Unit"}
+      variation:
+        column: "Variation"
+        unit: {column: "Unit"}
+
+  - key: deliverable
+    id: {column: "Deliverable ID"}
+    name: {column: "Deliverable"}
+    type: "Deliverable"
+    properties:
+      required: {column: "Required"}
+      status: {column: "Status"}
+
+relations:
+  - subject: generation
+    predicate: "uses_parameter"
+    object: parameter
+
+  - subject: generation
+    predicate: "requires"
+    object: deliverable

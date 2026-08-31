@@ -157,9 +157,30 @@ uv run nexus-seed-semantica \
 ```
 
 The persisted snapshot can be queried after restart without another server.
-Set `NEXUS_SEED_SEMANTICA_SNAPSHOT` and
-`NEXUS_SEED_SEMANTICA_ONTOLOGY` in `.env` to omit those options. Company use
-replaces only the source-to-Canonical converter, sample YAML, and small
+Set `NEXUS_SEED_SEMANTICA_SNAPSHOT` and `NEXUS_SEED_SEMANTICA_ONTOLOGY` in
+`.env` to omit those options — and to attach the backend to the running
+system: with a snapshot configured, startup builds the same adapter and injects
+it into the Knowledge Gateway, so the Planner retrieves semantic Knowledge
+without knowing a backend exists. With no snapshot set, NEXUS SEED starts
+exactly as it did before. `nexus-seed config` reports which case you are in.
+
+### From a workbook to Canonical YAML
+
+A source document reaches Knowledge through Canonical YAML and nothing else.
+The v0.1 converter reads one `.xlsx` sheet, guided by a mapping file that says
+which column carries which Canonical field:
+
+```bash
+uv sync --extra dev --extra ingest
+uv run nexus-seed-source excel tests/fixtures/assumption.xlsx \
+  --mapping samples/excel_assumption_mapping.yaml --out assumption.yaml
+uv run nexus-seed-semantica ingest assumption.yaml
+```
+
+Entities, properties, explicitly asserted relations and provenance (file,
+sheet, cell range) come out; the workbook's shape does not. A second source
+format is a second converter, and changes nothing on the Knowledge side.
+Company use replaces only the converter mapping, the YAML, and the small
 ontology; the `nexus_knowledge` query and NEXUS planning flow stay unchanged.
 
 ## Configuration

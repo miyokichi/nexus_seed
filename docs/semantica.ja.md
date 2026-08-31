@@ -247,7 +247,59 @@ relation_types:
 7. 主要Entity名でqueryする
 8. 結果の値と原典位置を人が確認する
 
-資料adapterの責務は`資料 -> Canonical YAML`までです。Excel用adapterやPowerPoint用adapterからSemanticaを直接呼びません。
+資料adapterの責務は`資料 -> Canonical YAML`までです。Excel用adapterやPowerPoint用adapterからSemanticaを直接呼びません。v0.1で用意しているのは次のExcel adapter 1種類だけです。
+
+## Excelから変換する
+
+`nexus-seed-source`は、1つのsheetを1つのCanonical YAML documentへ変換します。列名とCanonical fieldの対応はmapping fileで指定します。資料の自動解釈は行いません。
+
+```powershell
+uv run nexus-seed-source excel tests/fixtures/assumption.xlsx `
+  --mapping samples/excel_assumption_mapping.yaml `
+  --out assumption.yaml
+
+uv run nexus-seed-semantica ingest assumption.yaml
+```
+
+mapping fileの形:
+
+```yaml
+version: "0.1"
+document:
+  id: "assumption-001"
+sheet: "GenX"
+header_row: 1
+
+entities:
+  - key: parameter
+    id: {column: "Parameter ID"}
+    name: {column: "Parameter"}
+    type: "Parameter"
+    aliases: {column: "Parameter Aliases"}
+    properties:
+      typical:
+        column: "Typical"
+        unit: {column: "Unit"}
+
+relations:
+  - subject: generation
+    predicate: "uses_parameter"
+    object: parameter
+```
+
+- fieldは`{column: "見出し"}`か固定値のどちらかです
+- 1行から、`id`列が埋まっているentity blockの数だけEntityが作られます
+- `unit`を付けたPropertyは`{value: ..., unit: ...}`になります
+- 同じ`id`が複数行に出た場合は最初の行が識別と原典位置を決め、後の行はPropertyの追加だけを行います
+- provenanceは`file` / `sheet` / `range`（例: `GenX!C2:H2`）で記録されます
+
+変換結果はCanonical schemaで検証されるため、mappingの誤りはingest前にerrorになります。Excel固有の情報はprovenanceの中だけに留まり、SemanticaやPlanner側へ出ません。
+
+変換にはopenpyxlが必要です。
+
+```powershell
+uv sync --extra dev --extra ingest --extra semantica
+```
 
 ## NEXUS SEEDとの接続範囲
 
@@ -271,7 +323,33 @@ knowledge = ExistingKnowledgeGateway(ledger, semantic_backend=semantic)
 
 Plannerへ渡るのはSemantica objectではなく、`entities`、`properties`、`relations`、`sources`へ正規化されたRelevant Knowledgeです。完全な閉ループ例は`tests/test_semantica_closed_loop_e2e.py`にあります。
 
-現在の`NEXUS_SEED_SEMANTICA_*`設定を直接読むのは`nexus-seed-semantica` CLIです。常駐`nexus-seed` Applicationへ任意のsnapshotを自動接続するconfigurationはまだ追加していません。常駐Applicationで利用する場合は、上記public adapterをcomposition時に渡します。
+### 通常Runtimeへの自動接続
+
+上のcompositionを手で書く必要はありません。`NEXUS_SEED_SEMANTICA_SNAPSHOT`が設定されていれば、起動時に同じadapterが構築され、Knowledge Gatewayへ注入されます。
+
+```text
+NEXUS起動
+  -> SemanticaSettings.from_env
+  -> SemanticaKnowledgeAdapter生成
+  -> KnowledgeGatewayへ注入
+  -> Plannerから利用可能
+```
+
+設定されていない場合は`None`になり、従来どおりSemanticaなしで起動します。判定は`nexus_seed.integrations.semantica_config`の1か所だけで行います。
+
+```python
+from nexus_seed.integrations.semantica_config import build_knowledge_gateway
+
+knowledge = build_knowledge_gateway(ledger)  # .envを読む
+```
+
+現在の設定は`nexus-seed config`の`[Knowledge backend]`で確認できます。
+
+```powershell
+uv run nexus-seed config
+```
+
+adapterの構築とqueryはSemantica本体をimportしません。importするのは`ingest`だけなので、Semantica未installの環境でも、設定の有無にかかわらず起動できます。
 
 ## snapshotの扱い
 
@@ -290,7 +368,16 @@ uv run --extra dev --extra semantica pytest
 Pop-Location
 
 uv run --extra dev --extra semantica pytest `
-  tests/test_semantica_closed_loop_e2e.py
+  tests/test_semantica_closed_loop_e2e.py `
+  tests/test_semantica_runtime_composition.py `
+  tests/test_source_excel_converter.py
+```
+
+`資料 -> Knowledge -> Planner -> Project -> little_agent -> world_facts -> 再計画`までを実processで通す全体E2Eは`tests/integration/test_nexus_seed_e2e.py`です。Semantica、openpyxl、`modules/little_agent/.venv`が揃っていれば自動的に実行され、欠けているものがある場合だけskipされます。
+
+```powershell
+uv run --extra dev --extra ingest --extra semantica pytest `
+  tests/integration/test_nexus_seed_e2e.py
 ```
 
 ## 次に読む

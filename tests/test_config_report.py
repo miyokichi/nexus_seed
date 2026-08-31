@@ -21,6 +21,9 @@ ENV_VARS = (
     "NEXUS_SEED_PROJECT_AGENT_TOKEN_ENV",
     "NEXUS_SEED_PROJECT_WORKSPACE",
     "NEXUS_SEED_DATA_DIR",
+    "NEXUS_SEED_SEMANTICA_SNAPSHOT",
+    "NEXUS_SEED_SEMANTICA_ONTOLOGY",
+    "NEXUS_SEED_SEMANTICA_INFER_RELATIONS",
     "AGENT_TOKEN",
     "MY_KEY",
 )
@@ -40,7 +43,7 @@ def write_env(path, **values) -> str:
     return str(path)
 
 
-def test_report_contains_only_reasoning_and_project_delegation(tmp_path, monkeypatch):
+def test_report_separates_reasoning_delegation_and_knowledge_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("MY_KEY", "s3cret")
     env_file = write_env(
         tmp_path / ".env",
@@ -54,8 +57,10 @@ def test_report_contains_only_reasoning_and_project_delegation(tmp_path, monkeyp
     assert [group["name"] for group in report["groups"]] == [
         "NEXUS SEED's own reasoning",
         "Delegation",
+        "Knowledge backend",
     ]
-    reasoning, delegation = report["groups"]
+    reasoning, delegation, knowledge = report["groups"]
+    assert knowledge["settings"]["NEXUS_SEED_SEMANTICA_SNAPSHOT"] == "(none)"
     assert reasoning["settings"]["NEXUS_SEED_LLM_MODEL"] == "claude-sonnet-4-5"
     assert not any("SKILL" in name.upper() for name in delegation["settings"])
     assert "s3cret" not in format_report(report)
@@ -117,4 +122,5 @@ async def test_config_command_emits_json(tmp_path, capsys):
     assert [group["name"] for group in payload["groups"]] == [
         "NEXUS SEED's own reasoning",
         "Delegation",
+        "Knowledge backend",
     ]

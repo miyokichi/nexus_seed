@@ -25,6 +25,10 @@ from ..integrations.project_agent_config import (
     ProjectAgentConfigurationError,
     build_orchestrator,
 )
+from ..integrations.semantica_config import (
+    SemanticaConfigurationError,
+    build_semantic_backend,
+)
 from ..integrations.webhook import WebhookIngress, WebhookServer
 from ..modules.knowledge import CONTEXT_DIR
 from ..modules.observer.adapters.file_watch import LocalFileAdapter
@@ -145,6 +149,10 @@ def bootstrap_application(
         runtime, data_root=settings.data_dir
     )
     orchestrator = _configure_project_orchestrator(runtime, settings, env_file=env_file)
+    # Configuration, not composition by hand: with a snapshot configured the
+    # Knowledge module's Semantica adapter is built here and handed to the
+    # loop; with none it stays ``None`` and nothing downstream changes.
+    runtime.semantic_knowledge = build_semantic_backend(env_file=env_file)
     _configure_knowledge_loop(runtime, settings, orchestrator, resource_root=resource_root)
 
 
@@ -185,6 +193,7 @@ def _configure_knowledge_loop(
         orchestrator,
         backend=runtime.backends.get("llm"),
         context_root=context_root,
+        semantic_backend=runtime.semantic_knowledge,
     )
     # Created empty rather than waited for: a person needs somewhere to write
     # what the words mean and what a good state looks like, and an existing
@@ -795,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
         LLMConfigurationError,
         OperationalCommandError,
         ProjectAgentConfigurationError,
+        SemanticaConfigurationError,
         OSError,
     ) as exc:
         print(f"configuration/startup error: {exc}", file=sys.stderr)

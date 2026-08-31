@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .integrations.semantica_config import SemanticaSettings
 from .llm_config import LLMSettings, load_env_file
 from .orchestrator_config import ProjectAgentSettings
 
@@ -56,6 +57,7 @@ def build_report(env_file: str | Path = ".env") -> dict[str, Any]:
     groups = [
         _reasoning_group(env_file),
         _delegation_group(env_file),
+        _knowledge_group(env_file),
     ]
     return {
         "env_file": str(resolved) if resolved else None,
@@ -164,6 +166,51 @@ def _delegation_group(env_file) -> ConfigGroup:
     return ConfigGroup(
         name="Delegation",
         purpose="where a Project is handed over (NEXUS_SEED_PROJECT_AGENT_*)",
+        settings=rows,
+        notes=notes,
+    )
+
+
+def _knowledge_group(env_file) -> ConfigGroup:
+    """Which Knowledge backend, if any, is attached to the Knowledge Gateway."""
+
+    settings = SemanticaSettings.from_env(env_file)
+    rows: list[tuple[str, Any]] = [
+        (
+            "NEXUS_SEED_SEMANTICA_SNAPSHOT",
+            str(settings.snapshot_path) if settings.snapshot_path else "(none)",
+        ),
+    ]
+    if settings.enabled:
+        rows.extend(
+            [
+                (
+                    "NEXUS_SEED_SEMANTICA_ONTOLOGY",
+                    str(settings.ontology_path) if settings.ontology_path else "(none)",
+                ),
+                ("NEXUS_SEED_SEMANTICA_INFER_RELATIONS", settings.infer_relations),
+            ]
+        )
+        notes = [
+            "A meaning-model backend is attached to the Knowledge Gateway. The "
+            "Planner still sees ordinary Knowledge items and is never told "
+            "which backend produced them.",
+            "Ingest Canonical YAML into the snapshot with `nexus-seed-semantica "
+            "ingest`; the running system only queries it.",
+        ]
+        if settings.snapshot_path is not None and not settings.snapshot_path.exists():
+            notes.append(
+                "The snapshot does not exist yet, so every query finds nothing "
+                "until the first ingest writes it."
+            )
+    else:
+        notes = [
+            "No Knowledge backend is configured. Knowledge retrieval is the "
+            "ledger's own lexical search, exactly as before.",
+        ]
+    return ConfigGroup(
+        name="Knowledge backend",
+        purpose="the optional meaning model behind Knowledge (NEXUS_SEED_SEMANTICA_*)",
         settings=rows,
         notes=notes,
     )

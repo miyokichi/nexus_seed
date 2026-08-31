@@ -18,7 +18,7 @@ from ..modules.knowledge.adapters.sqlite import KnowledgeStore
 from ..modules.project_manager.adapters.sqlite import ProjectStore
 from ..integrations.llm_provider import ExistingBackendLLMProvider
 from ..integrations.mvp_executor import DefaultProjectExecutor
-from ..modules.knowledge.adapters.mvp import ExistingKnowledgeGateway
+from ..integrations.semantica_config import build_knowledge_gateway
 from ..modules.observer.mvp import ManualIngressObserver
 from ..modules.planner.mvp import SimpleProjectPlanner
 from ..modules.project_manager.adapters.mvp import ExistingProjectManagerAdapter
@@ -72,7 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     durable_runtime = DurableRuntime(data_dir / "nexus_seed.db")
     db = durable_runtime.db
     try:
-        knowledge = ExistingKnowledgeGateway(KnowledgeLedger(KnowledgeStore(db)))
+        # Semantica attaches itself here when it is configured, and nowhere
+        # else: with no snapshot set this is the plain ledger-backed gateway.
+        knowledge = build_knowledge_gateway(
+            KnowledgeLedger(KnowledgeStore(db)), env_file=args.env_file
+        )
         manager = ExistingProjectManagerAdapter(
             ExistingProjectManager(ProjectStore(db))
         )

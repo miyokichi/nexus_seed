@@ -179,8 +179,27 @@ uv run nexus-seed-semantica `
 
 snapshotはfileへ永続化され、追加serverなしで再起動後もqueryできます。`.env`の
 `NEXUS_SEED_SEMANTICA_SNAPSHOT`と`NEXUS_SEED_SEMANTICA_ONTOLOGY`へ設定すれば、
-CLI optionを省略できます。会社では資料からCanonical YAMLを作るconverter、YAML本体、
-小さなOntologyだけを差し替え、`nexus_knowledge`以降のPlanning経路は変更しません。
+CLI optionを省略できます。さらにsnapshotが設定されていれば、起動時に同じadapterが
+構築されKnowledge Gatewayへ注入されるため、PlannerはBackendの存在を知らないまま
+semantic Knowledgeを取得できます。未設定なら従来どおりSemanticaなしで起動します。
+現在の状態は`nexus-seed config`で確認できます。
+
+### ExcelからCanonical YAMLを作る
+
+資料はCanonical YAMLだけを通ってKnowledgeへ入ります。v0.1のconverterは、列名と
+Canonical fieldの対応をmapping fileで指定して、1つの`.xlsx` sheetを変換します。
+
+```powershell
+uv sync --extra dev --extra ingest
+uv run nexus-seed-source excel tests/fixtures/assumption.xlsx `
+  --mapping samples/excel_assumption_mapping.yaml --out assumption.yaml
+uv run nexus-seed-semantica ingest assumption.yaml
+```
+
+Entity、Property、資料が明示したRelation、provenance（file / sheet / cell range）
+が出力され、Excel固有の形は出ません。資料形式を増やすことはconverterを増やすことで、
+Knowledge側は変更しません。会社ではconverterのmapping、YAML本体、小さなOntologyだけを
+差し替え、`nexus_knowledge`以降のPlanning経路は変更しません。
 
 Canonical YAMLの全項目、Entity/Propertyの分け方、Ontology、会社資料への置換手順は
 [Semantica Knowledgeの使い方](docs/semantica.ja.md)にあります。

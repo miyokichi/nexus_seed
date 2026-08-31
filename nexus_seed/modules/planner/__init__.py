@@ -6,6 +6,7 @@ from .context_assessment import (
     SituationAssessment,
     TaskCandidate,
 )
+from .deliverable import RequiredDeliverable, RequiredDeliverablePlanner
 from .goal_bridge import GapRiskOpportunityDetector, GoalBridge, Signal
 from .mvp import SimpleProjectPlanner
 
@@ -14,6 +15,8 @@ __all__ = [
     "Finding",
     "GapRiskOpportunityDetector",
     "GoalBridge",
+    "RequiredDeliverable",
+    "RequiredDeliverablePlanner",
     "Signal",
     "SimpleProjectPlanner",
     "SituationAssessment",

@@ -17,6 +17,7 @@ from nexus_seed.modules.knowledge import (
 from nexus_seed.modules.knowledge.adapters.sqlite import KnowledgeStore
 from nexus_seed.modules.knowledge.projection import WorldStateProjection
 from nexus_seed.modules.observer import TextObserver
+from nexus_seed.modules.planner import RequiredDeliverablePlanner
 from nexus_seed.modules.project_manager import (
     A2AAgentRuntime,
     A2AMessage,
@@ -51,60 +52,16 @@ class CanonicalGraphRuntime:
         }
 
 
-class MissingDeliverablePlanner:
-    """Test Planner that decides from normalized Knowledge, not a fixed plan."""
+class _RecordingPlanner(RequiredDeliverablePlanner):
+    """The ordinary Planner, keeping what it was given so the test can read it."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.contexts: list[KnowledgeItem] = []
 
     def propose(self, context: KnowledgeItem) -> list[ProjectProposal]:
         self.contexts.append(context)
-        payload = context.content
-        observation = payload["observation"]["content"]
-        if isinstance(observation, dict) and any(
-            change.get("entity") == "performance_report"
-            and change.get("new_value") == "created"
-            for change in observation.get("world_changes", [])
-        ):
-            return []
-
-        semantic = next(
-            (
-                item["content"]
-                for item in payload["relevant_knowledge"]
-                if item["source"] == "semantica"
-            ),
-            None,
-        )
-        if semantic is None:
-            return []
-        missing = next(
-            (
-                entity
-                for entity in semantic["entities"]
-                if entity.get("type") == "Deliverable"
-                and entity.get("properties", {}).get("required") is True
-                and entity.get("properties", {}).get("status") == "missing"
-            ),
-            None,
-        )
-        if missing is None:
-            return []
-        artifact = f"{missing['id']}.txt"
-        return [
-            ProjectProposal(
-                title=f"Create {missing['name']}",
-                goal=(
-                    f"Create {missing['name']} as {artifact} in the granted workspace. "
-                    f"Return world_facts with entity={missing['id']}, "
-                    "attribute=status, value=created."
-                ),
-                reason=(
-                    f"Semantica Knowledge marks required deliverable {missing['id']} as missing."
-                ),
-                context={"semantic_entity_id": missing["id"]},
-            )
-        ]
+        return super().propose(context)
 
 
 class ArtifactAgentTransport:
@@ -176,7 +133,7 @@ async def _run_human_request_e2e(tmp_path, *, runtime) -> None:
     database = Database(tmp_path / "nexus.db")
     ledger = KnowledgeLedger(KnowledgeStore(database))
     knowledge = ExistingKnowledgeGateway(ledger, semantic_backend=semantic)
-    planner = MissingDeliverablePlanner()
+    planner = _RecordingPlanner()
     transport = ArtifactAgentTransport()
     orchestrator = ProjectOrchestrator(
         database,

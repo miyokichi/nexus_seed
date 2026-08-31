@@ -79,3 +79,82 @@ def _imported_module(node: ast.AST) -> str | None:
     if isinstance(node, ast.Import):
         return node.names[0].name if node.names else None
     return None
+
+
+#: What each part of the composition root may not reach for.  These are the
+#: v0.1 direction rules: a source converter does not know the Knowledge
+#: Runtime, a Planner does not know which Knowledge backend answered, and no
+#: capability module knows a source document format exists.
+COMPOSITION_RULES = {
+    "nexus_seed/sources": (
+        "semantica",
+        "nexus_seed.modules.knowledge.ledger",
+        "nexus_seed.modules.knowledge.semantica",
+        "nexus_seed.modules.knowledge.adapters",
+        "nexus_seed.modules.knowledge.projection",
+        "nexus_seed.modules.planner",
+        "nexus_seed.modules.project_manager",
+        "nexus_seed.modules.observer",
+    ),
+    "nexus_seed/modules/planner": (
+        "semantica",
+        "nexus_seed.modules.knowledge.semantica",
+        "nexus_seed.sources",
+    ),
+    "nexus_seed/modules/knowledge": ("nexus_seed.sources",),
+    "nexus_seed/modules/observer": ("nexus_seed.sources",),
+    "nexus_seed/modules/project_manager": ("nexus_seed.sources",),
+}
+
+
+def test_converters_planners_and_modules_keep_their_direction() -> None:
+    """The Canonical YAML boundary is a wall, not a naming convention."""
+    root = Path(__file__).resolve().parents[1]
+    violations: list[str] = []
+    for module_path, forbidden in COMPOSITION_RULES.items():
+        for source in (root / module_path).rglob("*.py"):
+            for imported in _absolute_imports(source, root):
+                if any(
+                    imported == name or imported.startswith(f"{name}.")
+                    for name in forbidden
+                ):
+                    violations.append(
+                        f"{source.relative_to(root)} imports forbidden {imported}"
+                    )
+    assert violations == []
+
+
+def test_the_excel_converter_only_needs_the_canonical_contract() -> None:
+    """It may read the Canonical schema; that is the whole point of a boundary."""
+    root = Path(__file__).resolve().parents[1]
+    imports = _absolute_imports(root / "nexus_seed" / "sources" / "excel.py", root)
+
+    assert "nexus_seed.modules.knowledge.canonical" in imports
+    assert not any(
+        name.startswith("nexus_seed.modules.knowledge.")
+        for name in imports
+        if name != "nexus_seed.modules.knowledge.canonical"
+    )
+
+
+def _absolute_imports(source: Path, root: Path) -> list[str]:
+    """Return every module ``source`` imports, with relative imports resolved."""
+    parts = list(source.relative_to(root).with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+        package = parts
+    else:
+        package = parts[:-1]
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if not node.level:
+                if node.module:
+                    names.append(node.module)
+                continue
+            base = package[: len(package) - node.level + 1]
+            names.append(".".join([*base, node.module] if node.module else base))
+    return names

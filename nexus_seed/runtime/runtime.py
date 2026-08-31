@@ -97,6 +97,9 @@ class Runtime:
         self.extractors = default_registry()
         self.project_orchestrator = None
         self.knowledge_loop = None
+        #: Optional meaning-model Knowledge backend, set by application
+        #: composition when one is configured.  Runtime never queries it.
+        self.semantic_knowledge = None
         self.observation_sources = None
 
         self.registry = registry or HandlerRegistry()
