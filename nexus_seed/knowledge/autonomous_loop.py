@@ -53,6 +53,7 @@ from .models import (
     Relation,
 )
 from .principles import PrincipleExtractor
+from .reuse import KnowledgeReuse, REUSABLE_ANSWER_ANNOTATION, normalize_reuse_spec
 from .projection import WorldStateProjection, annotate_world_fact
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -233,6 +234,10 @@ class KnowledgeLoop:
         #: reusable principle across them.
         self.principle_threshold = max(2, principle_threshold)
         self.ledger = KnowledgeLedger(runtime.knowledge_store)
+        self.reuse = KnowledgeReuse(self.ledger)
+        # The AgentManager receives only a read-only lookup callback. Nothing
+        # in the Orchestrator learns how Knowledge annotations are interpreted.
+        self.orchestrator.agents.knowledge_lookup = self.reuse.for_project_context
         #: How far into the Ledger each pass has already looked.  These are
         #: caches, never queues: they start at zero after a restart, so the
         #: first pass re-reads everything and the durable records — the change
@@ -403,7 +408,8 @@ class KnowledgeLoop:
         return self.ledger.head(updated.knowledge_id)
 
     async def answer_question(
-        self, question_id: str, answer: str, *, actor: str = "human"
+        self, question_id: str, answer: str, *, actor: str = "human",
+        reuse: dict[str, Any] | None = None,
     ) -> KnowledgeRevision | None:
         """Answer one Agent question and return a waiting Project to its Agent."""
         question = self.ledger.head(question_id)
@@ -412,12 +418,24 @@ class KnowledgeLoop:
         value = (answer or "").strip()
         if not value:
             raise ValueError("answer must not be empty")
+        # Reuse is an explicit human decision, never inferred from a question
+        # supplied by an Agent. Validate before writing any revision.
+        reuse_spec = normalize_reuse_spec(reuse) if reuse is not None else None
         updated = self.ledger.revise(
             question_id,
             status=QUESTION_ANSWERED,
             metadata={"answer": value, "answered_by": actor},
             reason=f"answered by {actor}",
         )
+        if reuse_spec is not None:
+            updated = self.ledger.annotate(
+                question_id,
+                Annotation(
+                    kind=REUSABLE_ANSWER_ANNOTATION,
+                    value=reuse_spec,
+                    created_by=actor,
+                ),
+            )
         project_id = str(question.metadata.get("project_id") or "")
         project = self.orchestrator.projects.get(project_id) if project_id else None
         if project is not None and project.is_live:

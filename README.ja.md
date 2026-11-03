@@ -191,6 +191,28 @@ ArtifactとCompletion Reviewは初め`PENDING_REVIEW`です。判断はKnowledge
 canonical IDとして確認すると、関連Observationもそのcanonical EntityのWorld factとして
 再投影されます。
 
+### Projectをまたぐ回答の再利用（明示的・条件付き）
+
+Agentへの質問に人間が答える際、再利用してよい回答だけに対象・項目・適用条件を明示できます。
+回答は既存のKnowledge Ledgerに残り、`reusable_answer` Annotationで利用範囲を記録します。
+すべての回答が自動共有されるわけではありません。また、人間の回答は**未検証の仮定**として渡されます。
+
+例（サーバを停止した状態でCLIを使用し、`nexus_seed.db` のパスは実環境に合わせる）:
+
+```powershell
+nexus-seed-knowledge answer --db ./data/nexus_seed.db QUESTION_ID "rho = 0.02 ohm_um" --reuse-subject resistance_model_R1 --reuse-property resistivity --reuse-conditions '{"cross_section":"rectangle","temperature":"constant"}'
+nexus-seed project "R1モデルの配線抵抗を計算する" --knowledge-requirements-json '[{"subject":"resistance_model_R1","property":"resistivity","conditions":{"cross_section":"rectangle","temperature":"constant"}}]' --no-wait
+```
+
+`--knowledge-requirements-json` は、Projectが必要とするKnowledgeのスコープを明示します。
+一致した場合のみ、Agentへ渡す`project_context.reusable_knowledge`にKnowledge ID、回答、
+適用条件、出典、未検証状態が挿入されます。条件を省略して検索範囲を広げることはできません。
+同一スコープに矛盾した回答があるときは、どちらも採用しません。
+
+通常の常駐serverではKnowledgeLoopがAgentへの検索経路を設定します。スコープ指定がない通常の
+Projectや、再利用を指定せず回答した従来の質問の挙動は変わりません。
+自然言語のGoalから条件を自動抽出する機能、一般化された意味検索、自動的な真偽検証は今回の対象外です。
+
 ### 5. 依頼を出す
 
 常駐serverへ依頼する通常の入口は`task`です。受付後すぐに戻り、処理状況はCockpitで

@@ -860,9 +860,18 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 
 def cmd_answer(args: argparse.Namespace) -> int:
+    reuse = None
+    if args.reuse_subject or args.reuse_property:
+        if not args.reuse_subject or not args.reuse_property:
+            raise ValueError("--reuse-subject and --reuse-property must be specified together")
+        reuse = {
+            "subject": args.reuse_subject,
+            "property": args.reuse_property,
+            "conditions": json.loads(args.reuse_conditions),
+        }
     runtime, loop = _open_loop(args)
     try:
-        result = asyncio.run(loop.answer_question(args.knowledge_id, args.answer))
+        result = asyncio.run(loop.answer_question(args.knowledge_id, args.answer, reuse=reuse))
         if result is None:
             print(f"error: no open question under {args.knowledge_id}", file=sys.stderr)
             return 1
@@ -1243,6 +1252,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db(p); _add_json(p); _add_backend_args(p)
     p.add_argument("knowledge_id")
     p.add_argument("answer")
+    p.add_argument("--reuse-subject", default=None, help="explicitly share this answer for a named subject")
+    p.add_argument("--reuse-property", default=None, help="property of the shared answer")
+    p.add_argument("--reuse-conditions", default="{}", help="JSON object: exact conditions for reuse")
     p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser("context", help="show the bootstrap context (terms/goals/situation)")

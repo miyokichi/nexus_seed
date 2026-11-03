@@ -9,6 +9,7 @@ Agent is reused.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from ..core.event import utcnow
@@ -50,6 +51,9 @@ class AgentManager:
         #: one, a workspace is still an empty directory the Agent may work in —
         #: which is exactly the behaviour that predates grants.
         self.provisioner = provisioner
+        # The Knowledge layer may supply scoped, provenanced context. Agent
+        # management does not interpret or search Knowledge on its own.
+        self.knowledge_lookup: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None
 
     async def assign_or_spawn(self, project: Project) -> Agent:
         """Return the Agent that owns ``project``, starting one if needed.
@@ -110,11 +114,21 @@ class AgentManager:
         workspace = None
         if self.workspace_root is not None:
             workspace = f"{self.workspace_root.rstrip('/')}/{project.id}"
+        project_context = dict(project.context)
+        if self.knowledge_lookup is not None:
+            # Never trust a caller-supplied copy of derived knowledge.
+            project_context.pop("reusable_knowledge", None)
+            try:
+                reusable = self.knowledge_lookup(project_context)
+                if reusable:
+                    project_context["reusable_knowledge"] = reusable
+            except Exception:  # noqa: BLE001 - lookup failure must not fabricate knowledge
+                logger.exception("could not look up reusable Knowledge for %s", project.id)
         return ProjectAgentConfig(
             agent_id=agent.agent_id,
             project_id=project.id,
             goal=project.goal,
-            project_context=dict(project.context),
+            project_context=project_context,
             constraints=dict(self.default_constraints),
             workspace=workspace,
             nexus_seed_a2a_endpoint=self.a2a_endpoint,
