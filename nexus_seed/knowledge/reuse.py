@@ -94,8 +94,8 @@ class KnowledgeReuse:
                 )
             ]
             # A contradictory pair must not be arbitrarily resolved by date.
+            candidates = [item for item in candidates if item.metadata["answer"].strip()]
             answers = {item.metadata["answer"].strip() for item in candidates}
-            answers.discard("")
             if len(answers) != 1:
                 continue
             candidate = sorted(
