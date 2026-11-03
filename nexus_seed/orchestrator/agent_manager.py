@@ -116,6 +116,8 @@ class AgentManager:
             workspace = f"{self.workspace_root.rstrip('/')}/{project.id}"
         project_context = dict(project.context)
         if self.knowledge_lookup is not None:
+            # Never trust a caller-supplied copy of derived knowledge.
+            project_context.pop("reusable_knowledge", None)
             try:
                 reusable = self.knowledge_lookup(project_context)
                 if reusable:
