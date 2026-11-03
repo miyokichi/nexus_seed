@@ -519,8 +519,9 @@ async def _run_project(args: argparse.Namespace, settings: AppSettings) -> int:
     )
     try:
         project_context = None
-        if args.knowledge_requirements_json is not None:
-            raw = json.loads(args.knowledge_requirements_json)
+        requirements_json = getattr(args, "knowledge_requirements_json", None)
+        if requirements_json is not None:
+            raw = json.loads(requirements_json)
             if not isinstance(raw, list):
                 raise ValueError("--knowledge-requirements-json must be a JSON list")
             project_context = {
