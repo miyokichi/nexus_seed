@@ -24,6 +24,9 @@ from .cockpit import CockpitService
 from .config_report import build_report, format_report
 from .llm_config import LLMConfigurationError, configure_llm, load_env_file
 from .knowledge import CONTEXT_DIR, KnowledgeLoop, ReasoningProjectAgent
+from .knowledge.ledger import KnowledgeLedger
+from .knowledge.reuse import KnowledgeReuse, normalize_reuse_spec
+from .storage.knowledge_store import KnowledgeStore
 from .operations import (
     OperationalCommandError,
     read_status,
@@ -261,6 +264,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="how long to watch the project before reporting (default: 1800)",
     )
     project.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    project.add_argument(
+        "--knowledge-requirements-json", default=None,
+        help="JSON list of explicit subject/property/conditions scopes to look up",
+    )
 
     event = commands.add_parser("event", help="submit an arbitrary Event")
     _add_connection_arguments(event, suppress_defaults=True)
@@ -511,7 +518,22 @@ async def _run_project(args: argparse.Namespace, settings: AppSettings) -> int:
         settings.data_dir / "nexus_seed.db", env_file=args.env_file
     )
     try:
-        decision, project = await orchestrator.submit(args.text, priority=args.priority)
+        project_context = None
+        if args.knowledge_requirements_json is not None:
+            raw = json.loads(args.knowledge_requirements_json)
+            if not isinstance(raw, list):
+                raise ValueError("--knowledge-requirements-json must be a JSON list")
+            project_context = {
+                "knowledge_requirements": [normalize_reuse_spec(item) for item in raw]
+            }
+            # This CLI runs the Orchestrator without the resident KnowledgeLoop.
+            # Provide the same read-only lookup that the loop normally wires.
+            orchestrator.agents.knowledge_lookup = KnowledgeReuse(
+                KnowledgeLedger(KnowledgeStore(orchestrator.db))
+            ).for_project_context
+        decision, project = await orchestrator.submit(
+            args.text, priority=args.priority, project_context=project_context
+        )
         if project is not None and args.wait:
             project = await orchestrator.settle(project.id, timeout=args.wait_seconds)
         agent = (
